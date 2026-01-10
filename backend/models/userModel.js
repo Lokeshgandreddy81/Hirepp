@@ -3,6 +3,22 @@ const bcrypt = require('bcryptjs');
 
 const userSchema = mongoose.Schema(
   {
+    // --- NEW FIELDS START ---
+    name: {
+      type: String,
+      required: true, // Name is now mandatory
+    },
+    role: {
+      type: String,
+      enum: ['candidate', 'recruiter'], // Strictly these two options
+      default: 'candidate',
+    },
+    hasCompletedProfile: {
+      type: Boolean,
+      default: false,
+    },
+    // --- NEW FIELDS END ---
+
     email: {
       type: String,
       required: true,
@@ -12,27 +28,48 @@ const userSchema = mongoose.Schema(
       type: String,
       required: true,
     },
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+    verificationToken: String,
+    resetPasswordToken: String,
+    resetPasswordExpire: Date,
   },
   {
-    timestamps: true, // Automatically adds createdAt and updatedAt fields
+    timestamps: true,
   }
 );
 
-// This method runs automatically before saving a user to encrypt the password
+// (The encryption logic below is unchanged from your original team code)
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) {
     next();
   }
-
-  // Generate a "salt" to make the encryption stronger
   const salt = await bcrypt.genSalt(10);
-  // Replace the plain password with the encrypted version
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-// This method allows us to compare entered password with the encrypted password in DB
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
+};
+
+// Generate and hash password token
+userSchema.methods.getResetPasswordToken = function () {
+  const crypto = require('crypto');
+  // Generate token
+  const resetToken = crypto.randomBytes(20).toString('hex');
+
+  // Hash token and set to resetPasswordToken field
+  this.resetPasswordToken = crypto
+    .createHash('sha256')
+    .update(resetToken)
+    .digest('hex');
+
+  // Set expire (e.g., 10 minutes)
+  this.resetPasswordExpire = Date.now() + 10 * 60 * 1000;
+
+  return resetToken;
 };
 
 const User = mongoose.model('User', userSchema);

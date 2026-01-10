@@ -4,7 +4,7 @@ import './LoginPage.css';
 import { IoChevronBack } from 'react-icons/io5';
 import { motion } from 'framer-motion';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 
 const LoginPage = () => {
   const [activeTab, setActiveTab] = useState('email'); // 'phone' or 'email'
@@ -15,7 +15,7 @@ const LoginPage = () => {
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  
+
   const navigate = useNavigate();
 
   // Handle Input Changes
@@ -46,16 +46,20 @@ const LoginPage = () => {
 
       // Sending data to backend
       const { data } = await axios.post(
-        '/api/users/login',
+        'http://localhost:5001/api/users/login',
         { email: formData.email, password: formData.password },
         config
       );
 
       console.log('Login Successful:', data);
       localStorage.setItem('userInfo', JSON.stringify(data));
-      
+
       // Redirect to home page
-      navigate('/home'); 
+      if (data.role === 'recruiter') {
+        navigate('/recruiter/jobs');
+      } else {
+        navigate('/candidate/jobs');
+      }
 
     } catch (err) {
       setError(
@@ -113,7 +117,7 @@ const LoginPage = () => {
 
         {/* Form */}
         <form onSubmit={handleSubmit}>
-          
+
           {/* Phone Inputs */}
           {activeTab === 'phone' && (
             <motion.div
@@ -177,9 +181,11 @@ const LoginPage = () => {
             />
           </div>
 
-          <a href="#" className="forgot-password">
-            Forgot password?
-          </a>
+          <div style={{ textAlign: 'right', marginBottom: '15px' }}>
+            <Link to="/forgot-password" style={{ color: '#666', fontSize: '14px', textDecoration: 'none' }}>
+              Forgot Password?
+            </Link>
+          </div>
 
           <button type="submit" className="submit-btn" disabled={loading}>
             {loading ? 'Signing In...' : 'Sign In'}
@@ -187,7 +193,7 @@ const LoginPage = () => {
         </form>
 
         <div className="footer">
-          Don't have an account? <span className="link">Sign Up</span>
+          Don't have an account? <Link to="/register" className="link">Sign Up</Link>
         </div>
       </div>
     </div>

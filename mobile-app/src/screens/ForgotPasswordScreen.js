@@ -22,7 +22,8 @@ export default function ForgotPasswordScreen({ navigation }) {
             ]);
         } catch (error) {
             console.error('Forgot password error:', error);
-            Alert.alert('Error', error.response?.data?.message || 'Failed to send reset email');
+            const msg = error.response?.data?.message || 'Failed to send reset email';
+            Alert.alert('Error', msg);
         } finally {
             setLoading(false);
         }

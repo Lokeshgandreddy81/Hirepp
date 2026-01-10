@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
 
 export default function VerificationRequiredScreen({ route, navigation }) {
-    const { email } = route.params || {}; // Get email from params to allow resending
+    const { email } = route.params || {};
     const [loading, setLoading] = useState(false);
 
     const handleResendVerification = async () => {
@@ -16,10 +16,11 @@ export default function VerificationRequiredScreen({ route, navigation }) {
 
         setLoading(true);
         try {
-            await client.post('/api/users/ resendverification', { email });
+            await client.post('/api/users/resendverification', { email });
             Alert.alert('Email Sent', 'A new verification link has been sent to your email.');
         } catch (error) {
-            Alert.alert('Error', 'Failed to resend verification email.');
+            const msg = error.response?.data?.message || 'Failed to resend verification email.';
+            Alert.alert('Error', msg);
         } finally {
             setLoading(false);
         }

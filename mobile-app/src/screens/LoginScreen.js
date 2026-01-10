@@ -6,8 +6,7 @@ import {
     TouchableOpacity,
     StyleSheet,
     Alert,
-    ActivityIndicator,
-    Animated
+    ActivityIndicator
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import client from '../api/client';
@@ -16,12 +15,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen({ navigation }) {
     const [activeTab, setActiveTab] = useState('email'); // 'email' or 'phone'
-    const [loginMethod, setLoginMethod] = useState('email');
     const [email, setEmail] = useState('');
     const [phone, setPhone] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
-    const [needsVerification, setNeedsVerification] = useState(false);
 
     // Auto-login check
     useEffect(() => {
@@ -53,9 +50,10 @@ export default function LoginScreen({ navigation }) {
         try {
             const { data } = await client.post('/api/users/login', { email, password });
 
+            // Check if user is verified
             if (data.isVerified === false) {
-                // Navigate to dedicated verification screen
                 setLoading(false);
+                // Navigate to the Verification Wall
                 navigation.navigate('VerificationRequired', { email });
                 return;
             }
@@ -288,17 +286,6 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontSize: 16,
         fontWeight: 'bold',
-    },
-    resendButton: {
-        backgroundColor: '#fff',
-        borderWidth: 1,
-        borderColor: '#4F46E5',
-        marginTop: 20
-    },
-    resendButtonText: {
-        color: '#4F46E5',
-        fontWeight: 'bold',
-        fontSize: 16
     },
     footer: {
         flexDirection: 'row',

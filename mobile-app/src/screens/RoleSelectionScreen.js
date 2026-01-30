@@ -5,6 +5,21 @@ import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 
 export default function RoleSelectionScreen({ navigation }) {
+    // Check for existing session
+    React.useEffect(() => {
+        const checkLogin = async () => {
+            try {
+                const userInfo = await SecureStore.getItemAsync('userInfo');
+                if (userInfo) {
+                    navigation.replace('MainTab');
+                }
+            } catch (e) {
+                console.error("Auto-login check failed", e);
+            }
+        };
+        checkLogin();
+    }, []);
+
     const handleRoleSelect = async (role) => {
         // We can store the selected role in SecureStore or just pass it as param
         if (role === 'candidate') {

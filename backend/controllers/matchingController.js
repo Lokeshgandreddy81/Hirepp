@@ -56,10 +56,10 @@ const setToCache = async (key, value) => {
     console.log(`🟡 [MAP SET] Key: ${key.substring(0, 30)}...`);
 };
 
-// @desc Get ranked workers (Employer View) - v7.0 ALGORITHM
+// @desc Get ranked workers (Employer View) - v7.0 ALGORITHM (Hybrid Python/Node)
 const getMatchesForEmployer = async (req, res) => {
     try {
-        console.log('🔍 [v7.0] Employer Match Request for jobId:', req.params.jobId);
+        console.log('🔍 [v7.0 Hybrid] Employer Match Request for jobId:', req.params.jobId);
 
         // 1. Validation & Data Fetching
         const employer = await User.findById(req.user._id);
@@ -73,8 +73,7 @@ const getMatchesForEmployer = async (req, res) => {
         }
 
         // 2. Database Filtering (Optimized Phase 1)
-        // Fetch workers who are available and have at least one role
-        const limit = 200; // Increased limit for hard gates
+        const limit = 300; // Larger fetch for Python processing
         const workers = await WorkerProfile.find({ isAvailable: true })
             .sort({ createdAt: -1 })
             .limit(limit)
@@ -83,69 +82,138 @@ const getMatchesForEmployer = async (req, res) => {
         const validWorkers = workers.filter(w => w.user && w.user.hasCompletedProfile && w.roleProfiles?.length > 0);
         console.log(`✅ [v7.0] Initial Candidates: ${validWorkers.length}`);
 
-        const results = [];
+        let results = [];
+        let usedPython = false;
 
-        for (const worker of validWorkers) {
-            // Role Match (Simple Check for MVP - expand to Fuzzy later)
-            // For now, checks if ANY of the worker's roles match the Job Title partially
-            const roleData = worker.roleProfiles.find(r =>
-                job.title.toLowerCase().includes(r.roleName.toLowerCase()) ||
-                r.roleName.toLowerCase().includes(job.title.toLowerCase())
-            );
+        // 3. PYTHON ENGINE CALL (Circuit Breaker Pattern)
+        try {
+            const axios = require('axios');
 
-            if (!roleData) {
-                // Phase 1 Rejection: Different Category
-                continue;
-            }
-
-            // Phase 2: Hard Gates
-            if (!algo.hardGates(job, worker, roleData)) {
-                // console.log(`⛔ Gate Blocked: ${worker._id}`);
-                continue;
-            }
-
-            // Phase 3: Quality
-            const quality = algo.calculateQualityFactor(job, worker);
-            if (quality === 0) continue;
-
-            // Phase 4: Perspective Weighting (Employer View)
-            // Employer cares more about Skills (25%) and Role (35%)
-            // We adjust basic weights slightly or use standard Composite
-
-            // Phase 5: Dimension Scoring
-            const salScore = algo.salaryScore(roleData.expectedSalary, job.maxSalary);
-            const expScore = algo.experienceScore(roleData.experienceInRole, job.requirements.join(' ').match(/\d+/) || 0); // Naive scaling from reqs
-            const skillScore = algo.skillsScore(roleData.skills, job.requirements);
-
-            // Phase 6: Composite Score
-            // Using slightly modified weights for Recruiter View if needed, 
-            // but for v7.0 baseline we use the global configuration.
-            const criticalScore = algo.criticalComposite(salScore, expScore, skillScore);
-            const softBonus = algo.calculateSoftBonus(job, worker);
-
-            let finalScore = (criticalScore + softBonus) * quality;
-            finalScore = Math.min(Math.max(finalScore, 0), 1.0); // Clamp 0-1
-
-            if (finalScore >= algo.CONFIG.DISPLAY_THRESHOLD) {
-                results.push({
-                    worker,
-                    matchScore: Math.round(finalScore * 100),
-                    tier: finalScore >= 0.85 ? 'Strong Match' : finalScore >= 0.75 ? 'Good Match' : 'Possible Match',
-                    labels: [
-                        roleData.roleName,
-                        `${Math.round(skillScore * 100)}% Skill Match`,
-                        finalScore >= 0.85 ? 'Highly Recommended' : ''
-                    ].filter(Boolean)
+            // Minify Payload
+            const workerPayload = [];
+            validWorkers.forEach(w => {
+                w.roleProfiles.forEach(r => {
+                    workerPayload.push({
+                        id: w._id.toString(),
+                        userId: w.user._id.toString(),
+                        name: w.user.name || w.firstName,
+                        city: w.city,
+                        isVerified: false, // user.isVerified if available, defaults false
+                        preferredShift: 'Flexible', // Add to schema if needed
+                        roleName: r.roleName,
+                        expectedSalary: r.expectedSalary || 0,
+                        experienceInRole: r.experienceInRole || 0,
+                        skills: r.skills || [],
+                        licenses: []
+                    });
                 });
+            });
+
+            const jobPayload = {
+                id: job._id.toString(),
+                title: job.title,
+                location: job.location,
+                maxSalary: job.maxSalary || (parseInt(job.salaryRange) || 0),
+                requirements: job.requirements || [],
+                shift: job.shift,
+                mandatoryLicenses: job.mandatoryLicenses || []
+            };
+
+            // Check for Unknown Title
+            if (job.title === 'Unknown' || job.title === 'Open Position') {
+                console.warn(`⚠️ [DATA WARNING] Job Title is "${job.title}". This may cause poor matching results.`);
+                // User requested specific error throw
+                if (job.title === 'Unknown') throw new Error("Job Title is 'Unknown' - Aborting Match to prevent bad results.");
             }
+
+            console.log(`🐍 Sending to Python: Job "${job.title}" with ${workerPayload.length} Workers`);
+
+            // Call Python Service (200ms Timeout)
+            console.log("🐍 Calling Python Logic Engine...");
+            const pyResponse = await axios.post('http://localhost:8000/calculate-matches', {
+                job: jobPayload,
+                workers: workerPayload
+            }, { timeout: 2500 }); // Relaxed to 2.5s for initial testing
+
+            if (pyResponse.data) {
+                console.log(`🐍 Python returned ${pyResponse.data.length} matches`);
+
+                // Map Python results to UI structure
+                results = pyResponse.data.map(m => {
+                    const fullWorker = validWorkers.find(w => w._id.toString() === m.workerId);
+                    return {
+                        worker: fullWorker, // Attach full Mongoose object
+                        matchScore: m.matchScore,
+                        tier: m.tier,
+                        labels: m.labels
+                    };
+                });
+                usedPython = true;
+            }
+
+        } catch (pyError) {
+            console.warn("⚠️ Python Engine Unavailable (Circuit Breaker Open):", pyError.code || pyError.message);
+            // usedPython remains false -> triggers Fallback
         }
 
-        // Phase 8: Ranking
-        results.sort((a, b) => b.matchScore - a.matchScore);
-        const topResults = results.slice(0, 20); // Top-20 Rule
+        // 4. FALLBACK LOGIC (Local Node.js v7.0 Token Match)
+        if (!usedPython) {
+            console.log("⚙️  Running Fallback Local Logic...");
+            for (const worker of validWorkers) {
+                // Role Match (Token-based for "Software Engineer" vs "Software Developer")
+                const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
 
-        console.log(`🎯 [v7.0] Returned ${topResults.length} matches`);
-        res.json(topResults);
+                const roleData = worker.roleProfiles.find(r => {
+                    const roleTokens = r.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+                    // Check if ANY significant token matches
+                    const hasMatch = jobTokens.some(jt => roleTokens.includes(jt));
+                    return hasMatch;
+                });
+
+                if (!roleData) {
+                    continue;
+                }
+
+                // Phase 2: Hard Gates
+                if (!algo.hardGates(job, worker, roleData)) {
+                    continue;
+                }
+
+                // Phase 3: Quality
+                const quality = algo.calculateQualityFactor(job, worker);
+                if (quality === 0) continue;
+
+                // Phase 5: Dimension Scoring
+                const salScore = algo.salaryScore(roleData.expectedSalary, job.maxSalary);
+                const expScore = algo.experienceScore(roleData.experienceInRole, job.requirements.join(' ').match(/\d+/) || 0); // Naive scaling from reqs
+                const skillScore = algo.skillsScore(roleData.skills, job.requirements);
+
+                // Phase 6: Composite Score
+                const criticalScore = algo.criticalComposite(salScore, expScore, skillScore);
+                const softBonus = algo.calculateSoftBonus(job, worker);
+
+                let finalScore = (criticalScore + softBonus) * quality;
+                finalScore = Math.min(Math.max(finalScore, 0), 1.0); // Clamp 0-1
+
+                if (finalScore >= algo.CONFIG.DISPLAY_THRESHOLD) {
+                    results.push({
+                        worker,
+                        matchScore: Math.round(finalScore * 100),
+                        tier: finalScore >= 0.85 ? 'Strong Match' : finalScore >= 0.75 ? 'Good Match' : 'Possible Match',
+                        labels: [
+                            roleData.roleName,
+                            `${Math.round(skillScore * 100)}% Skill Match`,
+                            finalScore >= 0.85 ? 'Highly Recommended' : ''
+                        ].filter(Boolean)
+                    });
+                }
+            }
+            results.sort((a, b) => b.matchScore - a.matchScore);
+            results = results.slice(0, 20);
+        }
+
+        console.log(`🎯 [v7.0 Hybrid] Returned ${results.length} matches (Source: ${usedPython ? 'PYTHON' : 'NODE'})`);
+        res.json(results);
 
     } catch (error) {
         console.error("❌ [v7.0 FATAL] Employer Match Error:", error);
@@ -186,9 +254,13 @@ const getMatchesForCandidate = async (req, res) => {
             let maxScore = -1;
 
             for (const roleData of worker.roleProfiles) {
-                // Phase 1: Category Match
-                if (!job.title.toLowerCase().includes(roleData.roleName.toLowerCase()) &&
-                    !roleData.roleName.toLowerCase().includes(job.title.toLowerCase())) {
+                // Phase 1: Category Match (Token-based)
+                const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+                const roleTokens = roleData.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+
+                const hasMatch = jobTokens.some(jt => roleTokens.includes(jt));
+
+                if (!hasMatch) {
                     continue;
                 }
 

@@ -85,11 +85,12 @@ export default function VideoRecordScreen({ navigation }) {
             const { data } = await client.post('/api/upload/video', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 transformRequest: (data) => data,
+                timeout: 60000, // Extend timeout to 60s for large video files
             });
 
             if (data.success) {
-                Alert.alert("Success", "Video processed! Your AI profile is ready.", [
-                    { text: "View Profile", onPress: () => navigation.navigate('MainTab', { screen: 'Profiles' }) }
+                Alert.alert("Success", "Video processed! Your Job is ready.", [
+                    { text: "View Job", onPress: () => navigation.navigate('MainTab', { screen: 'My Jobs' }) }
                 ]);
             } else {
                 throw new Error(data.message || "Upload failed");

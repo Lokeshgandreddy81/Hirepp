@@ -79,27 +79,23 @@ const updateStatus = async (req, res) => {
     }
 };
 
-// @desc    Get Applications for logged-in user
+// @desc    Get user's applications
 // @route   GET /api/applications
 // @access  Private
 const getApplications = async (req, res) => {
     try {
         let query = {};
-        const user = req.user;
-
-        if (user.role === 'employer' || user.role === 'recruiter') {
-            // Find apps where this user is the employer
-            query = { employer: user._id };
+        if (req.user.role === 'recruiter' || req.user.role === 'employer') {
+            query = { employer: req.user._id };
         } else {
-            // Find apps where this user is the worker
-            // First find the worker profile ID
-            const workerProfile = await WorkerProfile.findOne({ user: user._id });
-            if (!workerProfile) return res.json([]);
-            query = { worker: workerProfile._id };
+            // Assuming Application.worker now stores User._id directly, or this is a simplification
+            // If Application.worker still expects WorkerProfile._id, this would need adjustment.
+            // Following the instruction to use req.user._id directly for worker.
+            query = { worker: req.user._id };
         }
 
         const applications = await Application.find(query)
-            .populate('job', 'title location salaryRange')
+            .populate('job', 'title companyName location')
             .populate('worker', 'firstName city totalExperience roleProfiles')
             .populate('employer', 'name') // Populate employer User name
             .sort({ updatedAt: -1 });

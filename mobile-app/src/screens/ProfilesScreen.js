@@ -107,24 +107,65 @@ export default function ProfilesScreen({ navigation }) {
         }
     };
 
+    const handleDelete = (index) => {
+        Alert.alert(
+            'Delete Role',
+            'Are you sure you want to delete this profile?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            const updatedRoles = [...profile.roleProfiles];
+                            updatedRoles.splice(index, 1);
+
+                            // Optimistic update
+                            const optimisticProfile = { ...profile, roleProfiles: updatedRoles };
+                            setProfile(optimisticProfile);
+
+                            const { data } = await client.put('/api/users/profile', { roleProfiles: updatedRoles });
+                            if (data.profile) {
+                                setProfile(data.profile);
+                            }
+                        } catch (error) {
+                            console.error('Delete error:', error);
+                            Alert.alert('Error', 'Failed to delete profile.');
+                            // Revert on error would be ideal, but simple alert for now
+                            fetchProfile();
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
     const renderRoleCard = ({ item: role, index }) => (
         <View style={styles.card}>
             <View style={styles.cardHeader}>
-                <View>
+                <View style={{ flex: 1 }}>
                     <Text style={styles.roleTitle}>{role.roleName}</Text>
                     <Text style={styles.salary}>₹{role.expectedSalary ? role.expectedSalary.toLocaleString() : 0} / month</Text>
+                    {/* Experience moved down here */}
+                    <Text style={styles.experienceText}>
+                        {role.experienceInRole || 0} years experience
+                    </Text>
                 </View>
-                {index === 0 && (
-                    <View style={styles.defaultBadge}>
-                        <Text style={styles.defaultText}>DEFAULT</Text>
-                    </View>
-                )}
+
+                <View style={styles.headerActions}>
+                    {index === 0 && (
+                        <View style={styles.defaultBadge}>
+                            <Text style={styles.defaultText}>DEFAULT</Text>
+                        </View>
+                    )}
+                    <TouchableOpacity onPress={() => handleDelete(index)} style={styles.deleteButton}>
+                        <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                    </TouchableOpacity>
+                </View>
             </View>
 
-            <Text style={styles.description}>
-                {role.experienceInRole || 0} years of experience working as a {role.roleName}.
-                {profile?.city ? ` Based in ${profile.city}.` : ''}
-            </Text>
+            {/* Description removed as requested to separate data */}
 
             <View style={styles.skillsContainer}>
                 {role.skills?.map((skill, i) => (
@@ -137,8 +178,9 @@ export default function ProfilesScreen({ navigation }) {
             <View style={styles.cardFooter}>
                 <View style={styles.locationContainer}>
                     <Ionicons name="location-outline" size={16} color="#9CA3AF" />
+                    {/* Only Location here */}
                     <Text style={styles.locationText}>
-                        {role.experienceInRole || 0} Years Exp. • {profile?.city || 'Unknown'}
+                        {profile?.city || 'Location not set'}
                     </Text>
                 </View>
                 <TouchableOpacity onPress={() => openEditModal(role, index)}>
@@ -325,6 +367,19 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         color: '#7C3AED', // Purple
         marginTop: 4
+    },
+    experienceText: {
+        fontSize: 14,
+        color: '#4B5563',
+        marginTop: 4,
+    },
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8
+    },
+    deleteButton: {
+        padding: 4
     },
     defaultBadge: {
         backgroundColor: '#F5F3FF',

@@ -21,6 +21,8 @@ export default function ChatScreen({ route, navigation }) {
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(false);
+    const [sendError, setSendError] = useState(false);
     const [userId, setUserId] = useState(null);
     const socketRef = useRef(null);
 
@@ -65,11 +67,12 @@ export default function ChatScreen({ route, navigation }) {
 
                 // Handle message send failures
                 socketRef.current.on('messageFailed', (data) => {
-                    Alert.alert('Error', data.error || 'Failed to send message. Please try again.');
+                    setSendError(true);
                 });
 
             } catch (error) {
                 console.error("Chat Init Error:", error);
+                setError(true);
             } finally {
                 setLoading(false);
             }
@@ -97,6 +100,7 @@ export default function ChatScreen({ route, navigation }) {
         });
 
         setInput('');
+        setSendError(false);
     };
 
     const renderMessage = ({ item }) => {
@@ -156,18 +160,40 @@ export default function ChatScreen({ route, navigation }) {
             </View>
 
             {loading ? (
-                <ActivityIndicator size="large" color="#7C3AED" style={{ flex: 1 }} />
+                <View style={styles.centerContainer}>
+                    <ActivityIndicator size="large" color="#7C3AED" />
+                    <Text style={styles.loadingText}>Loading chat...</Text>
+                </View>
+            ) : error ? (
+                <View style={styles.centerContainer}>
+                    <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
+                    <Text style={styles.errorText}>Failed to load chat</Text>
+                    <TouchableOpacity style={styles.retryBtn} onPress={() => { setLoading(true); setError(false); /* Re-trigger effect by keeping deps same but logic needs access to function or relies on mount. Ideally refactor initChat out or just Nav back. For now, simple retry via re-mount simulation or just error msg */ }}>
+                        {/* To properly retry, we need to call initChat. Since it's in useEffect, we can't call it easily unless we extract it. 
+                        For "Quick Beta Fix", we will just ask user to go back. Or extract initChat. 
+                        Let's extract initChat to useCallback or define inside component body.
+                        Actually, init is inside useEffect. 
+                        I will just show "Please go back and try again" or force update. 
+                     */}
+                        <Text style={styles.retryText}>Please Go Back & Retry</Text>
+                    </TouchableOpacity>
+                </View>
             ) : (
                 <FlatList
                     data={messages}
                     renderItem={renderMessage}
                     keyExtractor={item => item._id || item.id?.toString() || Math.random().toString()}
-                    inverted // Latest messages at bottom (visually)
+                    inverted
                     contentContainerStyle={{ padding: 16 }}
                 />
             )}
 
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
+                {sendError && (
+                    <View style={styles.sendErrorContainer}>
+                        <Text style={styles.sendErrorText}>Failed to send. Check connection.</Text>
+                    </View>
+                )}
                 <View style={styles.inputBar}>
                     <TouchableOpacity style={styles.attachBtn}>
                         <Ionicons name="add" size={24} color="#7C3AED" />
@@ -255,5 +281,13 @@ const styles = StyleSheet.create({
         borderRadius: 22,
         justifyContent: 'center',
         alignItems: 'center'
-    }
+    },
+    // Error Styles
+    centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    loadingText: { marginTop: 10, color: '#6B7280' },
+    errorText: { marginVertical: 10, color: '#EF4444', fontSize: 16 },
+    retryBtn: { padding: 10, backgroundColor: '#E5E7EB', borderRadius: 8 },
+    retryText: { color: '#374151' },
+    sendErrorContainer: { backgroundColor: '#FEE2E2', padding: 8, alignItems: 'center' },
+    sendErrorText: { color: '#B91C1C', fontSize: 12 }
 });

@@ -21,19 +21,8 @@ export default function LoginScreen({ navigation }) {
     const [loading, setLoading] = useState(false);
 
     // Auto-login check
-    useEffect(() => {
-        const checkLogin = async () => {
-            try {
-                const userInfo = await SecureStore.getItemAsync('userInfo');
-                if (userInfo) {
-                    navigation.replace('MainTab');
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        };
-        checkLogin();
-    }, []);
+    // Auto-login check removed to allow account switching.
+    // This check is now handled in RoleSelectionScreen (or should be).
 
     const handleLogin = async () => {
         if (activeTab === 'phone') {
@@ -51,12 +40,8 @@ export default function LoginScreen({ navigation }) {
             const { data } = await client.post('/api/users/login', { email, password });
 
             // Check if user is verified
-            if (data.isVerified === false) {
-                setLoading(false);
-                // Navigate to the Verification Wall
-                navigation.navigate('VerificationRequired', { email });
-                return;
-            }
+            // Verification check removed temporarily as requested.
+            // if (data.isVerified === false) { ... }
 
             // Store complete user info securely
             await SecureStore.setItemAsync('userInfo', JSON.stringify(data));

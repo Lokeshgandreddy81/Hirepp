@@ -161,5 +161,6 @@ module.exports = {
     skillsScore,
     criticalComposite,
     calculateSoftBonus,
+    calculateQualityFactor,
     CONFIG
 };

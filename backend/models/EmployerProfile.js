@@ -9,19 +9,25 @@ const employerProfileSchema = mongoose.Schema(
         },
         companyName: {
             type: String,
-            required: true,
+            required: true
         },
         industry: {
-            type: String, // Tagline or Industry
+            type: String
         },
         location: {
             type: String,
-            required: true,
+            required: true
         },
         logoUrl: {
-            type: String, // URL to uploaded logo
+            type: String
         },
-        // Add other employer-specific fields here if needed
+        videoIntroduction: {
+            videoUrl: { type: String },
+            transcript: { type: String }
+        },
+        website: {
+            type: String
+        }
     },
     {
         timestamps: true,

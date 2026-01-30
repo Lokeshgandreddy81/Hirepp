@@ -8,6 +8,7 @@ export default function EmployerDashboardScreen({ navigation }) {
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const [error, setError] = useState(false);
 
     // Edit Modal State
     const [isEditModalVisible, setIsEditModalVisible] = useState(false);
@@ -36,6 +37,7 @@ export default function EmployerDashboardScreen({ navigation }) {
                 return;
             }
             Alert.alert('Error', 'Failed to load your jobs');
+            setError(true);
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -167,8 +169,23 @@ export default function EmployerDashboardScreen({ navigation }) {
     if (loading) {
         return (
             <SafeAreaView style={styles.container}>
-                <View style={styles.loadingContainer}>
+                <View style={styles.centerContainer}>
                     <ActivityIndicator size="large" color="#7C3AED" />
+                    <Text style={styles.loadingText}>Loading your jobs...</Text>
+                </View>
+            </SafeAreaView>
+        );
+    }
+
+    if (error) {
+        return (
+            <SafeAreaView style={styles.container}>
+                <View style={styles.centerContainer}>
+                    <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
+                    <Text style={styles.errorText}>Could not load jobs</Text>
+                    <TouchableOpacity style={styles.retryButton} onPress={fetchJobs}>
+                        <Text style={styles.retryButtonText}>Retry</Text>
+                    </TouchableOpacity>
                 </View>
             </SafeAreaView>
         );
@@ -291,10 +308,33 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: '#F5F3FF',
     },
-    loadingContainer: {
+    centerContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        padding: 20,
+    },
+    loadingText: {
+        marginTop: 12,
+        color: '#6B7280',
+        fontSize: 14,
+    },
+    errorText: {
+        marginTop: 12,
+        marginBottom: 20,
+        color: '#374151',
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    retryButton: {
+        backgroundColor: '#7C3AED',
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 8,
+    },
+    retryButtonText: {
+        color: '#fff',
+        fontWeight: 'bold',
     },
     header: {
         flexDirection: 'row',

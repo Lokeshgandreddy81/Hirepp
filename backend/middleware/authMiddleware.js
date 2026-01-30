@@ -26,4 +26,12 @@ const protect = async (req, res, next) => {
     }
 };
 
-module.exports = { protect };
+const employer = (req, res, next) => {
+    if (req.user && (req.user.role === 'employer' || req.user.role === 'recruiter')) {
+        next();
+    } else {
+        res.status(401).json({ message: 'Not authorized as an employer' });
+    }
+};
+
+module.exports = { protect, employer };

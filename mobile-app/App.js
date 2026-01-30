@@ -36,6 +36,11 @@ export default function App() {
           <Stack.Screen name="VerificationRequired" component={VerificationRequiredScreen} />
           <Stack.Screen name="MainTab" component={MainTabNavigator} />
           <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
+          {/* Missing Screens Registered Below */}
+          <Stack.Screen name="EmployerDashboard" component={require('./src/screens/EmployerDashboardScreen').default} />
+          <Stack.Screen name="PostJob" component={require('./src/screens/PostJobScreen').default} />
+          <Stack.Screen name="Chat" component={require('./src/screens/ChatScreen').default} />
+          <Stack.Screen name="EmployerProfileCreate" component={require('./src/screens/EmployerProfileCreateScreen').default} />
         </Stack.Navigator>
         <StatusBar style="auto" />
       </NavigationContainer>

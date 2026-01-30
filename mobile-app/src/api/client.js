@@ -1,14 +1,14 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
-// Hardcoded IP as per user request (Mac Local IP)
-export const BASE_URL = 'http://192.168.31.52:5001';
+import { BASE_URL } from '../config';
 
 const client = axios.create({
     baseURL: BASE_URL,
     headers: {
         'Content-Type': 'application/json',
     },
+    timeout: 10000, // 10 seconds timeout
 });
 
 // Add a request interceptor to attach the Token

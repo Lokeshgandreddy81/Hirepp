@@ -38,3 +38,6 @@ pids
 # Build outputs
 build/
 dist/
+
+# Uploads and Media
+backend/uploads/

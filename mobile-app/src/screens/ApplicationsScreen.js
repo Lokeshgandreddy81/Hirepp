@@ -9,6 +9,7 @@ import EmptyState from '../components/EmptyState';
 import SkeletonLoader from '../components/SkeletonLoader';
 import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
+import { getPrimaryRoleFromUser } from '../utils/roleMode';
 
 const { width } = Dimensions.get('window');
 
@@ -52,7 +53,7 @@ const SwipeableRow = ({ children, onArchive }) => {
 export default function ApplicationsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
     const { userInfo } = useContext(AuthContext);
-    const isEmployer = ['employer', 'recruiter', 'admin'].includes((userInfo?.role || '').toLowerCase());
+    const isEmployer = getPrimaryRoleFromUser(userInfo) === 'employer';
     const [applications, setApplications] = useState([]);
     const [archivedApplications, setArchivedApplications] = useState([]);
     const [selectedFilter, setSelectedFilter] = useState('All');

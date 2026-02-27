@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
 import { AuthContext } from '../context/AuthContext';
+import { getPrimaryRoleFromUser } from '../utils/roleMode';
 
 export default function VideoRecordScreen({ navigation, route }) {
     const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -98,13 +99,13 @@ export default function VideoRecordScreen({ navigation, route }) {
             });
 
             if (data.success) {
-                if (userInfo?.role === 'recruiter' || userInfo?.role === 'employer') {
+                if (getPrimaryRoleFromUser(userInfo) === 'employer') {
                     Alert.alert("Success", "Video processed! Your Job is ready.", [
                         { text: "View Job", onPress: () => navigation.navigate('MainTab', { screen: 'My Jobs' }) }
                     ]);
                 } else {
                     Alert.alert("Success", "Profile created from your interview!", [
-                        { text: "View Profile", onPress: () => navigation.navigate('MainTab', { screen: 'Profile' }) }
+                        { text: "View Profile", onPress: () => navigation.navigate('MainTab', { screen: 'Profiles' }) }
                     ]);
                 }
             } else {

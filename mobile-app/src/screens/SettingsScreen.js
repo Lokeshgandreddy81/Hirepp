@@ -6,10 +6,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
 import { logger } from '../utils/logger';
+import { getLegacyRoleForPrimaryRole, getModeCopy, getPrimaryRoleFromUser } from '../utils/roleMode';
 
 export default function SettingsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
-    const { logout } = React.useContext(AuthContext);
+    const { logout, userInfo, updateUserInfo } = React.useContext(AuthContext);
 
     const [notificationsOn, setNotificationsOn] = useState(true);
     const [darkModeOn, setDarkModeOn] = useState(false);
@@ -26,20 +27,27 @@ export default function SettingsScreen({ navigation }) {
     const [isDeleteModalVisible, setDeleteModalVisible] = useState(false);
     const [deleteInput, setDeleteInput] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
+    const [isSwitchingMode, setIsSwitchingMode] = useState(false);
     const [profileHeader, setProfileHeader] = useState({
         name: 'User',
         role: 'candidate',
         email: '',
         avatar: null,
     });
+    const [primaryRole, setPrimaryRole] = useState(getPrimaryRoleFromUser(userInfo));
 
     useEffect(() => {
         const loadUserHeader = async () => {
-            let user = {};
-            const userInfoStr = await SecureStore.getItemAsync('userInfo');
-            if (userInfoStr) {
-                user = JSON.parse(userInfoStr);
+            let user = userInfo || {};
+            if (!userInfo) {
+                const userInfoStr = await SecureStore.getItemAsync('userInfo');
+                if (userInfoStr) {
+                    user = JSON.parse(userInfoStr);
+                }
             }
+
+            const resolvedPrimaryRole = getPrimaryRoleFromUser(user);
+            setPrimaryRole(resolvedPrimaryRole);
 
             setIsAdmin(String(user.role || '').toLowerCase() === 'admin');
 
@@ -49,14 +57,14 @@ export default function SettingsScreen({ navigation }) {
                 const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim();
                 setProfileHeader({
                     name: fullName || user.name || 'User',
-                    role: String(user.role || 'candidate'),
+                    role: resolvedPrimaryRole === 'employer' ? 'I Need Someone (Demand)' : 'Helping Others (Supply)',
                     email: user.email || '',
                     avatar: profile.avatar || profile.logoUrl || null,
                 });
             } catch (e) {
                 setProfileHeader({
                     name: user.name || 'User',
-                    role: String(user.role || 'candidate'),
+                    role: resolvedPrimaryRole === 'employer' ? 'I Need Someone (Demand)' : 'Helping Others (Supply)',
                     email: user.email || '',
                     avatar: null,
                 });
@@ -77,11 +85,35 @@ export default function SettingsScreen({ navigation }) {
             setNotifJobAlerts(vals['@notif_job_alerts'] ?? true);
             setNotifAppUpdates(vals['@notif_app_updates'] ?? false);
         });
-    }, []);
+    }, [userInfo]);
 
     const handleToggle = async (key, setter, value) => {
         setter(value);
         await AsyncStorage.setItem(key, String(value));
+    };
+
+    const handleSwitchMode = async () => {
+        if (isSwitchingMode) return;
+        const nextPrimaryRole = primaryRole === 'employer' ? 'worker' : 'employer';
+        const modeCopy = getModeCopy(primaryRole);
+
+        setIsSwitchingMode(true);
+        try {
+            await client.put('/api/users/profile', { primaryRole: nextPrimaryRole });
+            await SecureStore.setItemAsync('selectedRole', getLegacyRoleForPrimaryRole(nextPrimaryRole));
+            await updateUserInfo({ primaryRole: nextPrimaryRole });
+            setPrimaryRole(nextPrimaryRole);
+            setProfileHeader((prev) => ({
+                ...prev,
+                role: nextPrimaryRole === 'employer' ? 'I Need Someone (Demand)' : 'Helping Others (Supply)',
+            }));
+            Alert.alert('Mode Switched', modeCopy.switchedMessage);
+        } catch (error) {
+            logger.error('Switch mode error:', error);
+            Alert.alert('Switch Failed', 'Could not switch mode. Please try again.');
+        } finally {
+            setIsSwitchingMode(false);
+        }
     };
 
     const handleSignOut = () => {
@@ -184,6 +216,17 @@ export default function SettingsScreen({ navigation }) {
                     {/* Account Section */}
                     <View style={styles.sectionCard}>
                         {renderSectionTextHeader('Account')}
+                        {renderRow('Current Mode', getModeCopy(primaryRole).modeLabel)}
+                        {renderRow(
+                            getModeCopy(primaryRole).switchLabel,
+                            isSwitchingMode ? 'Switching...' : null,
+                            !isSwitchingMode,
+                            false,
+                            null,
+                            null,
+                            false,
+                            handleSwitchMode
+                        )}
                         {renderRow('Phone Number', '+91 98765 43210')}
                         {renderRow('Change Password', null, true, false, null, null, false, () => navigation.navigate('ForgotPassword'))}
                         {renderRow('Go Pro', 'Upgrade', true, false, null, null, false, () => navigation.navigate('Subscription'))}

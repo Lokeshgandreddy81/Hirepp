@@ -7,6 +7,7 @@ import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
+import { getPrimaryRoleFromUser } from '../utils/roleMode';
 
 const { width, height } = Dimensions.get('window');
 
@@ -263,14 +264,14 @@ export default function SmartInterviewScreen({ navigation, route }) {
 
     // ── COMPLETE STAGE ────────────────────────────────────────────────────
     if (stage === 'complete') {
-        const isEmployer = userInfo?.role === 'employer' || userInfo?.role === 'recruiter';
+        const isDemandMode = getPrimaryRoleFromUser(userInfo) === 'employer';
         return (
             <View style={[styles.container, { paddingTop: insets.top }]}>
                 <ScrollView contentContainerStyle={styles.scrollCenter} showsVerticalScrollIndicator={false}>
                     <Text style={styles.completeEmoji}>🎉</Text>
                     <Text style={styles.completeTitle}>Processing Complete!</Text>
                     <Text style={styles.completeSubtitle}>
-                        {isEmployer
+                        {isDemandMode
                             ? "Great! We've processed your video and automatically posted a job listing with those requirements."
                             : "Excellent! Your AI profile has been created. Let's see your job matches."}
                     </Text>
@@ -283,10 +284,10 @@ export default function SmartInterviewScreen({ navigation, route }) {
 
                     <TouchableOpacity
                         style={styles.startBtn}
-                        onPress={() => navigation.navigate('MainTab', { screen: isEmployer ? 'Jobs' : 'Connect' })}
+                        onPress={() => navigation.navigate('MainTab', { screen: isDemandMode ? 'My Jobs' : 'Connect' })}
                         activeOpacity={0.85}
                     >
-                        <Text style={styles.startBtnText}>{isEmployer ? 'View My Jobs →' : 'See Matches →'}</Text>
+                        <Text style={styles.startBtnText}>{isDemandMode ? 'View My Posts →' : 'See Matches →'}</Text>
                     </TouchableOpacity>
 
                     <View style={{ height: 40 }} />

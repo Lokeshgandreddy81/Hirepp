@@ -13,6 +13,14 @@ const userSchema = mongoose.Schema(
       enum: ['candidate', 'recruiter'], // Strictly these two options
       default: 'candidate',
     },
+    primaryRole: {
+      type: String,
+      enum: ['worker', 'employer'],
+      default: function () {
+        const rawRole = String(this.role || '').toLowerCase();
+        return rawRole === 'recruiter' || rawRole === 'employer' ? 'employer' : 'worker';
+      },
+    },
     hasCompletedProfile: {
       type: Boolean,
       default: false,
@@ -99,6 +107,11 @@ const userSchema = mongoose.Schema(
 
 // (The encryption logic below is unchanged from your original team code)
 userSchema.pre('save', async function () {
+  if (!this.primaryRole) {
+    const rawRole = String(this.role || '').toLowerCase();
+    this.primaryRole = rawRole === 'recruiter' || rawRole === 'employer' ? 'employer' : 'worker';
+  }
+
   if (!this.isModified('password')) {
     return;
   }

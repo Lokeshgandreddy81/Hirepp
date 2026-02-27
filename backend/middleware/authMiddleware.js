@@ -9,20 +9,23 @@ const protect = async (req, res, next) => {
             token = req.headers.authorization.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             req.user = await User.findById(decoded.id).select('-password');
-
-            if (!req.user) {
-                throw new Error("User not found");
-            }
-
             next();
         } catch (error) {
-            console.error("Auth Error:", error.message);
+            console.error(error);
             res.status(401).json({ message: 'Not authorized, token failed' });
         }
     }
 
     if (!token) {
         res.status(401).json({ message: 'Not authorized, no token' });
+    }
+};
+
+const admin = (req, res, next) => {
+    if (req.user && req.user.isAdmin) {
+        next();
+    } else {
+        res.status(403).json({ message: 'Not authorized as an admin' });
     }
 };
 
@@ -34,4 +37,4 @@ const employer = (req, res, next) => {
     }
 };
 
-module.exports = { protect, employer };
+module.exports = { protect, admin, employer };

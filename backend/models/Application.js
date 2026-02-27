@@ -25,7 +25,16 @@ const applicationSchema = mongoose.Schema(
         status: {
             type: String,
             required: true,
-            enum: ['pending', 'accepted', 'rejected'],
+            enum: [
+                'requested',
+                'pending',
+                'shortlisted',
+                'accepted',
+                'rejected',
+                'hired',
+                'offer_proposed',
+                'offer_accepted'
+            ],
             default: 'pending',
         },
         lastMessage: {

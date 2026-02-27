@@ -5,6 +5,17 @@ const User = require('../models/userModel');
 const { createNotification } = require('./notificationController');
 const { sendPushNotification } = require('../services/pushService');
 
+const ALLOWED_STATUSES = new Set([
+    'requested',
+    'pending',
+    'shortlisted',
+    'accepted',
+    'rejected',
+    'hired',
+    'offer_proposed',
+    'offer_accepted',
+]);
+
 // @desc    Send Connection Request (Worker applies OR Employer invites)
 // @route   POST /api/applications
 // @access  Private
@@ -20,8 +31,17 @@ const sendRequest = async (req, res) => {
         const job = await Job.findById(jobId);
         if (!job) return res.status(404).json({ message: 'Job not found' });
 
+        // workerId from mobile can be either WorkerProfile._id or User._id.
+        let resolvedWorkerProfile = await WorkerProfile.findById(workerId).select('_id user');
+        if (!resolvedWorkerProfile) {
+            resolvedWorkerProfile = await WorkerProfile.findOne({ user: workerId }).select('_id user');
+        }
+        if (!resolvedWorkerProfile) {
+            return res.status(404).json({ message: 'Worker profile not found' });
+        }
+
         // 2. Check for existing application
-        const existingApp = await Application.findOne({ job: jobId, worker: workerId });
+        const existingApp = await Application.findOne({ job: jobId, worker: resolvedWorkerProfile._id });
         if (existingApp) {
             return res.status(400).json({ message: 'Application already exists' });
         }
@@ -30,7 +50,7 @@ const sendRequest = async (req, res) => {
         // Employer ID comes from Job document for consistency
         const application = await Application.create({
             job: jobId,
-            worker: workerId,
+            worker: resolvedWorkerProfile._id,
             employer: job.employerId,
             initiatedBy,
             status: 'pending',
@@ -43,8 +63,18 @@ const sendRequest = async (req, res) => {
             type: 'application_received',
             title: 'New Applicant',
             message: `A new candidate applied to: ${job.title}`,
-            relatedData: { jobId: job._id, candidateId: workerId }
+            relatedData: { jobId: job._id, candidateId: resolvedWorkerProfile._id }
         });
+
+        // Realtime update for employer-side talent views
+        const io = req.app.get('io');
+        if (io) {
+            io.emit('new_application', {
+                applicationId: application._id.toString(),
+                jobId: job._id.toString(),
+                workerId: resolvedWorkerProfile._id.toString()
+            });
+        }
 
         res.status(201).json(application);
     } catch (error) {
@@ -59,14 +89,22 @@ const sendRequest = async (req, res) => {
 const updateStatus = async (req, res) => {
     const { status } = req.body; // 'accepted' or 'rejected'
     const { id } = req.params;
+    const normalizedStatus = String(status || '').toLowerCase();
 
-    if (!['accepted', 'rejected'].includes(status)) {
+    if (!ALLOWED_STATUSES.has(normalizedStatus)) {
         return res.status(400).json({ message: 'Invalid status' });
     }
 
     try {
         const application = await Application.findById(id);
         if (!application) return res.status(404).json({ message: 'Application not found' });
+
+        const workerProfile = await WorkerProfile.findById(application.worker).select('user');
+        const isEmployer = String(application.employer) === String(req.user._id);
+        const isWorker = String(workerProfile?.user) === String(req.user._id);
+        if (!isEmployer && !isWorker) {
+            return res.status(403).json({ message: 'Not authorized for this application' });
+        }
 
         // Verify authorization (Only the recipient can accept/reject ideally, 
         // but for now we check if user is involved)
@@ -75,24 +113,31 @@ const updateStatus = async (req, res) => {
         // if initiatedBy 'employer', only worker can accept.
         // For MVP, we presume the frontend handles the UI logic and backend just updates.
 
-        application.status = status;
-        if (status === 'accepted') {
-            application.lastMessage = "Connection Accepted. Chat is open.";
-        } else if (status === 'rejected') {
-            application.lastMessage = "Application Rejected.";
-        }
+        application.status = normalizedStatus;
+
+        const STATUS_MESSAGE_MAP = {
+            requested: 'Application requested.',
+            pending: 'Application submitted.',
+            shortlisted: 'You are shortlisted.',
+            accepted: 'Connection Accepted. Chat is open.',
+            rejected: 'Application Rejected.',
+            hired: 'Offer confirmed. You are hired.',
+            offer_proposed: 'Offer proposed by employer.',
+            offer_accepted: 'Offer accepted.',
+        };
+
+        application.lastMessage = STATUS_MESSAGE_MAP[normalizedStatus] || application.lastMessage;
 
         await application.save();
 
         // Push notification to the candidate side when status changes
         try {
-            const workerProfile = await WorkerProfile.findById(application.worker).select('user');
             if (workerProfile?.user) {
                 const candidateUser = await User.findById(workerProfile.user).select('pushTokens');
                 await sendPushNotification(
                     candidateUser?.pushTokens || [],
                     'Application Update',
-                    `Your application status is now ${status}.`,
+                    `Your application status is now ${normalizedStatus}.`,
                     { type: 'status', applicationId: application._id.toString() }
                 );
             }
@@ -117,7 +162,18 @@ const getApplications = async (req, res) => {
         if (req.user.role === 'recruiter' || req.user.role === 'employer') {
             query = { employer: req.user._id };
         } else {
-            query = { worker: req.user._id };
+            const workerProfile = await WorkerProfile.findOne({ user: req.user._id }).select('_id');
+            if (!workerProfile?._id) {
+                return res.json({
+                    success: true,
+                    count: 0,
+                    total: 0,
+                    page: 1,
+                    pages: 0,
+                    data: []
+                });
+            }
+            query = { worker: workerProfile._id };
         }
 
         const page = parseInt(req.query.page) || 1;
@@ -160,6 +216,13 @@ const getApplicationById = async (req, res) => {
 
         if (!application) {
             return res.status(404).json({ message: 'Application not found' });
+        }
+
+        const workerProfile = await WorkerProfile.findById(application.worker).select('user');
+        const isEmployer = String(application.employer) === String(req.user._id);
+        const isWorker = String(workerProfile?.user) === String(req.user._id);
+        if (!isEmployer && !isWorker) {
+            return res.status(403).json({ message: 'Not authorized for this application' });
         }
 
         res.json(application);

@@ -166,6 +166,7 @@ const AppNav = () => {
             <Stack.Screen name="PostJob" component={require('./src/screens/PostJobScreen').default} />
             <Stack.Screen name="JobDetails" component={require('./src/screens/JobDetailsScreen').default} />
             <Stack.Screen name="Chat" component={require('./src/screens/ChatScreen').default} />
+            <Stack.Screen name="CompanyDetails" component={require('./src/screens/CompanyDetailsScreen').default} />
             <Stack.Screen name="EmployerProfileCreate" component={require('./src/screens/EmployerProfileCreateScreen').default} />
             <Stack.Screen name="ApplicantTimeline" component={require('./src/screens/ApplicantTimelineScreen').default} />
             <Stack.Screen name="Subscription" component={require('./src/screens/SubscriptionScreen').default} />

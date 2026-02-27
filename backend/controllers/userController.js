@@ -4,12 +4,26 @@ const User = require('../models/userModel');
 const { generateToken, generateRefreshToken } = require('../utils/generateToken');
 const BetaCode = require('../models/BetaCode');
 const { triggerWelcomeSeries } = require('../services/marketingService');
+const {
+  fireAndForget,
+  markEmployerSignedUpOnce,
+} = require('../services/revenueInstrumentationService');
 
 // @desc    Register a new user
 // @route   POST /api/users/register
 // @access  Public
 const registerUser = async (req, res) => {
-  const { name, email, role, password, betaCode, referredByCode } = req.body;
+  const {
+    name,
+    email,
+    role,
+    password,
+    betaCode,
+    referredByCode,
+    acquisitionSource = 'unknown',
+    acquisitionCity = null,
+    acquisitionCampaign = null,
+  } = req.body;
   const crypto = require('crypto');
 
   try {
@@ -59,7 +73,10 @@ const registerUser = async (req, res) => {
       password,
       verificationToken,
       referralCode: newReferralCode,
-      referredBy: referredByUserId
+      referredBy: referredByUserId,
+      acquisitionSource,
+      acquisitionCity,
+      acquisitionCampaign,
     });
 
     if (user) {
@@ -89,6 +106,14 @@ const registerUser = async (req, res) => {
 
       // Trigger automated marketing welcome flow
       triggerWelcomeSeries(user);
+
+      const normalizedRole = String(user.role || '').toLowerCase();
+      if (normalizedRole === 'recruiter' || normalizedRole === 'employer') {
+        fireAndForget('markEmployerSignedUpOnce', () => markEmployerSignedUpOnce({
+          employerId: user._id,
+          city: acquisitionCity,
+        }), { userId: String(user._id) });
+      }
 
       // Mark Beta Code as used
       if (validCode) {
@@ -227,6 +252,10 @@ const authUser = async (req, res) => {
 
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    if (user.isDeleted) {
+      return res.status(403).json({ message: 'Account is deleted. Contact support if this is unexpected.' });
     }
 
     // Check if account is locked

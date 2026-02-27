@@ -1,11 +1,11 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
     View, Text, TextInput, TouchableOpacity, FlatList,
     StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated, Image, Modal, Alert, ActivityIndicator, Linking
 } from 'react-native';
 import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { IconVideo, IconPhone, IconPlus, IconSend, IconMic, IconGlobe, IconSparkles, IconBriefcase, IconCheck } from '../components/Icons';
+import { IconVideo, IconPhone, IconPlus, IconSend, IconMic } from '../components/Icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { saveLimitedCache } from '../utils/cacheManager';
 import { triggerHaptic } from '../utils/haptics';
@@ -13,9 +13,15 @@ import client from '../api/client';
 import { AuthContext } from '../context/AuthContext';
 import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
+import ContactInfoView from '../components/contact/ContactInfoView';
 import SocketService from '../services/socket';
 import * as DocumentPicker from 'expo-document-picker';
 import { initiateCall } from '../services/WebRTCService';
+import { getPrimaryRoleFromUser } from '../utils/roleMode';
+import { validateChatMessagesResponse, logValidationError } from '../utils/apiValidator';
+import { useAppStore } from '../store/AppStore';
+import { trackEvent } from '../services/analytics';
+import { DEMO_MODE } from '../config';
 
 const AI_SUGGESTIONS = [
     "Sounds great, thanks!",
@@ -30,11 +36,20 @@ const normalizeStatus = (value) => {
     return normalized;
 };
 
+const getStatusLabel = (status) => {
+    const normalized = normalizeStatus(status);
+    if (normalized === 'accepted') return 'Accepted';
+    if (normalized === 'rejected') return 'Rejected';
+    if (normalized === 'shortlisted') return 'Shortlisted';
+    return 'Waiting';
+};
+
 // Typing Indicator Component
 const TypingIndicator = () => {
     const dot1 = useRef(new Animated.Value(0)).current;
     const dot2 = useRef(new Animated.Value(0)).current;
     const dot3 = useRef(new Animated.Value(0)).current;
+    const animationRefs = useRef([]);
 
     useEffect(() => {
         const createAnimation = (anim, delay) => {
@@ -46,9 +61,19 @@ const TypingIndicator = () => {
                 ])
             );
         };
-        createAnimation(dot1, 0).start();
-        createAnimation(dot2, 150).start();
-        createAnimation(dot3, 300).start();
+
+        const loops = [
+            createAnimation(dot1, 0),
+            createAnimation(dot2, 150),
+            createAnimation(dot3, 300),
+        ];
+        animationRefs.current = loops;
+        loops.forEach((loop) => loop.start());
+
+        return () => {
+            animationRefs.current.forEach((loop) => loop.stop());
+            animationRefs.current = [];
+        };
     }, []);
 
     return (
@@ -62,9 +87,10 @@ const TypingIndicator = () => {
 
 export default function ChatScreen({ route, navigation }) {
     const insets = useSafeAreaInsets();
-    const { applicationId, otherPartyName = 'Logitech', jobTitle = 'Moving the world, one delivery at a time.', status = 'Applied', companyId = null } = route.params || {};
+    const { applicationId } = route.params || {};
 
     const { userInfo } = React.useContext(AuthContext);
+    const { setActiveChatId, clearActiveChatId, setSocketStatus } = useAppStore();
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [showAttachments, setShowAttachments] = useState(false);
@@ -72,22 +98,45 @@ export default function ChatScreen({ route, navigation }) {
     const [isOtherTyping, setIsOtherTyping] = useState(false);
     const [lastReadByOther, setLastReadByOther] = useState(null);
     const [showProfileModal, setShowProfileModal] = useState(false);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(!DEMO_MODE);
     const [isScreenReady, setIsScreenReady] = useState(false);
     const [uploadingFile, setUploadingFile] = useState(false);
     const [connectionStatus, setConnectionStatus] = useState('connected');
     const [historyError, setHistoryError] = useState('');
-    const [applicationStatus, setApplicationStatus] = useState(normalizeStatus(status));
+    const [applicationStatus, setApplicationStatus] = useState('pending');
+    const [chatMeta, setChatMeta] = useState({
+        otherPartyName: 'Contact',
+        jobTitle: 'Opportunity',
+        companyId: null,
+    });
     const [reloadKey, setReloadKey] = useState(0);
 
     const flatListRef = useRef(null);
     const typingTimeout = useRef(null);
+    const hasTrackedChatStartRef = useRef(false);
     const canChat = applicationStatus === 'accepted';
+    const currentUserId = userInfo?._id;
+
+    const hasOwnMessageInList = useCallback((list = []) => {
+        if (!currentUserId || !Array.isArray(list)) return false;
+        return list.some((message) => {
+            const senderId = typeof message?.sender === 'object' ? message?.sender?._id : message?.sender;
+            return senderId === currentUserId;
+        });
+    }, [currentUserId]);
 
     useEffect(() => {
         const timeout = setTimeout(() => setIsScreenReady(true), 50);
         return () => clearTimeout(timeout);
     }, []);
+
+    useEffect(() => {
+        if (!applicationId) return;
+        setActiveChatId(applicationId);
+        return () => {
+            clearActiveChatId(applicationId);
+        };
+    }, [applicationId, clearActiveChatId, setActiveChatId]);
 
     useEffect(() => {
         if (!applicationId) return;
@@ -103,13 +152,21 @@ export default function ChatScreen({ route, navigation }) {
 
         const fetchHistory = async () => {
             setHistoryError('');
-            setIsLoading(true);
+            if (!DEMO_MODE) {
+                setIsLoading(true);
+            }
             try {
                 // 1. Try cache
                 const cached = await AsyncStorage.getItem(`@chat_history_${applicationId}`);
                 if (cached && isActive) {
-                    setMessages(JSON.parse(cached));
-                    setIsLoading(false);
+                    const cachedMessages = JSON.parse(cached);
+                    if (hasOwnMessageInList(cachedMessages)) {
+                        hasTrackedChatStartRef.current = true;
+                    }
+                    setMessages(cachedMessages);
+                    if (!DEMO_MODE) {
+                        setIsLoading(false);
+                    }
                 }
             } catch (e) {
                 logger.error("Chat cache error", e);
@@ -118,13 +175,20 @@ export default function ChatScreen({ route, navigation }) {
             try {
                 // 2. Fetch fresh history
                 const { data } = await client.get(`/api/chat/${applicationId}`);
-                if (isActive && data && Array.isArray(data)) {
-                    const chronological = [...data].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                const validatedMessages = validateChatMessagesResponse(data, applicationId);
+                if (isActive) {
+                    const chronological = [...validatedMessages].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                    if (hasOwnMessageInList(chronological)) {
+                        hasTrackedChatStartRef.current = true;
+                    }
                     setMessages(chronological);
                     // 3. Update cache (max 100 messages to prevent unbounded bloat)
                     saveLimitedCache(`@chat_history_${applicationId}`, chronological, 100);
                 }
             } catch (err) {
+                if (err?.name === 'ApiValidationError') {
+                    logValidationError(err, `/api/chat/${applicationId}`);
+                }
                 logger.error('Failed to fetch chat history', err);
                 if (isActive) {
                     setHistoryError(getReadableError(err, 'Could not load chat history.'));
@@ -132,15 +196,30 @@ export default function ChatScreen({ route, navigation }) {
             }
 
             try {
-                // Keep chat lock state synced with latest application status
+                // Keep chat lock state and header metadata synced with latest application
                 const { data: applicationData } = await client.get(`/api/applications/${applicationId}`);
+                const application = applicationData?.application || applicationData;
+                const job = application?.job || {};
+                const employer = application?.employer || {};
+                const worker = application?.worker || {};
+
+                const workerName = [worker?.firstName, worker?.lastName].filter(Boolean).join(' ').trim() || worker?.name || 'Candidate';
+                const employerName = employer?.companyName || employer?.name || job?.companyName || 'Employer';
+                const currentRole = getPrimaryRoleFromUser(userInfo);
+                const companyIdValue = employer?._id || employer?.id || null;
+
                 if (isActive) {
-                    setApplicationStatus(normalizeStatus(applicationData?.status || status));
+                    setApplicationStatus(normalizeStatus(application?.status));
+                    setChatMeta({
+                        otherPartyName: currentRole === 'employer' ? workerName : employerName,
+                        jobTitle: job?.title || 'Opportunity',
+                        companyId: companyIdValue,
+                    });
                 }
             } catch (err) {
-                logger.warn('Could not load application status for chat:', err?.message || err);
+                logger.warn('Could not load application metadata for chat:', err?.message || err);
             } finally {
-                if (isActive) setIsLoading(false);
+                if (isActive && !DEMO_MODE) setIsLoading(false);
             }
         };
         fetchHistory();
@@ -152,9 +231,11 @@ export default function ChatScreen({ route, navigation }) {
         };
         const handleSocketDisconnect = () => {
             setConnectionStatus('reconnecting');
+            setSocketStatus('reconnecting');
         };
         const handleSocketConnect = () => {
             setConnectionStatus('connected');
+            setSocketStatus('connected');
             SocketService.emit('joinRoom', { applicationId });
         };
 
@@ -188,7 +269,7 @@ export default function ChatScreen({ route, navigation }) {
             SocketService.off('connect');
             if (typingTimeout.current) clearTimeout(typingTimeout.current);
         };
-    }, [applicationId, status, userInfo?._id, reloadKey]);
+    }, [applicationId, userInfo?.primaryRole, userInfo?.role, reloadKey, setSocketStatus, hasOwnMessageInList]);
 
     // Emit read receipts when messages load or change — Feature 5
     useEffect(() => {
@@ -205,7 +286,7 @@ export default function ChatScreen({ route, navigation }) {
     };
 
     const sendMessage = async (payload = input) => {
-        if (!userInfo) return;
+        if (!userInfo || !currentUserId) return;
         if (!canChat) {
             Alert.alert('Waiting for Response', 'Chat will unlock once this application is accepted.');
             return;
@@ -216,12 +297,22 @@ export default function ChatScreen({ route, navigation }) {
 
         // Stop typing on send
         if (typingTimeout.current) clearTimeout(typingTimeout.current);
-        SocketService.emit('stop_typing', { roomId: applicationId, userId: userInfo._id });
+        SocketService.emit('stop_typing', { roomId: applicationId, userId: currentUserId });
+
+        if (!hasTrackedChatStartRef.current) {
+            const chatStartedPayload = {
+                applicationId: String(applicationId || ''),
+                source: 'chat_screen',
+                messageType: isTextPayload ? 'text' : (payload?.type || 'unknown'),
+            };
+            trackEvent('CHAT_STARTED', chatStartedPayload);
+            hasTrackedChatStartRef.current = true;
+        }
 
         // Send via socket
         SocketService.emit('sendMessage', {
             applicationId,
-            senderId: userInfo._id,
+            senderId: currentUserId,
             ...(isTextPayload ? { text: trimmedText } : payload)
         });
 
@@ -232,20 +323,20 @@ export default function ChatScreen({ route, navigation }) {
     const handleInputChange = (text) => {
         if (!canChat) return;
         setInput(text);
-        if (!userInfo || !applicationId) return;
+        if (!currentUserId || !applicationId) return;
         // Emit typing
-        SocketService.emit('typing', { roomId: applicationId, userId: userInfo._id });
+        SocketService.emit('typing', { roomId: applicationId, userId: currentUserId });
         // Debounce stop_typing
         if (typingTimeout.current) clearTimeout(typingTimeout.current);
         typingTimeout.current = setTimeout(() => {
-            SocketService.emit('stop_typing', { roomId: applicationId, userId: userInfo._id });
+            SocketService.emit('stop_typing', { roomId: applicationId, userId: currentUserId });
         }, 1500);
     };
 
     const handleStartVideoCall = () => {
         if (!applicationId) return;
-        initiateCall(SocketService, applicationId, userInfo?._id);
-        navigation.navigate('VideoCall', { roomId: applicationId, applicationId, otherPartyName });
+        initiateCall(SocketService, applicationId, currentUserId);
+        navigation.navigate('VideoCall', { roomId: applicationId, applicationId, otherPartyName: chatMeta.otherPartyName });
     };
 
     const uploadAttachment = async (file) => {
@@ -360,13 +451,7 @@ export default function ChatScreen({ route, navigation }) {
         return null;
     }, [messages, userInfo]);
 
-    const headerStatusText = isOtherTyping
-        ? 'typing...'
-        : connectionStatus === 'reconnecting'
-            ? 'Reconnecting...'
-            : canChat
-                ? 'Chat available'
-                : 'Waiting for response';
+    const headerStatusText = `${chatMeta.jobTitle} • ${getStatusLabel(applicationStatus)}`;
 
     const renderMessage = ({ item, index }) => {
         const isSystem = item.type === 'system';
@@ -433,17 +518,21 @@ export default function ChatScreen({ route, navigation }) {
                     style={styles.headerInfoContainer}
                     activeOpacity={0.7}
                     onPress={() => {
-                        if (companyId) {
-                            navigation.navigate('CompanyDetails', { companyId, companyName: otherPartyName, applicationId });
+                        if (chatMeta.companyId) {
+                            navigation.navigate('ContactInfo', {
+                                companyId: chatMeta.companyId,
+                                companyName: chatMeta.otherPartyName,
+                                applicationId,
+                            });
                             return;
                         }
                         setShowProfileModal(true);
                     }}
                     onLongPress={handleReportUser}
                 >
-                <Image source={{ uri: `https://ui-avatars.com/api/?name=${otherPartyName}&background=7c3aed&color=fff` }} style={styles.headerAvatar} />
+                <Image source={{ uri: `https://ui-avatars.com/api/?name=${chatMeta.otherPartyName}&background=7c3aed&color=fff` }} style={styles.headerAvatar} />
                 <View style={styles.headerInfoText}>
-                    <Text style={styles.headerName} numberOfLines={1}>{otherPartyName}</Text>
+                    <Text style={styles.headerName} numberOfLines={1}>{chatMeta.otherPartyName}</Text>
                     <Text style={styles.headerSub} numberOfLines={1}>
                         {headerStatusText}
                     </Text>
@@ -461,21 +550,22 @@ export default function ChatScreen({ route, navigation }) {
         </View>
     );
 
-    const products = [
-        { name: 'Express Last-Mile', icon: '🚚', desc: 'Tech-enabled delivery for e-commerce and retail.' },
-        { name: 'Cold Chain Pros', icon: '❄️', desc: 'Temperature-sensitive food and vaccine transport.' },
-        { name: 'Heavy Hauling', icon: '🏗️', desc: 'Industrial equipment and raw material infrastructure.' },
-        { name: 'Warehouse Smart', icon: '🏢', desc: 'AI-driven inventory and storage management.' }
-    ];
-
-    const milestones = [
-        { year: '2023', event: 'Reached 10M successful deliveries nationwide' },
-        { year: '2021', event: 'Expanded cross-border logistics to SEA regions' },
-        { year: '2015', event: 'Founded in Hyderabad as a small bike-fleet' }
-    ];
-
     if (!isScreenReady) {
         return <View style={styles.container} />;
+    }
+
+    if (!applicationId) {
+        return (
+            <View style={styles.container}>
+                <EmptyState
+                    icon={<Text style={{ fontSize: 40 }}>⚠️</Text>}
+                    title="Chat Unavailable"
+                    message="Missing application reference for this chat."
+                    actionLabel="Go Back"
+                    onAction={() => navigation.goBack()}
+                />
+            </View>
+        );
     }
 
     return (
@@ -595,130 +685,26 @@ export default function ChatScreen({ route, navigation }) {
                 presentationStyle="fullScreen"
                 onRequestClose={() => setShowProfileModal(false)}
             >
-                <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
-                    <View style={styles.modalHeader}>
-                        <TouchableOpacity onPress={() => setShowProfileModal(false)} style={styles.modalBackBtnModal}>
-                            <Text style={styles.modalBackIconModal}>‹</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.modalTitle}>Enterprise Hub</Text>
-                    </View>
-                    <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} bounces={false}>
-                        <View style={styles.bannerContainer}>
-                            {/* Mocking radial gradient and background */}
-                            <Image
-                                source={{ uri: 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?q=80&w=800&auto=format&fit=crop' }}
-                                style={styles.bannerImage}
-                            />
-                            <View style={styles.bannerPillContainer}>
-                                <View style={styles.bannerPill}>
-                                    <Text style={styles.bannerPillText}>Logistics & Supply Chain</Text>
-                                </View>
-                            </View>
-                        </View>
-
-                        <View style={styles.profileSection}>
-                            <Image source={{ uri: `https://ui-avatars.com/api/?name=${otherPartyName}&background=7c3aed&color=fff&size=512` }} style={styles.contactAvatarLg} />
-
-                            <View style={styles.nameRow}>
-                                <Text style={styles.contactName}>{otherPartyName}</Text>
-                                <View style={styles.verifiedBadge}>
-                                    <IconCheck size={14} color="#6366f1" />
-                                </View>
-                            </View>
-                            <Text style={styles.contactRole}>{jobTitle}</Text>
-
-                            <View style={styles.actionRow}>
-                                <TouchableOpacity style={styles.actionBtnModal}>
-                                    <View style={styles.actionIconWrap}>
-                                        <IconPhone size={20} color="#9333ea" />
-                                    </View>
-                                    <Text style={styles.actionBtnText}>CALL</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.actionBtnModal}>
-                                    <View style={styles.actionIconWrap}>
-                                        <IconVideo size={20} color="#9333ea" />
-                                    </View>
-                                    <Text style={styles.actionBtnText}>VIDEO</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.actionBtnModal}>
-                                    <View style={styles.actionIconWrap}>
-                                        <IconGlobe size={20} color="#9333ea" />
-                                    </View>
-                                    <Text style={styles.actionBtnText}>SITE</Text>
-                                </TouchableOpacity>
-                            </View>
-
-                            {/* Section Cards */}
-                            <View style={styles.detailsCard}>
-                                <Text style={styles.sectionTitle}><IconSparkles size={14} color="#a855f7" />  MISSION & VISION</Text>
-                                <Text style={styles.sectionText}>
-                                    We are building the backbone of modern commerce in India. By integrating AI with a massive fleet network, we ensure fair pay for partners and lightning-fast logistics for businesses.
-                                </Text>
-                                <View style={styles.gridRow}>
-                                    <View style={styles.gridBox}>
-                                        <Text style={styles.gridBoxLabel}>INDUSTRY</Text>
-                                        <Text style={styles.gridBoxValue}>Logistics & Supply Chain</Text>
-                                    </View>
-                                    <View style={styles.gridBox}>
-                                        <Text style={styles.gridBoxLabel}>GLOBAL HQ</Text>
-                                        <Text style={styles.gridBoxValue}>Hyderabad, IN</Text>
-                                    </View>
-                                </View>
-                            </View>
-
-                            <View style={styles.detailsCard}>
-                                <Text style={styles.sectionTitle}><IconBriefcase size={14} color="#a855f7" />  PRODUCTS & SERVICES</Text>
-                                {products.map((p, idx) => (
-                                    <View key={idx} style={styles.productRow}>
-                                        <View style={styles.productIconBox}>
-                                            <Text style={styles.productIconEmoji}>{p.icon}</Text>
-                                        </View>
-                                        <View style={{ flex: 1 }}>
-                                            <Text style={styles.productName}>{p.name}</Text>
-                                            <Text style={styles.productDesc}>{p.desc}</Text>
-                                        </View>
-                                    </View>
-                                ))}
-                            </View>
-
-                            <View style={styles.detailsCard}>
-                                <Text style={styles.sectionTitle}><IconGlobe size={14} color="#a855f7" />  TIMELINE</Text>
-                                <View style={styles.timelineContainer}>
-                                    <View style={styles.timelineLine} />
-                                    {milestones.map((m, idx) => (
-                                        <View key={idx} style={styles.timelineItem}>
-                                            <View style={styles.timelineDot} />
-                                            <View style={styles.timelineYearBadge}>
-                                                <Text style={styles.timelineYearText}>{m.year}</Text>
-                                            </View>
-                                            <Text style={styles.timelineEventText}>{m.event}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            </View>
-
-                            <View style={styles.darkCard}>
-                                <View style={styles.darkCardIconBg}>
-                                    <IconGlobe size={80} color="rgba(255,255,255,0.05)" />
-                                </View>
-                                <Text style={styles.sectionTitleDark}>CONTACT INFORMATION</Text>
-                                <View style={styles.darkRow}>
-                                    <Text style={styles.darkLabel}>PARTNERSHIP</Text>
-                                    <Text style={styles.darkValue}>partners@logitech.in</Text>
-                                </View>
-                                <View style={styles.darkRow}>
-                                    <Text style={styles.darkLabel}>SUPPORT</Text>
-                                    <Text style={styles.darkValue}>+91 1800 200 1234</Text>
-                                </View>
-                                <View style={styles.darkRow}>
-                                    <Text style={styles.darkLabel}>OFFICIAL WEB</Text>
-                                    <Text style={styles.darkValue}>www.logitech.in</Text>
-                                </View>
-                            </View>
-                            <View style={{ height: 40 }} />
-                        </View>
-                    </ScrollView>
-                </View>
+                <ContactInfoView
+                    presentation="screen"
+                    mode="employer"
+                    title="Enterprise Hub"
+                    data={{
+                        name: chatMeta.otherPartyName,
+                        headline: chatMeta.jobTitle,
+                        industryTag: 'LOGISTICS & SUPPLY CHAIN',
+                        mission: 'We are building the backbone of modern commerce in India. By integrating AI with a massive fleet network, we ensure fair pay for partners and lightning-fast logistics for businesses.',
+                        industry: 'Logistics & Supply Chain',
+                        hq: 'Hyderabad, IN',
+                        contactInfo: {
+                            partnership: 'partners@logitech.in',
+                            support: '+91 1800 200 1234',
+                            website: 'www.logitech.in',
+                        },
+                    }}
+                    onBack={() => setShowProfileModal(false)}
+                    onVideoPress={handleStartVideoCall}
+                />
             </Modal>
         </View>
     );
@@ -754,7 +740,7 @@ const styles = StyleSheet.create({
     },
 
     // Header
-    header: { backgroundColor: '#9333ea', paddingHorizontal: 16, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 4, zIndex: 10 },
+    header: { backgroundColor: '#7c3aed', paddingHorizontal: 16, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 4, zIndex: 10 },
     backBtn: { width: 36, height: 36, justifyContent: 'center', alignItems: 'center', marginRight: 8, backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: 18 },
     backArrow: { color: '#fff', fontSize: 24, fontWeight: '300', marginBottom: 2 },
     headerInfoContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.1)' },
@@ -774,8 +760,8 @@ const styles = StyleSheet.create({
     msgWrapperMe: { alignSelf: 'flex-end' },
     msgWrapperThem: { alignSelf: 'flex-start' },
     bubble: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
-    bubbleMe: { backgroundColor: '#e9d5ff', borderTopRightRadius: 4, borderWidth: 1, borderColor: '#d8b4fe' },
-    bubbleThem: { backgroundColor: '#fff', borderTopLeftRadius: 4 },
+    bubbleMe: { backgroundColor: '#ede9ff', borderTopRightRadius: 2, borderWidth: 1, borderColor: '#c4b5fd' },
+    bubbleThem: { backgroundColor: '#fff', borderTopLeftRadius: 2 },
     bubbleText: { fontSize: 14, lineHeight: 20 },
     bubbleTextMe: { color: '#0f172a' },
     bubbleTextThem: { color: '#0f172a' },
@@ -789,7 +775,7 @@ const styles = StyleSheet.create({
     typingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#a855f7' },
 
     // Suggestions
-    suggestionsContainer: { backgroundColor: 'rgba(255,255,255,0.9)', borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingVertical: 8 },
+    suggestionsContainer: { backgroundColor: 'rgba(255,255,255,0.8)', borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingVertical: 8 },
     suggestionsContent: { paddingHorizontal: 16, gap: 8 },
     suggPill: { backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#e9d5ff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 1, elevation: 1 },
     suggText: { fontSize: 12, fontWeight: '800', color: '#7e22ce' },
@@ -800,7 +786,7 @@ const styles = StyleSheet.create({
     attachBtnActive: { backgroundColor: '#f1f5f9' },
     inputWrap: { flex: 1, backgroundColor: '#f8fafc', borderRadius: 24, borderWidth: 1, borderColor: '#f1f5f9', minHeight: 40, maxHeight: 100, justifyContent: 'center' },
     inputField: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: '#0f172a' },
-    sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#9333ea', justifyContent: 'center', alignItems: 'center', marginLeft: 8, shadowColor: '#9333ea', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
+    sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#7c3aed', justifyContent: 'center', alignItems: 'center', marginLeft: 8, shadowColor: '#7c3aed', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
     micBtn: { padding: 10, marginLeft: 2 },
     actionBtnDisabled: { opacity: 0.45 },
     uploadingIndicator: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8, backgroundColor: '#f3e8ff' },
@@ -815,7 +801,7 @@ const styles = StyleSheet.create({
 
     // Profile Modal Styles mapped from ContactInfoView
     modalContainer: { flex: 1, backgroundColor: '#f8fafc' },
-    modalHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#9333ea', paddingVertical: 16, paddingHorizontal: 20 },
+    modalHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#7c3aed', paddingVertical: 16, paddingHorizontal: 20 },
     modalBackBtnModal: { marginRight: 16, backgroundColor: 'rgba(255,255,255,0.1)', width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     modalBackIconModal: { color: '#ffffff', fontSize: 24, fontWeight: '300', marginBottom: 2 },
     modalTitle: { color: '#ffffff', fontSize: 18, fontWeight: '700' },

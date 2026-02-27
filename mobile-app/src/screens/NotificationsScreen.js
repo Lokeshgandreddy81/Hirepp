@@ -6,10 +6,14 @@ import client from '../api/client';
 import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
 import { logger } from '../utils/logger';
+import { validateNotificationsResponse, logValidationError } from '../utils/apiValidator';
+import { useAppStore } from '../store/AppStore';
+import { DEMO_MODE } from '../config';
 
 export default function NotificationsScreen({ navigation }) {
+    const { setNotificationsCount, activeChatId, role } = useAppStore();
     const [notifications, setNotifications] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(!DEMO_MODE);
     const [error, setError] = useState('');
 
     useEffect(() => {
@@ -18,22 +22,35 @@ export default function NotificationsScreen({ navigation }) {
 
     const fetchNotifications = async () => {
         try {
-            setLoading(true);
+            if (!DEMO_MODE) {
+                setLoading(true);
+            }
             setError('');
             const { data } = await client.get('/api/notifications');
-            setNotifications(data.notifications || []);
+            const validatedNotifications = validateNotificationsResponse(data);
+            setNotifications(validatedNotifications);
+            setNotificationsCount(validatedNotifications.filter((item) => !item.isRead).length);
         } catch (error) {
+            if (error?.name === 'ApiValidationError') {
+                logValidationError(error, '/api/notifications');
+            }
             setError('Could not load notifications');
             logger.error('Failed to fetch notifications:', error);
         } finally {
-            setLoading(false);
+            if (!DEMO_MODE) {
+                setLoading(false);
+            }
         }
     };
 
     const markAsRead = async (id) => {
         try {
             await client.put(`/api/notifications/${id}/read`);
-            setNotifications(prev => prev.map(n => n._id === id ? { ...n, isRead: true } : n));
+            setNotifications(prev => {
+                const next = prev.map(n => n._id === id ? { ...n, isRead: true } : n);
+                setNotificationsCount(next.filter((item) => !item.isRead).length);
+                return next;
+            });
         } catch (error) {
             logger.error('Failed to mark read:', error);
         }
@@ -43,6 +60,7 @@ export default function NotificationsScreen({ navigation }) {
         try {
             await client.put('/api/notifications');
             setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+            setNotificationsCount(0);
         } catch (error) {
             logger.error('Failed to mark all read:', error);
         }
@@ -52,11 +70,17 @@ export default function NotificationsScreen({ navigation }) {
         if (!item.isRead) markAsRead(item._id);
 
         if (item.type === 'application_received' && item.relatedData?.jobId) {
-            navigation.navigate('EmployerDashboard'); // Simple redirect for MVP
+            navigation.navigate('MainTab', { screen: role === 'employer' ? 'My Jobs' : 'Applications' });
         } else if (item.type === 'status_update') {
-            navigation.navigate('Applications'); // Redirect applicant
-        } else if (item.type === 'message_received' && item.relatedData?.chatId) {
-            navigation.navigate('Chat', { chatId: item.relatedData.chatId });
+            navigation.navigate('MainTab', { screen: 'Applications' });
+        } else if (item.type === 'message_received') {
+            const applicationId = item.relatedData?.applicationId || item.relatedData?.chatId || item.applicationId;
+            if (applicationId) {
+                if (String(activeChatId) === String(applicationId)) {
+                    return;
+                }
+                navigation.navigate('Chat', { applicationId });
+            }
         }
     };
 

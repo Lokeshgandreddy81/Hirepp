@@ -4,9 +4,11 @@ const {
     createJob, 
     getJobs,
     getEmployerJobs, 
+    getRecommendedJobs,
     suggestRequirements, 
     deleteJob, 
-    updateJob 
+    updateJob,
+    recordBoostUpsellExposure,
 } = require('../controllers/jobController');
 
 // Ensure both protect and employer are destructured from the middleware file
@@ -40,6 +42,7 @@ const { protect, employer } = require('../middleware/authMiddleware');
 // @route   POST /api/jobs
 router.post('/', protect, employer, createJob);
 router.get('/', protect, getJobs);
+router.get('/recommended', protect, getRecommendedJobs);
 
 // @route   GET /api/jobs/my-jobs
 router.get('/my-jobs', protect, employer, getEmployerJobs);
@@ -52,5 +55,8 @@ router.delete('/:id', protect, employer, deleteJob);
 
 // @route   PUT /api/jobs/:id
 router.put('/:id', protect, employer, updateJob);
+
+// @route   POST /api/jobs/:id/boost-upsell-exposure
+router.post('/:id/boost-upsell-exposure', protect, employer, recordBoostUpsellExposure);
 
 module.exports = router;

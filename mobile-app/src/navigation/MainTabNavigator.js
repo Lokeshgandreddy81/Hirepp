@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React, { useCallback } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, TouchableOpacity, StyleSheet, Platform, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,20 +24,27 @@ import EmployerDashboardScreen from '../screens/EmployerDashboardScreen';
 import TalentScreen from '../screens/TalentScreen';
 import { Ionicons } from '@expo/vector-icons';
 import ErrorBoundary from '../components/ErrorBoundary';
-import { AuthContext } from '../context/AuthContext';
-import { getPrimaryRoleFromUser } from '../utils/roleMode';
+import { useAppStore } from '../store/AppStore';
+import { trackEvent } from '../services/analytics';
 
 const Tab = createBottomTabNavigator();
 
 export default function MainTabNavigator({ navigation }) {
     const insets = useSafeAreaInsets();
-    const { userInfo } = useContext(AuthContext);
-    const primaryRole = getPrimaryRoleFromUser(userInfo);
-    const isDemandMode = primaryRole === 'employer';
+    const { role } = useAppStore();
+    const isDemandMode = role === 'employer';
 
     const handleRecordClick = () => {
         navigation.navigate('SmartInterview');
     };
+
+    const handleMainTabPress = useCallback((routeName) => {
+        triggerHaptic.light();
+        trackEvent('TAB_SWITCH', {
+            scope: 'main',
+            tab: routeName,
+        });
+    }, []);
 
     const openModeSwitcher = () => {
         navigation.navigate('MainTab', {
@@ -102,11 +109,11 @@ export default function MainTabNavigator({ navigation }) {
         <View style={styles.container}>
             <Tab.Navigator
                 screenOptions={screenOptions}
-                screenListeners={{
+                screenListeners={({ route }) => ({
                     tabPress: () => {
-                        triggerHaptic.light();
+                        handleMainTabPress(route.name);
                     }
-                }}
+                })}
             >
                 {isDemandMode ? (
                     <>

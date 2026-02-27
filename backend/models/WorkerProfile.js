@@ -13,6 +13,17 @@ const workerProfileSchema = mongoose.Schema(
     lastName: { type: String },
     city: { type: String, required: true },
     totalExperience: { type: Number, default: 0 },
+    preferredShift: {
+      type: String,
+      enum: ['Day', 'Night', 'Flexible'],
+      default: 'Flexible',
+    },
+    licenses: [{ type: String }],
+    lastActiveAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
     
     // AI-Extracted Video Data (Phase 3, Task 17)
     // This will be populated by the Gemini extraction logic later
@@ -35,6 +46,31 @@ const workerProfileSchema = mongoose.Schema(
 
     // Global settings for matching
     isAvailable: { type: Boolean, default: true },
+    interviewVerified: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    settings: {
+      matchPreferences: {
+        maxCommuteDistanceKm: { type: Number, default: 25, min: 1, max: 300 },
+        salaryExpectationMin: { type: Number, default: null },
+        salaryExpectationMax: { type: Number, default: null },
+        preferredShiftTimes: {
+          type: [String],
+          default: [],
+        },
+        roleClusters: {
+          type: [String],
+          default: [],
+        },
+        minimumMatchTier: {
+          type: String,
+          enum: ['STRONG', 'GOOD', 'POSSIBLE'],
+          default: 'GOOD',
+        },
+      },
+    },
   },
   {
     timestamps: true,

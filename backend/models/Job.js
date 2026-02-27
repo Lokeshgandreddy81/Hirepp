@@ -56,6 +56,12 @@ const jobSchema = mongoose.Schema(
         isOpen: {
             type: Boolean,
             default: true
+        },
+        status: {
+            type: String,
+            enum: ['draft_from_ai', 'active', 'closed'],
+            default: 'active',
+            index: true,
         }
     },
     {
@@ -66,5 +72,6 @@ const jobSchema = mongoose.Schema(
 // Indexes
 jobSchema.index({ employerId: 1 });
 jobSchema.index({ isOpen: 1, location: 1 }); // Used for candidate matching
+jobSchema.index({ employerId: 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Job', jobSchema);

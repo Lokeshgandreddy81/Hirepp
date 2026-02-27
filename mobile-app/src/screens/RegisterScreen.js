@@ -15,6 +15,13 @@ import { AuthContext } from '../context/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
+const ACQUISITION_SOURCES = [
+    { label: 'Camp', value: 'camp' },
+    { label: 'Referral', value: 'referral' },
+    { label: 'Organic', value: 'organic' },
+    { label: 'Circle', value: 'circle' },
+];
+
 export default function RegisterScreen({ navigation }) {
     const [activeTab, setActiveTab] = useState('email'); // 'email' or 'phone'
     const [role, setRole] = useState('candidate');
@@ -22,6 +29,7 @@ export default function RegisterScreen({ navigation }) {
     const [email, setEmail] = useState('');
     const [phone, setPhone] = useState('');
     const [password, setPassword] = useState('');
+    const [acquisitionSource, setAcquisitionSource] = useState('organic');
     const [loading, setLoading] = useState(false);
     const { login } = useContext(AuthContext);
 
@@ -50,7 +58,8 @@ export default function RegisterScreen({ navigation }) {
                 name,
                 email,
                 password,
-                role
+                role,
+                acquisitionSource,
             });
 
             // Let AuthContext handle the storage and state changes, which automatically navigates
@@ -142,6 +151,32 @@ export default function RegisterScreen({ navigation }) {
                         onChangeText={setPassword}
                         secureTextEntry
                     />
+
+                    <View>
+                        <Text style={styles.label}>How did you hear about us?</Text>
+                        <View style={styles.sourceChipsRow}>
+                            {ACQUISITION_SOURCES.map((item) => (
+                                <TouchableOpacity
+                                    key={item.value}
+                                    style={[
+                                        styles.sourceChip,
+                                        acquisitionSource === item.value && styles.sourceChipActive,
+                                    ]}
+                                    onPress={() => setAcquisitionSource(item.value)}
+                                    activeOpacity={0.8}
+                                >
+                                    <Text
+                                        style={[
+                                            styles.sourceChipText,
+                                            acquisitionSource === item.value && styles.sourceChipTextActive,
+                                        ]}
+                                    >
+                                        {item.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    </View>
 
                     <TouchableOpacity
                         style={styles.button}
@@ -272,5 +307,31 @@ const styles = StyleSheet.create({
     link: {
         color: '#4F46E5',
         fontWeight: 'bold'
+    },
+    sourceChipsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginTop: 4,
+    },
+    sourceChip: {
+        borderWidth: 1,
+        borderColor: '#D1D5DB',
+        borderRadius: 999,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        backgroundColor: '#F9FAFB',
+    },
+    sourceChipActive: {
+        borderColor: '#4F46E5',
+        backgroundColor: '#EEF2FF',
+    },
+    sourceChipText: {
+        color: '#4B5563',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    sourceChipTextActive: {
+        color: '#3730A3',
     }
 });

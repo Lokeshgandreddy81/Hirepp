@@ -19,6 +19,7 @@ import RecruiterProfiles from './pages/Dashboard/Recruiter/RecProfiles';
 import RecruiterApplications from './pages/Dashboard/Recruiter/RecApplications';
 import RecruiterJobs from './pages/Dashboard/Recruiter/RecJobs';
 import RecruiterSettings from './pages/Dashboard/Recruiter/RecSettings';
+import MatchQualityDashboard from './pages/Admin/MatchQualityDashboard';
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<SignupPage />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/admin/match-quality" element={<MatchQualityDashboard />} />
 
         {/* Candidate Routes */}
         <Route path="/candidate/connect" element={<MainLayout role="candidate"><CandidateConnect /></MainLayout>} />

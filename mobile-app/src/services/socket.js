@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 import * as SecureStore from 'expo-secure-store';
-import { BASE_URL } from '../config';
+import { BASE_URL, DEMO_MODE } from '../config';
 import { logger } from '../utils/logger';
 
 class SocketService {
@@ -10,6 +10,16 @@ class SocketService {
     }
 
     async connect() {
+        if (DEMO_MODE) {
+            if (this.socket?.connected) return;
+            this.socket = { connected: true, id: 'demo-socket' };
+            const onConnect = this.listeners.get('connect');
+            if (onConnect) {
+                onConnect();
+            }
+            return;
+        }
+
         if (this.socket?.connected) return;
 
         try {
@@ -68,6 +78,30 @@ class SocketService {
     }
 
     emit(event, data) {
+        if (DEMO_MODE) {
+            if (event === 'sendMessage') {
+                const incomingMessage = {
+                    _id: `demo-msg-${Date.now()}`,
+                    sender: data?.senderId || 'demo-user-1',
+                    type: data?.type || 'text',
+                    text: data?.text || '',
+                    fileName: data?.fileName,
+                    fileUrl: data?.fileUrl,
+                    fileSize: data?.fileSize,
+                    createdAt: new Date().toISOString(),
+                };
+                const onReceiveMessage = this.listeners.get('receiveMessage');
+                if (onReceiveMessage) {
+                    setTimeout(() => onReceiveMessage(incomingMessage), 0);
+                }
+                const onReadAck = this.listeners.get('messages_read_ack');
+                if (onReadAck) {
+                    setTimeout(() => onReadAck({ userId: 'demo-peer-1', readAt: new Date().toISOString() }), 0);
+                }
+            }
+            return;
+        }
+
         if (!this.socket?.connected) {
             logger.warn('Socket not connected, reconnecting...');
             this.connect();
@@ -81,6 +115,11 @@ class SocketService {
     }
 
     disconnect() {
+        if (DEMO_MODE) {
+            this.socket = null;
+            return;
+        }
+
         if (this.socket) {
             this.socket.disconnect();
             this.socket = null;

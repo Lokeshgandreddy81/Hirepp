@@ -3,81 +3,211 @@ const Application = require('../models/Application');
 const WorkerProfile = require('../models/WorkerProfile');
 const User = require('../models/userModel');
 const MatchFeedback = require('../models/MatchFeedback');
+const MatchRun = require('../models/MatchRun');
+const MatchLog = require('../models/MatchLog');
+
 const { createNotification } = require('./notificationController');
-const { sendPushNotification } = require('../services/pushService');
-const { getBatchMatchScores, explainMatch } = require('../services/geminiService');
+const { sendPushNotificationForUser } = require('../services/pushService');
+const { explainMatch } = require('../services/geminiService');
 const redisClient = require('../config/redis');
-const algo = require('../utils/matchingAlgorithm'); // v7.0 Logic
+const { recordMatchPerformanceMetric } = require('../services/matchMetricsService');
 
+const matchEngineV2 = require('../match/matchEngineV2');
+const { scoreSinglePair } = require('../match/matchProbabilistic');
 
-// Fix 3.1: Redis-backed cache with Map fallback
-const matchCache = new Map(); // Fallback if Redis unavailable
-const CACHE_TTL_SEC = 604800; // 7 days in seconds (Redis format)
+const matchCache = new Map();
+const CACHE_TTL_SEC = 604800;
 
-// Fix 2.1: Unified cache key function (eliminates emp_/can_ asymmetry)
 const getCacheKey = (jobId, workerId) => `match:${jobId}:${workerId}`;
 
-// Helper: Get from cache (try Redis first, fallback to Map)
 const getFromCache = async (key) => {
     try {
         if (redisClient.isOpen) {
             const data = await redisClient.get(key);
-            if (data) {
-                console.log(`🔵 [REDIS GET] Key: ${key.substring(0, 30)}...`);
-                return JSON.parse(data);
-            }
+            if (data) return JSON.parse(data);
         }
     } catch (error) {
         console.error('❌ [REDIS GET ERROR]:', error.message);
     }
 
-    // Fallback to Map
     const cached = matchCache.get(key);
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL_SEC * 1000)) {
-        console.log(`🟡 [MAP GET] Key: ${key.substring(0, 30)}...`);
         return cached.data;
     }
     return null;
 };
 
-// Helper: Set to cache (try Redis first, fallback to Map)
 const setToCache = async (key, value) => {
     try {
         if (redisClient.isOpen) {
-            // Set asynchronously, do not await if we want to return results faster
-            redisClient.setEx(key, CACHE_TTL_SEC, JSON.stringify(value)).catch(err => {
-                console.error('❌ [REDIS SET ERROR]:', err.message);
+            redisClient.setEx(key, CACHE_TTL_SEC, JSON.stringify(value)).catch((error) => {
+                console.error('❌ [REDIS SET ERROR]:', error.message);
             });
-            console.log(`🔵 [REDIS SET] Key: ${key.substring(0, 30)}...`);
             return;
         }
     } catch (error) {
         console.error('❌ [REDIS SET ERROR]:', error.message);
     }
 
-    // Fallback to Map
     matchCache.set(key, { data: value, timestamp: Date.now() });
-    console.log(`🟡 [MAP SET] Key: ${key.substring(0, 30)}...`);
 };
 
-// @desc Get ranked workers (Employer View) - v7.0 ALGORITHM (Hybrid Python/Node)
+const toModelTierLabel = (tier = 'REJECT') => {
+    if (tier === 'STRONG') return 'Strong Match';
+    if (tier === 'GOOD') return 'Good Match';
+    if (tier === 'POSSIBLE') return 'Possible Match';
+    return 'Rejected';
+};
+
+const isWorkerVisibleToEmployer = (worker) => {
+    const prefs = worker?.user?.privacyPreferences || {};
+    return prefs.profileVisibleToEmployers !== false;
+};
+
+const sanitizeWorkerForEmployer = (worker) => {
+    if (!worker || typeof worker !== 'object') return worker;
+    const prefs = worker?.user?.privacyPreferences || {};
+    const sanitized = {
+        ...worker,
+        roleProfiles: Array.isArray(worker.roleProfiles)
+            ? worker.roleProfiles.map((roleProfile) => ({
+                ...roleProfile,
+                ...(prefs.showSalaryExpectation === false ? { expectedSalary: null } : {}),
+            }))
+            : [],
+    };
+
+    if (prefs.showInterviewBadge === false) {
+        sanitized.interviewVerified = false;
+    }
+
+    if (prefs.showLastActive === false) {
+        sanitized.lastActiveAt = null;
+    }
+
+    if (prefs.allowLocationSharing === false) {
+        sanitized.city = null;
+    }
+
+    return sanitized;
+};
+
+const logMatchRun = async ({
+    contextType,
+    workerId = null,
+    jobId = null,
+    userId = null,
+    modelVersionUsed = null,
+    stats = {},
+    rows = [],
+    metadata = {},
+}) => {
+    try {
+        const run = await MatchRun.create({
+            contextType,
+            workerId,
+            jobId,
+            userId,
+            modelVersionUsed,
+            totalJobsConsidered: Number(stats.totalConsidered || 0),
+            totalMatchesReturned: Number(stats.totalReturned || 0),
+            avgScore: Number(stats.avgScore || 0),
+            rejectReasonCounts: stats.rejectReasonCounts || {},
+            metadata,
+        });
+
+        if (rows.length) {
+            await MatchLog.insertMany(rows.map((row) => ({
+                matchRunId: run._id,
+                workerId: row.workerId || null,
+                jobId: row.jobId || null,
+                finalScore: Number(row.finalScore || 0),
+                tier: row.tier || 'REJECT',
+                accepted: Boolean(row.accepted),
+                rejectReason: row.rejectReason || null,
+                explainability: row.explainability || {},
+                matchModelVersionUsed: row.matchModelVersionUsed || null,
+                metadata: row.metadata || {},
+            })), { ordered: false });
+        }
+    } catch (error) {
+        console.error('Match run logging failed:', error.message);
+    }
+};
+
+const runProbabilisticOverlay = async ({ matches = [] }) => {
+    const scored = [];
+    let matchModelVersionUsed = null;
+
+    for (const row of matches) {
+        const probabilistic = await scoreSinglePair({
+            worker: row.worker,
+            workerUser: row.workerUser,
+            job: row.job,
+            roleData: row.roleData,
+            deterministicScores: row.deterministicScores,
+        });
+
+        if (probabilistic.fallbackUsed) {
+            scored.push({
+                ...row,
+                matchProbability: row.finalScore,
+                matchModelVersionUsed: probabilistic.modelVersionUsed,
+                modelKeyUsed: probabilistic.modelKeyUsed,
+                probabilisticFallbackUsed: true,
+                explainability: {
+                    ...(row.explainability || {}),
+                    matchProbability: row.finalScore,
+                },
+            });
+            continue;
+        }
+
+        matchModelVersionUsed = probabilistic.modelVersionUsed;
+
+        if (probabilistic.tier === 'REJECT') {
+            continue;
+        }
+
+        scored.push({
+            ...row,
+            finalScore: probabilistic.matchProbability,
+            matchScore: Math.round(probabilistic.matchProbability * 100),
+            tier: probabilistic.tier,
+            tierLabel: probabilistic.tierLabel,
+            matchProbability: probabilistic.matchProbability,
+            matchModelVersionUsed: probabilistic.modelVersionUsed,
+            modelKeyUsed: probabilistic.modelKeyUsed,
+            probabilisticFallbackUsed: false,
+            explainability: {
+                ...(row.explainability || {}),
+                ...(probabilistic.explainability || {}),
+            },
+        });
+    }
+
+    scored.sort(matchEngineV2.sortScoredMatches);
+
+    return {
+        matches: scored,
+        matchModelVersionUsed,
+    };
+};
+
 const getMatchesForEmployer = async (req, res) => {
     try {
-        console.log('🔍 [v7.0 Hybrid] Employer Match Request for jobId:', req.params.jobId);
         const jobId = req.params.jobId;
 
-        // 1. Validation & Data Fetching
-        const employer = await User.findById(req.user._id);
-        if (!employer.hasCompletedProfile) {
+        const employer = await User.findById(req.user._id).select('hasCompletedProfile');
+        if (!employer?.hasCompletedProfile) {
             return res.status(403).json({ message: 'Please complete your profile first' });
         }
 
         const job = await Job.findById(jobId);
-        if (!job || !job.isOpen) {
-            return res.status(404).json({ message: 'Job not found or closed' });
+        if (!job) {
+            return res.status(404).json({ message: 'Job not found' });
         }
 
-        // Talent view is application-centric: only candidates who applied to this job.
         const applications = await Application.find({ job: jobId })
             .select('_id worker status updatedAt')
             .sort({ updatedAt: -1 })
@@ -88,360 +218,399 @@ const getMatchesForEmployer = async (req, res) => {
         }
 
         const workerIds = applications.map((application) => application.worker);
-        const applicationByWorkerId = new Map(
-            applications.map((application) => [String(application.worker), application])
-        );
+        const applicationByWorkerId = new Map(applications.map((application) => [String(application.worker), application]));
 
-        // 2. Database Filtering (Optimized Phase 1)
-        const workers = await WorkerProfile.find({
-            _id: { $in: workerIds },
-        })
-            .sort({ createdAt: -1 })
-            .populate('user', 'name hasCompletedProfile');
+        const workers = await WorkerProfile.find({ _id: { $in: workerIds } })
+            .populate('user', 'name hasCompletedProfile isVerified privacyPreferences')
+            .lean();
 
-        const allAppliedWorkers = workers.filter((worker) => Boolean(worker.user));
-        const validWorkers = allAppliedWorkers.filter(w => w.user?.hasCompletedProfile && w.roleProfiles?.length > 0);
-        console.log(`✅ [v7.0] Initial Candidates: ${validWorkers.length}`);
+        const candidates = workers
+            .filter((worker) => (
+                worker?.user
+                && worker?.user?.hasCompletedProfile
+                && Array.isArray(worker.roleProfiles)
+                && worker.roleProfiles.length > 0
+                && isWorkerVisibleToEmployer(worker)
+            ))
+            .map((worker) => ({
+                worker,
+                user: worker.user,
+                applicationMeta: applicationByWorkerId.get(String(worker._id)) || null,
+            }));
 
-        let results = [];
-        let usedPython = false;
+        const deterministic = matchEngineV2.rankWorkersForJob({
+            job,
+            candidates,
+            maxResults: 20,
+        });
 
-        // 3. PYTHON ENGINE CALL (Circuit Breaker Pattern)
-        try {
-            const axios = require('axios');
+        const probabilistic = await runProbabilisticOverlay({ matches: deterministic.matches.map((row) => ({ ...row, job })) });
+        let ranked = probabilistic.matches;
 
-            // Minify Payload
-            const workerPayload = [];
-            validWorkers.forEach(w => {
-                w.roleProfiles.forEach(r => {
-                    workerPayload.push({
-                        id: w._id.toString(),
-                        userId: w.user._id.toString(),
-                        name: w.user.name || w.firstName,
-                        city: w.city,
-                        isVerified: false, // user.isVerified if available, defaults false
-                        preferredShift: 'Flexible', // Add to schema if needed
-                        roleName: r.roleName,
-                        expectedSalary: r.expectedSalary || 0,
-                        experienceInRole: r.experienceInRole || 0,
-                        skills: r.skills || [],
-                        licenses: []
-                    });
-                });
-            });
-
-            const jobPayload = {
-                id: job._id.toString(),
-                title: job.title,
-                location: job.location,
-                maxSalary: job.maxSalary || (parseInt(job.salaryRange) || 0),
-                requirements: job.requirements || [],
-                shift: job.shift,
-                mandatoryLicenses: job.mandatoryLicenses || []
-            };
-
-            // Check for Unknown Title
-            if (job.title === 'Unknown' || job.title === 'Open Position') {
-                console.warn(`⚠️ [DATA WARNING] Job Title is "${job.title}". This may cause poor matching results.`);
-                // User requested specific error throw
-                if (job.title === 'Unknown') throw new Error("Job Title is 'Unknown' - Aborting Match to prevent bad results.");
-            }
-
-            console.log(`🐍 Sending to Python: Job "${job.title}" with ${workerPayload.length} Workers`);
-
-            // Call Python Service (200ms Timeout)
-            console.log("🐍 Calling Python Logic Engine...");
-            const pyResponse = await axios.post('http://localhost:8000/calculate-matches', {
-                job: jobPayload,
-                workers: workerPayload
-            }, { timeout: 2500 }); // Relaxed to 2.5s for initial testing
-
-            if (pyResponse.data) {
-                console.log(`🐍 Python returned ${pyResponse.data.length} matches`);
-
-                // Map Python results to UI structure
-                results = pyResponse.data.map(m => {
-                    const fullWorker = validWorkers.find(w => w._id.toString() === m.workerId);
-                    const applicationMeta = applicationByWorkerId.get(String(m.workerId));
-                    return {
-                        worker: fullWorker, // Attach full Mongoose object
-                        matchScore: m.matchScore,
-                        tier: m.tier,
-                        labels: m.labels,
-                        applicationId: applicationMeta?._id || null,
-                        applicationStatus: applicationMeta?.status || 'pending',
-                    };
-                }).filter((item) => item.worker);
-                usedPython = true;
-            }
-
-        } catch (pyError) {
-            console.warn("⚠️ Python Engine Unavailable (Circuit Breaker Open):", pyError.code || pyError.message);
-            // usedPython remains false -> triggers Fallback
-        }
-
-        // 4. FALLBACK LOGIC (Local Node.js v7.0 Token Match)
-        if (!usedPython) {
-            console.log("⚙️  Running Fallback Local Logic...");
-            for (const worker of validWorkers) {
-                // Role Match (Token-based for "Software Engineer" vs "Software Developer")
-                const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-
-                const roleData = worker.roleProfiles.find(r => {
-                    const roleTokens = r.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-                    // Check if ANY significant token matches
-                    const hasMatch = jobTokens.some(jt => roleTokens.includes(jt));
-                    return hasMatch;
-                });
-
-                if (!roleData) {
-                    continue;
-                }
-
-                // Phase 2: Hard Gates
-                if (!algo.hardGates(job, worker, roleData)) {
-                    continue;
-                }
-
-                // Phase 3: Quality
-                const quality = algo.calculateQualityFactor(job, worker);
-                if (quality === 0) continue;
-
-                // Phase 5: Dimension Scoring
-                const salScore = algo.salaryScore(roleData.expectedSalary, job.maxSalary);
-                const expScore = algo.experienceScore(roleData.experienceInRole, job.requirements.join(' ').match(/\d+/) || 0); // Naive scaling from reqs
-                const skillScore = algo.skillsScore(roleData.skills, job.requirements);
-
-                // Phase 6: Composite Score
-                const criticalScore = algo.criticalComposite(salScore, expScore, skillScore);
-                const softBonus = algo.calculateSoftBonus(job, worker);
-
-                let finalScore = (criticalScore + softBonus) * quality;
-                finalScore = Math.min(Math.max(finalScore, 0), 1.0); // Clamp 0-1
-
-                if (finalScore >= algo.CONFIG.DISPLAY_THRESHOLD) {
-                    const applicationMeta = applicationByWorkerId.get(String(worker._id));
-                    results.push({
-                        worker,
-                        matchScore: Math.round(finalScore * 100),
-                        tier: finalScore >= 0.85 ? 'Strong Match' : finalScore >= 0.75 ? 'Good Match' : 'Possible Match',
-                        labels: [
-                            roleData.roleName,
-                            `${Math.round(skillScore * 100)}% Skill Match`,
-                            finalScore >= 0.85 ? 'Highly Recommended' : ''
-                        ].filter(Boolean),
-                        applicationId: applicationMeta?._id || null,
-                        applicationStatus: applicationMeta?.status || 'pending',
-                    });
-                }
-            }
-            results.sort((a, b) => b.matchScore - a.matchScore);
-            results = results.slice(0, 20);
-        }
-
-        // Ensure applicants always render in Talent, even when AI/model scoring filters everyone out.
-        if (!results.length) {
-            const fallbackWorkers = allAppliedWorkers.length > 0 ? allAppliedWorkers : validWorkers;
-            results = fallbackWorkers.map((worker) => {
+        if (!ranked.length) {
+            const fallbackWorkers = workers.filter((worker) => Boolean(worker?.user) && isWorkerVisibleToEmployer(worker));
+            ranked = fallbackWorkers.map((worker) => {
                 const applicationMeta = applicationByWorkerId.get(String(worker._id));
                 return {
                     worker,
                     matchScore: 0,
-                    tier: 'Applied',
-                    labels: ['New Applicant'],
-                    applicationId: applicationMeta?._id || null,
-                    applicationStatus: applicationMeta?.status || 'pending',
+                    finalScore: 0,
+                    tier: 'APPLIED',
+                    tierLabel: 'Applied',
+                    matchProbability: 0,
+                    explainability: {
+                        jobId: String(job._id),
+                        finalScore: 0,
+                        tier: 'APPLIED',
+                    },
+                    applicationMeta,
                 };
             });
         }
 
-        console.log(`🎯 [v7.0 Hybrid] Returned ${results.length} matches (Source: ${usedPython ? 'PYTHON' : 'NODE'})`);
-        res.json({ matches: results });
+        const responseRows = ranked.slice(0, 20).map((row) => ({
+            worker: sanitizeWorkerForEmployer(row.worker),
+            matchScore: row.matchScore,
+            tier: row.tierLabel || toModelTierLabel(row.tier),
+            matchProbability: row.matchProbability,
+            matchModelVersionUsed: row.matchModelVersionUsed || probabilistic.matchModelVersionUsed,
+            explainability: row.explainability || {},
+            labels: [
+                row.roleUsed,
+                `${Math.round((row.deterministicScores?.skillScore || 0) * 100)}% Skill Match`,
+                row.tier === 'STRONG' ? 'Highly Recommended' : '',
+            ].filter(Boolean),
+            applicationId: row.applicationMeta?._id || null,
+            applicationStatus: row.applicationMeta?.status || 'pending',
+        }));
 
+        setImmediate(() => {
+            logMatchRun({
+                contextType: 'EMPLOYER_MATCH',
+                userId: req.user._id,
+                jobId: job._id,
+                modelVersionUsed: probabilistic.matchModelVersionUsed,
+                stats: deterministic,
+                rows: responseRows.map((row) => ({
+                    workerId: row.worker?._id,
+                    jobId: job._id,
+                    finalScore: (row.matchProbability ?? row.matchScore / 100),
+                    tier: row.tier,
+                    accepted: row.tier !== 'Rejected',
+                    explainability: row.explainability,
+                    matchModelVersionUsed: row.matchModelVersionUsed,
+                })),
+                metadata: {
+                    correlationId: `emp-${req.user._id}-${job._id}-${Date.now()}`,
+                },
+            });
+        });
+
+        return res.json({
+            matches: responseRows,
+            matchModelVersionUsed: probabilistic.matchModelVersionUsed,
+        });
     } catch (error) {
-        console.error("❌ [v7.0 FATAL] Employer Match Error:", error);
-        res.status(500).json({ message: 'Matching failed' });
+        console.error('Employer match failed:', error);
+        return res.status(500).json({ message: 'Matching failed' });
     }
 };
 
-// @desc Get ranked jobs for the logged-in worker (Candidate View) - v7.0 ALGORITHM
 const getMatchesForCandidate = async (req, res) => {
     try {
-        console.log('🔍 [v7.0] Candidate Match Request for user:', req.user._id);
-
-        const user = await User.findById(req.user._id);
-        if (!user.hasCompletedProfile) {
+        const user = await User.findById(req.user._id).select('hasCompletedProfile pushTokens isVerified notificationPreferences');
+        if (!user?.hasCompletedProfile) {
             return res.status(403).json({ message: 'Please complete your profile first' });
         }
 
-        const worker = await WorkerProfile.findOne({ user: req.user._id });
-        if (!worker || !worker.isAvailable || !worker.roleProfiles || worker.roleProfiles.length === 0) {
-            console.log(`⚠️ [v7.0] Candidate lacks a valid roleProfile. Returning empty matches gracefully.`);
-            return res.status(200).json([]); // Safely return empty list to UI instead of crashing/erroring
+        const worker = await WorkerProfile.findOne({ user: req.user._id }).lean();
+        if (!worker || !worker.isAvailable || !Array.isArray(worker.roleProfiles) || !worker.roleProfiles.length) {
+            return res.status(200).json([]);
         }
 
-        // Fetch Open Jobs not posted by this user
-        const limit = 200;
-        const jobs = await Job.find({ isOpen: true, employerId: { $ne: req.user._id } })
+        const jobs = await Job.find({
+            isOpen: true,
+            status: 'active',
+            employerId: { $ne: req.user._id },
+        })
             .sort({ createdAt: -1 })
-            .limit(limit);
+            .limit(5000)
+            .lean();
 
-        console.log(`✅ [v7.0] Found ${jobs.length} potential jobs`);
+        const deterministic = matchEngineV2.rankJobsForWorker({
+            worker,
+            workerUser: user,
+            jobs,
+            maxResults: 200,
+        });
 
-        const results = [];
+        const probabilistic = await runProbabilisticOverlay({
+            matches: deterministic.matches.map((row) => ({
+                ...row,
+                worker,
+                workerUser: user,
+            })),
+        });
 
-        for (const job of jobs) {
-            // Find the BEST fitting role from the worker's multiple roles
-            // Logic: Calculate score for each role, take the max.
+        const topRows = probabilistic.matches.slice(0, 20).map((row) => ({
+            job: row.job,
+            matchScore: row.matchScore,
+            tier: row.tier,
+            roleUsed: row.roleUsed,
+            matchProbability: row.matchProbability,
+            matchModelVersionUsed: row.matchModelVersionUsed || probabilistic.matchModelVersionUsed,
+            whyYouFit: `Matches your ${row.roleUsed} profile`,
+            labels: [
+                row.tier === 'STRONG' ? 'Top Pay' : '',
+                row.job?.shift ? `${row.job.shift} Shift` : '',
+            ].filter(Boolean),
+            explainability: row.explainability || {},
+        }));
 
-            let bestMatchForJob = null;
-            let maxScore = -1;
+        setImmediate(() => {
+            logMatchRun({
+                contextType: 'CANDIDATE_MATCH',
+                userId: req.user._id,
+                workerId: worker._id,
+                modelVersionUsed: probabilistic.matchModelVersionUsed,
+                stats: deterministic,
+                rows: topRows.map((row) => ({
+                    workerId: worker._id,
+                    jobId: row.job?._id,
+                    finalScore: row.matchProbability,
+                    tier: row.tier,
+                    accepted: true,
+                    explainability: row.explainability,
+                    matchModelVersionUsed: row.matchModelVersionUsed,
+                })),
+                metadata: {
+                    correlationId: `can-${req.user._id}-${Date.now()}`,
+                },
+            });
+        });
 
-            for (const roleData of worker.roleProfiles) {
-                // Phase 1: Category Match (Token-based)
-                const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-                const roleTokens = roleData.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-
-                const hasMatch = jobTokens.some(jt => roleTokens.includes(jt));
-
-                if (!hasMatch) {
-                    continue;
-                }
-
-                // Phase 2: Hard Gates
-                if (!algo.hardGates(job, worker, roleData)) continue;
-
-                // Phase 3: Quality
-                const quality = algo.calculateQualityFactor(job, worker);
-
-                // Phase 5: Dimension Scoring
-                // Note: For Candidate View, Salary Score is inverted? 
-                // No, "Salary Score" checks if Offer >= Expectation. This applies to both views.
-                const salScore = algo.salaryScore(roleData.expectedSalary, job.maxSalary);
-
-                // Derive numeric experience from job requirements (naive regex)
-                const reqExp = job.requirements.join(' ').match(/(\d+)\s+years?/i)?.[1] || 0;
-                const expScore = algo.experienceScore(roleData.experienceInRole, reqExp);
-
-                const skillScore = algo.skillsScore(roleData.skills, job.requirements);
-
-                // Phase 6: Composite
-                // Perspective Weighting: Candidate cares more about Salary (20%) and Location (25%)
-                // We use standard weights for now but this is where W_CANDIDATE_* config would apply.
-                const criticalScore = algo.criticalComposite(salScore, expScore, skillScore);
-                const softBonus = algo.calculateSoftBonus(job, worker);
-
-                let totalScore = (criticalScore + softBonus) * quality;
-                totalScore = Math.min(Math.max(totalScore, 0), 1.0);
-
-                if (totalScore > maxScore) {
-                    maxScore = totalScore;
-                    bestMatchForJob = {
-                        job,
-                        matchScore: Math.round(totalScore * 100),
-                        roleUsed: roleData.roleName,
-                        whyYouFit: `Matches your ${roleData.roleName} profile`,
-                        labels: [
-                            maxScore >= 0.85 ? 'Top Pay' : '',
-                            job.shift ? `${job.shift} Shift` : ''
-                        ].filter(Boolean)
-                    };
-                }
-            }
-
-            if (bestMatchForJob && bestMatchForJob.matchScore >= (algo.CONFIG.DISPLAY_THRESHOLD * 100)) {
-                results.push(bestMatchForJob);
-            }
-        }
-
-        results.sort((a, b) => b.matchScore - a.matchScore);
-        const topResults = results.slice(0, 20);
-
-        // Push when new matches are found for this candidate
         try {
-            if (topResults.length > 0) {
-                const topJob = topResults[0]?.job;
-                await sendPushNotification(
-                    user.pushTokens || [],
+            if (topRows.length > 0) {
+                const topJob = topRows[0]?.job;
+                await sendPushNotificationForUser(
+                    user,
                     'New job match found!',
                     topJob?.title ? `${topJob.title} could be a fit for you.` : 'A new role matches your profile.',
-                    { type: 'match', jobId: topJob?._id ? String(topJob._id) : undefined }
+                    { type: 'match', jobId: topJob?._id ? String(topJob._id) : undefined },
+                    'new_job_recommendations'
                 );
             }
         } catch (pushError) {
             console.error('Match push error:', pushError.message);
         }
 
-        console.log(`🎯 [v7.0] Returned ${topResults.length} matches for candidate`);
-        res.json(topResults);
-
+        return res.json(topRows);
     } catch (error) {
-        console.error("❌ [v7.0 FATAL] Candidate Match Error:", error);
-        res.status(500).json({ message: 'Candidate match failed' });
+        console.error('Candidate match failed:', error);
+        return res.status(500).json({ message: 'Candidate match failed' });
     }
 };
 
-// @desc Generate AI Explanation for a match
+const getMatchProbability = async (req, res) => {
+    try {
+        const { workerId, jobId } = req.query;
+        if (!jobId) {
+            return res.status(400).json({ message: 'jobId is required' });
+        }
+
+        const resolvedWorkerId = workerId || null;
+        if (!resolvedWorkerId) {
+            return res.status(400).json({ message: 'workerId is required' });
+        }
+
+        const [worker, job] = await Promise.all([
+            WorkerProfile.findById(resolvedWorkerId).populate('user', 'isVerified hasCompletedProfile').lean(),
+            Job.findById(jobId).lean(),
+        ]);
+
+        if (!worker || !job) {
+            return res.status(404).json({ message: 'Worker or job not found' });
+        }
+
+        const isAdmin = Boolean(req.user?.isAdmin);
+        const isWorkerOwner = String(worker.user?._id || worker.user) === String(req.user._id);
+        const isEmployerOwner = String(job.employerId) === String(req.user._id);
+        if (!isAdmin && !isWorkerOwner && !isEmployerOwner) {
+            return res.status(403).json({ message: 'Not authorized for this match probability' });
+        }
+
+        const workerUser = worker.user || {};
+        const deterministic = matchEngineV2.evaluateBestRoleForJob({
+            worker,
+            workerUser,
+            job,
+        });
+
+        if (!deterministic.accepted) {
+            return res.json({
+                matchProbability: 0,
+                matchModelVersionUsed: null,
+                fallbackUsed: true,
+                explainability: {
+                    skillImpact: 0,
+                    experienceImpact: 0,
+                    salaryImpact: 0,
+                    distanceImpact: 0,
+                    reliabilityImpact: 0,
+                },
+                reason: deterministic.rejectReason,
+            });
+        }
+
+        const probabilistic = await scoreSinglePair({
+            worker,
+            workerUser,
+            job,
+            roleData: deterministic.roleData,
+            deterministicScores: {
+                skillScore: deterministic.skillScore,
+                experienceScore: deterministic.experienceScore,
+                salaryFitScore: deterministic.salaryFitScore,
+                distanceScore: deterministic.distanceScore,
+                profileCompletenessMultiplier: deterministic.profileCompletenessMultiplier,
+            },
+        });
+
+        const fallbackProbability = deterministic.finalScore;
+        const matchProbability = probabilistic.fallbackUsed
+            ? fallbackProbability
+            : probabilistic.matchProbability;
+
+        setImmediate(() => {
+            logMatchRun({
+                contextType: 'PROBABILITY_ENDPOINT',
+                userId: req.user._id,
+                workerId: worker._id,
+                jobId: job._id,
+                modelVersionUsed: probabilistic.modelVersionUsed,
+                stats: {
+                    totalConsidered: 1,
+                    totalReturned: 1,
+                    avgScore: matchProbability,
+                    rejectReasonCounts: {},
+                },
+                rows: [{
+                    workerId: worker._id,
+                    jobId: job._id,
+                    finalScore: matchProbability,
+                    tier: probabilistic.fallbackUsed ? deterministic.tier : probabilistic.tier,
+                    accepted: true,
+                    explainability: probabilistic.fallbackUsed ? deterministic.explainability : probabilistic.explainability,
+                    matchModelVersionUsed: probabilistic.modelVersionUsed,
+                }],
+                metadata: {
+                    correlationId: `prob-${req.user._id}-${job._id}-${worker._id}`,
+                    fallbackUsed: probabilistic.fallbackUsed,
+                    modelKeyUsed: probabilistic.modelKeyUsed,
+                },
+            });
+            recordMatchPerformanceMetric({
+                eventName: 'MATCH_DETAIL_VIEWED',
+                jobId: job._id,
+                workerId: worker._id,
+                city: job.location || 'unknown',
+                roleCluster: deterministic.roleData?.roleName || job.title || 'general',
+                matchProbability,
+                matchTier: probabilistic.fallbackUsed ? deterministic.tier : probabilistic.tier,
+                modelVersionUsed: probabilistic.modelVersionUsed || null,
+                timestamp: new Date(),
+                metadata: {
+                    source: 'match_probability_endpoint',
+                    userId: String(req.user._id),
+                    fallbackUsed: probabilistic.fallbackUsed,
+                },
+            }).catch((metricError) => {
+                console.warn('Probability match metric collection failed:', metricError.message);
+            });
+        });
+
+        return res.json({
+            matchProbability,
+            matchModelVersionUsed: probabilistic.modelVersionUsed,
+            fallbackUsed: probabilistic.fallbackUsed,
+            explainability: probabilistic.fallbackUsed
+                ? {
+                    skillImpact: deterministic.skillScore,
+                    experienceImpact: deterministic.experienceScore,
+                    salaryImpact: deterministic.salaryFitScore,
+                    distanceImpact: deterministic.distanceScore,
+                    reliabilityImpact: deterministic.reliabilityScore || 1,
+                }
+                : probabilistic.explainability,
+        });
+    } catch (error) {
+        console.error('Probability endpoint failed:', error);
+        return res.status(500).json({ message: 'Probability scoring failed' });
+    }
+};
+
 const explainMatchController = async (req, res) => {
     try {
-        const { jobId, candidateId, matchScore, matchBreakdown } = req.body;
-        console.log(`🤖 Generating Explanation for Job ${jobId} and Candidate ${candidateId}`);
+        const { jobId, candidateId, matchScore } = req.body;
 
-        // Need to fetch Job and Candidate info to feed Gemini
         const job = await Job.findById(jobId);
-        let worker;
-
-        // candidateId might be userId or workerId. Let's try both
-        worker = await WorkerProfile.findById(candidateId).populate('user', 'name');
+        let worker = await WorkerProfile.findById(candidateId).populate('user', 'name');
         if (!worker) {
             worker = await WorkerProfile.findOne({ user: candidateId }).populate('user', 'name');
         }
 
         if (!job || !worker) {
-            return res.status(404).json({ message: "Job or Candidate not found" });
+            return res.status(404).json({ message: 'Job or Candidate not found' });
         }
 
-        const jobData = {
-            title: job.title,
-            requirements: job.requirements || []
-        };
+        let bestRole = Array.isArray(worker.roleProfiles) && worker.roleProfiles.length > 0
+            ? worker.roleProfiles[0]
+            : null;
 
-        // Determine best role to use for explanation based on job title
-        let bestRole = worker.roleProfiles && worker.roleProfiles.length > 0 ? worker.roleProfiles[0] : null;
-        if (worker.roleProfiles) {
-            const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-            for (let r of worker.roleProfiles) {
-                const roleTokens = r.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-                if (jobTokens.some(jt => roleTokens.includes(jt))) {
-                    bestRole = r;
+        if (Array.isArray(worker.roleProfiles)) {
+            const jobTokens = String(job.title || '').toLowerCase().split(/\s+/).filter((token) => token.length > 2);
+            for (const role of worker.roleProfiles) {
+                const roleTokens = String(role.roleName || '').toLowerCase().split(/\s+/).filter((token) => token.length > 2);
+                if (jobTokens.some((token) => roleTokens.includes(token))) {
+                    bestRole = role;
                     break;
                 }
             }
         }
 
-        const candidateData = {
-            skills: bestRole ? bestRole.skills : (worker.skills || []),
-            experience: bestRole ? bestRole.experienceInRole : 0,
-            location: worker.city || 'Remote'
-        };
+        const explanationLines = await explainMatch(
+            {
+                title: job.title,
+                requirements: job.requirements || [],
+            },
+            {
+                skills: bestRole ? bestRole.skills : [],
+                experience: bestRole ? bestRole.experienceInRole : 0,
+                location: worker.city || 'Remote',
+            },
+            matchScore
+        );
 
-        const explanationLines = await explainMatch(jobData, candidateData, matchScore);
-
-        res.json({ explanation: explanationLines });
+        return res.json({ explanation: explanationLines });
     } catch (error) {
-        console.error("Match Explanation Error:", error);
-        res.status(500).json({ explanation: ["A strong overall candidate for this position.", "Relevant skillsets align with requirements.", "Solid experience profile."] });
+        console.error('Match explanation error:', error);
+        return res.status(500).json({
+            explanation: [
+                'A strong overall candidate for this position.',
+                'Relevant skillsets align with requirements.',
+                'Solid experience profile.',
+            ],
+        });
     }
 };
 
-// @desc Submit match feedback
 const submitMatchFeedback = async (req, res) => {
     try {
         const { jobId, candidateId, matchScoreAtTime, userAction } = req.body;
         const employerId = req.user._id;
 
         if (!jobId || !candidateId || !userAction) {
-            return res.status(400).json({ message: "Missing required feedback fields" });
+            return res.status(400).json({ message: 'Missing required feedback fields' });
         }
 
         const feedback = await MatchFeedback.create({
@@ -449,29 +618,41 @@ const submitMatchFeedback = async (req, res) => {
             candidateId,
             employerId,
             matchScoreAtTime: matchScoreAtTime || 0,
-            userAction
+            userAction,
         });
 
         if (userAction === 'shortlisted') {
-            const job = await Job.findById(jobId);
-            const worker = await WorkerProfile.findById(candidateId);
+            const [job, worker] = await Promise.all([
+                Job.findById(jobId),
+                WorkerProfile.findById(candidateId),
+            ]);
+
             if (worker && job) {
                 await createNotification({
-                    user: worker.user, // Notify the candidate's User doc
+                    user: worker.user,
                     type: 'status_update',
                     title: 'You were Shortlisted!',
                     message: `${job.companyName || 'An employer'} shortlisted you for: ${job.title}`,
-                    relatedData: { jobId: job._id }
+                    relatedData: { jobId: job._id },
                 });
             }
         }
 
-        console.log(`📈 [FEEDBACK REC'D] Employer ${employerId} -> ${userAction} -> Candidate ${candidateId}`);
-        res.status(201).json(feedback);
+        return res.status(201).json(feedback);
     } catch (error) {
-        console.error("Match Feedback Error:", error);
-        res.status(500).json({ message: "Failed to record feedback" });
+        console.error('Match feedback error:', error);
+        return res.status(500).json({ message: 'Failed to record feedback' });
     }
 };
 
-module.exports = { getMatchesForEmployer, getMatchesForCandidate, explainMatchController, submitMatchFeedback, matchCache };
+module.exports = {
+    getMatchesForEmployer,
+    getMatchesForCandidate,
+    getMatchProbability,
+    explainMatchController,
+    submitMatchFeedback,
+    matchCache,
+    getCacheKey,
+    getFromCache,
+    setToCache,
+};

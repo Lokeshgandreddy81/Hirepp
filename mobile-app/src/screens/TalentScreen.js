@@ -144,6 +144,7 @@ export default function TalentScreen({ navigation, route }) {
                     applicationId: item.applicationId || null,
                     statusRaw: rawStatus,
                     statusLabel,
+                    interviewVerified: Boolean(w.interviewVerified),
                 };
             });
             setCandidates(mapped);
@@ -295,6 +296,11 @@ export default function TalentScreen({ navigation, route }) {
                                 {selectedCandidate.statusLabel || 'Applied'}
                             </Text>
                         </View>
+                        {selectedCandidate.interviewVerified ? (
+                            <View style={styles.verifiedInterviewBadge}>
+                                <Text style={styles.verifiedInterviewBadgeText}>Verified Interview Profile</Text>
+                            </View>
+                        ) : null}
                     </View>
 
                     <View style={styles.sectionContainer}>
@@ -362,9 +368,6 @@ export default function TalentScreen({ navigation, route }) {
                                 style={styles.chatCtaBtn}
                                 onPress={() => navigation.navigate('Chat', {
                                     applicationId: selectedCandidate.applicationId,
-                                    otherPartyName: selectedCandidate.name,
-                                    jobTitle: selectedPool?.name || 'Role',
-                                    status: selectedCandidate.statusRaw,
                                 })}
                                 activeOpacity={0.8}
                             >
@@ -463,6 +466,9 @@ export default function TalentScreen({ navigation, route }) {
                                             </View>
                                             <Text style={styles.candidateCardSubtitle}>{profile.experienceYears} Years Exp • {profile.location}</Text>
                                             <Text style={{ color: '#7c3aed', fontSize: 12, marginTop: 4, fontWeight: 'bold' }}>{profile.matchScore}% Match</Text>
+                                            {profile.interviewVerified ? (
+                                                <Text style={styles.candidateVerifiedInline}>Verified Interview Profile</Text>
+                                            ) : null}
                                         </View>
                                     </TouchableOpacity>
                                 )}
@@ -751,6 +757,12 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#64748b',
     },
+    candidateVerifiedInline: {
+        marginTop: 4,
+        fontSize: 11,
+        color: '#059669',
+        fontWeight: '700',
+    },
     candidateHeader: {
         alignItems: 'center',
         paddingTop: 32,
@@ -782,6 +794,20 @@ const styles = StyleSheet.create({
         fontWeight: '500',
         color: '#64748b',
         marginLeft: 4,
+    },
+    verifiedInterviewBadge: {
+        marginTop: 8,
+        backgroundColor: 'rgba(16,185,129,0.14)',
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: 'rgba(16,185,129,0.32)',
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+    },
+    verifiedInterviewBadgeText: {
+        color: '#065f46',
+        fontSize: 11,
+        fontWeight: '700',
     },
     sectionContainer: {
         padding: 16,

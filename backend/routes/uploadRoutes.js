@@ -13,6 +13,7 @@ const Job = require('../models/Job');
 const User = require('../models/userModel');
 const { protect } = require('../middleware/authMiddleware');
 const { uploadToS3 } = require('../services/s3Service');
+const { publishMetric } = require('../services/metricsService');
 
 const upload = multer({ dest: path.join(__dirname, '../uploads/') });
 
@@ -23,11 +24,30 @@ router.post('/video', protect, upload.single('video'), async (req, res) => {
 
     const videoPath = req.file.path;
     const audioPath = path.join('uploads', `${req.file.filename}.mp3`);
+    const correlationId = `v1-${String(req.user?._id || 'unknown')}-${Date.now()}`;
+    console.log(JSON.stringify({
+        metric: 'v1_upload_count',
+        value: 1,
+        correlationId,
+    }));
+    publishMetric({
+        metricName: 'v1_upload_count',
+        value: 1,
+        role: 'system',
+        correlationId,
+    });
+    publishMetric({
+        metricName: 'InterviewDailyCount',
+        value: 1,
+        role: 'system',
+        correlationId,
+        dimensions: { UploadVersion: 'v1' },
+    });
 
     try {
         // 0. Upload Video to S3 immediately
         console.log(`☁️ Uploading ${req.file.filename} to S3...`);
-        const s3Url = await uploadToS3(videoPath, req.file.mimetype || 'video/mp4');
+        const s3Url = await uploadToS3(videoPath, req.file.mimetype || 'video/mp4', { prefix: 'interview-videos' });
         console.log(`✅ Uploaded to S3: ${s3Url}`);
 
         // 1. Extract Audio using FFmpeg (Stripping video for Gemini speed)

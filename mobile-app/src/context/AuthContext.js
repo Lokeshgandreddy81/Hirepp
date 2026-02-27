@@ -1,9 +1,9 @@
 import React, { createContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { wipeSensitiveCache } from '../utils/cacheManager';
 import { getPrimaryRoleFromUser } from '../utils/roleMode';
 import SocketService from '../services/socket';
+import { logger } from '../utils/logger';
 
 export const AuthContext = createContext();
 
@@ -51,7 +51,7 @@ export const AuthProvider = ({ children }) => {
             setUserInfo(normalizedUser);
             setUserToken(normalizedUser.token);
         } catch (e) {
-            console.error('Login error', e);
+            logger.error('Auth login failed', e);
         }
         setIsLoading(false);
     };
@@ -71,7 +71,7 @@ export const AuthProvider = ({ children }) => {
             }
             return merged;
         } catch (e) {
-            console.error('updateUserInfo error', e);
+            logger.error('Auth updateUserInfo failed', e);
             throw e;
         }
     };
@@ -81,14 +81,13 @@ export const AuthProvider = ({ children }) => {
         try {
             await SecureStore.deleteItemAsync('userInfo');
             await SecureStore.deleteItemAsync('hasCompletedOnboarding');
-            await AsyncStorage.clear();
             await wipeSensitiveCache();
             SocketService.disconnect();
             setUserInfo(null);
             setUserToken(null);
             setHasCompletedOnboarding(false);
         } catch (e) {
-            console.error('Logout error', e);
+            logger.error('Auth logout failed', e);
         }
         setIsLoading(false);
     };
@@ -121,7 +120,7 @@ export const AuthProvider = ({ children }) => {
 
             setHasCompletedOnboarding(resolvedOnboarding);
         } catch (e) {
-            console.error('isLoggedIn error', e);
+            logger.error('Auth session restore failed', e);
         }
         setIsLoading(false);
     };

@@ -3,21 +3,37 @@ import * as SecureStore from 'expo-secure-store';
 import { Alert } from 'react-native';
 import { triggerHaptic } from '../utils/haptics';
 
-import { BASE_URL } from '../config';
+import { BASE_URL, DEMO_MODE } from '../config';
 import { navigate } from '../navigation/navigationRef';
 import { logger } from '../utils/logger';
+import { getMockApiResponse } from '../demo/mockApi';
+
+const isSecureBaseUrl = /^https:\/\//i.test(BASE_URL);
+const isTrustedLocalBaseUrl = /^http:\/\/((localhost|127\.0\.0\.1|10\.0\.2\.2)|(192\.168\.\d+\.\d+)|(10\.\d+\.\d+\.\d+)|(172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+))(:\d+)?(\/|$)/i.test(BASE_URL);
+const FALLBACK_BASE_URL = 'https://api.hirecircle.in';
+const resolvedBaseUrl = (isSecureBaseUrl || isTrustedLocalBaseUrl) ? BASE_URL : FALLBACK_BASE_URL;
+
+if (resolvedBaseUrl !== BASE_URL) {
+    logger.error('SecurityError: Invalid API base URL detected. Falling back to secure production URL.');
+}
 
 const client = axios.create({
-    baseURL: BASE_URL,
+    baseURL: resolvedBaseUrl,
     headers: {
         'Content-Type': 'application/json',
     },
     timeout: 10000, // 10 seconds timeout
+    ...(DEMO_MODE ? {
+        adapter: async (config) => getMockApiResponse(config),
+    } : {}),
 });
 
 // Add a request interceptor to attach the Token
 client.interceptors.request.use(
     async (config) => {
+        if (DEMO_MODE) {
+            return config;
+        }
         try {
             const userInfoString = await SecureStore.getItemAsync('userInfo');
             if (userInfoString) {
@@ -42,6 +58,9 @@ client.interceptors.response.use(
         return response;
     },
     async (error) => {
+        if (DEMO_MODE) {
+            return Promise.reject(error);
+        }
         const config = error.config || {};
 
         // Initialize retry attempts array

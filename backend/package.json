@@ -5,7 +5,17 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "worker:interview": "node workers/interviewWorker.js",
+    "cron:interview-cost-monitor": "node cron/interviewCostMonitor.js",
+    "cron:worker-reactivation": "node cron/workerReactivationNudge.js",
+    "cron:city-hiring-snapshot": "node cron/cityHiringSnapshot.js",
+    "cron:hire-retention-30d": "node cron/hireRetention30d.js",
+    "cron:match-retrain-check": "node cron/matchRetrainCheck.js",
+    "loadtest:interview": "node scripts/loadTestInterview.js",
+    "match:extract-training": "node scripts/extractTrainingData.js",
+    "match:train-model": "node match/trainModel.js",
+    "match:benchmark": "node scripts/benchmarkMatchEngineV2.js"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +26,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.998.0",
+    "@aws-sdk/client-cloudwatch": "^3.998.0",
+    "@aws-sdk/client-sqs": "^3.998.0",
     "@google/generative-ai": "^0.24.1",
     "@sentry/node": "^10.40.0",
     "@sentry/profiling-node": "^10.40.0",

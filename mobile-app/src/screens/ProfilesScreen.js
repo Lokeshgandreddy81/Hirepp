@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useContext, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
     Modal, TextInput, KeyboardAvoidingView, Platform, Alert, Image, Animated
@@ -11,9 +11,11 @@ import {
 import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
 import client from '../api/client';
-import { AuthContext } from '../context/AuthContext';
-import { getPrimaryRoleFromUser } from '../utils/roleMode';
 import { useFocusEffect } from '@react-navigation/native';
+import { validateProfileResponse, logValidationError } from '../utils/apiValidator';
+import { useAppStore } from '../store/AppStore';
+import { trackEvent } from '../services/analytics';
+import { DEMO_MODE } from '../config';
 
 // ─── COMPLETION CALCULATOR ────────────────────────────────────────────────────
 const calcCompletion = (prof) => {
@@ -74,8 +76,8 @@ const CompletionCard = ({ profile, onEditPress }) => {
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 export default function ProfilesScreen({ navigation }) {
     const insets = useSafeAreaInsets();
-    const { userInfo } = useContext(AuthContext);
-    const role = getPrimaryRoleFromUser(userInfo) === 'employer' ? 'employer' : 'employee';
+    const { user, role: appRole } = useAppStore();
+    const role = appRole === 'employer' ? 'employer' : 'employee';
     const [profiles, setProfiles] = useState([]);
     const [pools, setPools] = useState([]);
     const [poolProfiles, setPoolProfiles] = useState([]);
@@ -89,12 +91,12 @@ export default function ProfilesScreen({ navigation }) {
     const [editingProfile, setEditingProfile] = useState(null);
     const [skillInput, setSkillInput] = useState('');
 
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(!DEMO_MODE);
     const [errorMsg, setErrorMsg] = useState('');
 
     const mapProfilesFromApi = useCallback((profile) => {
         if (!profile) return [];
-        const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim() || userInfo?.name || 'Profile';
+        const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim() || user?.name || 'Profile';
         const roleProfiles = Array.isArray(profile.roleProfiles) ? profile.roleProfiles : [];
         if (roleProfiles.length === 0) {
             return [
@@ -108,6 +110,7 @@ export default function ProfilesScreen({ navigation }) {
                     location: profile.city || 'Remote',
                     qualifications: [],
                     avatar: null,
+                    interviewVerified: Boolean(profile.interviewVerified),
                     isDefault: true,
                 }
             ];
@@ -122,17 +125,22 @@ export default function ProfilesScreen({ navigation }) {
             location: profile.city || 'Remote',
             qualifications: [],
             avatar: null,
+            interviewVerified: Boolean(profile.interviewVerified),
             isDefault: index === 0,
         }));
-    }, [userInfo?.name]);
+    }, [user?.name]);
 
     const fetchProfileData = useCallback(async () => {
         try {
             setErrorMsg('');
             const { data } = await client.get('/api/users/profile');
-            const mappedProfiles = mapProfilesFromApi(data?.profile);
+            const validatedProfile = validateProfileResponse(data);
+            const mappedProfiles = mapProfilesFromApi(validatedProfile);
             setProfiles(mappedProfiles);
         } catch (e) {
+            if (e?.name === 'ApiValidationError') {
+                logValidationError(e, '/api/users/profile');
+            }
             setErrorMsg('Could not load profile');
         }
     }, [mapProfilesFromApi]);
@@ -167,6 +175,7 @@ export default function ProfilesScreen({ navigation }) {
                     experienceYears: firstRole.experienceInRole || worker.totalExperience || 0,
                     location: worker.city || 'Remote',
                     summary: `Match score ${item.matchScore || 0}%`,
+                    skills: firstRole.skills || [],
                 };
             });
             setPoolProfiles(mappedCandidates);
@@ -179,13 +188,17 @@ export default function ProfilesScreen({ navigation }) {
 
     useEffect(() => {
         const loadData = async () => {
-            setIsLoading(true);
+            if (!DEMO_MODE) {
+                setIsLoading(true);
+            }
             if (role === 'employee') {
                 await fetchProfileData();
             } else {
                 await fetchPools();
             }
-            setIsLoading(false);
+            if (!DEMO_MODE) {
+                setIsLoading(false);
+            }
         };
         loadData();
     }, [role, fetchProfileData, fetchPools]);
@@ -193,12 +206,26 @@ export default function ProfilesScreen({ navigation }) {
     useEffect(() => {
         const loadCandidates = async () => {
             if (!selectedPool?.id || role !== 'employer') return;
-            setIsLoading(true);
+            if (!DEMO_MODE) {
+                setIsLoading(true);
+            }
             await fetchPoolCandidates(selectedPool.id);
-            setIsLoading(false);
+            if (!DEMO_MODE) {
+                setIsLoading(false);
+            }
         };
         loadCandidates();
     }, [selectedPool, role, fetchPoolCandidates]);
+
+    useFocusEffect(
+        useCallback(() => {
+            const profileViewPayload = {
+                source: 'profiles_screen',
+                mode: role === 'employer' ? 'talent' : 'profile',
+            };
+            trackEvent('PROFILE_VIEWED', profileViewPayload);
+        }, [role])
+    );
 
     useFocusEffect(
         useCallback(() => {
@@ -312,6 +339,22 @@ export default function ProfilesScreen({ navigation }) {
                                 </View>
                                 <Text style={styles.candySummaryText}>{selectedCandidate.summary}</Text>
                             </View>
+                            <View style={styles.candyCard}>
+                                <Text style={styles.candyCardTitle}>Experience & Skills</Text>
+                                <View style={styles.candidateSkillRow}>
+                                    <View style={styles.candidateExpBox}>
+                                        <Text style={styles.candidateExpValue}>{selectedCandidate.experienceYears || 0}</Text>
+                                        <Text style={styles.candidateExpLabel}>YEARS EXP</Text>
+                                    </View>
+                                    <View style={styles.candidateSkillsWrap}>
+                                        {(selectedCandidate.skills?.length ? selectedCandidate.skills : ['Operations', 'Communication', 'Support']).map((skill) => (
+                                            <View key={skill} style={styles.candidateSkillChip}>
+                                                <Text style={styles.candidateSkillText}>{skill}</Text>
+                                            </View>
+                                        ))}
+                                    </View>
+                                </View>
+                            </View>
                         </View>
                     </ScrollView>
                 </View>
@@ -373,9 +416,9 @@ export default function ProfilesScreen({ navigation }) {
         }
 
         return (
-            <View style={[styles.containerLight]}>
-                <View style={[styles.headerPurple, { paddingTop: insets.top + 16, paddingBottom: 24, paddingHorizontal: 24 }]}>
-                    <Text style={styles.employerTitle}>People Nearby</Text>
+                <View style={[styles.containerLight]}>
+                    <View style={[styles.headerPurple, { paddingTop: insets.top + 16, paddingBottom: 24, paddingHorizontal: 24 }]}>
+                    <Text style={styles.employerTitle}>Talent Pools</Text>
                     <Text style={styles.employerSub}>Organize and track your candidate pipelines</Text>
                 </View>
                 {isLoading ? (
@@ -475,11 +518,18 @@ export default function ProfilesScreen({ navigation }) {
                         <View key={prof._id} style={[styles.empProfileCard, prof.isDefault && styles.empProfileCardDefault]}>
                             <View style={styles.empProfTopRow}>
                                 <Text style={styles.empProfTitle}>{prof.roleTitle}</Text>
-                                {prof.isDefault && (
-                                    <View style={styles.empProfDefaultBadge}>
-                                        <Text style={styles.empProfDefaultText}>DEFAULT</Text>
-                                    </View>
-                                )}
+                                <View style={styles.empProfBadgeRow}>
+                                    {prof.interviewVerified ? (
+                                        <View style={styles.empProfVerifiedBadge}>
+                                            <Text style={styles.empProfVerifiedText}>Verified Interview Profile</Text>
+                                        </View>
+                                    ) : null}
+                                    {prof.isDefault && (
+                                        <View style={styles.empProfDefaultBadge}>
+                                            <Text style={styles.empProfDefaultText}>DEFAULT</Text>
+                                        </View>
+                                    )}
+                                </View>
                             </View>
                             <Text style={styles.empProfSummary} numberOfLines={2}>{prof.summary}</Text>
 
@@ -651,7 +701,7 @@ const styles = StyleSheet.create({
     headerTitleLight: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
     headerSubLight: { fontSize: 10, color: '#e9d5ff', textTransform: 'uppercase', letterSpacing: 1, marginTop: 4, fontWeight: '700' },
 
-    employerTitle: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
+    employerTitle: { fontSize: 24, fontWeight: '900', color: '#fff', marginBottom: 4 },
     employerSub: { fontSize: 14, color: '#e9d5ff' },
 
     candidateHero: { alignItems: 'center', paddingTop: 32, paddingBottom: 24, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
@@ -665,8 +715,15 @@ const styles = StyleSheet.create({
     candyCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
     candyCardTitle: { fontWeight: 'bold', color: '#0f172a', fontSize: 16 },
     candyResumeBtn: { backgroundColor: '#faf5ff', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#f3e8ff' },
-    candyResumeText: { fontSize: 10, fontWeight: 'bold', color: '#9333ea', letterSpacing: 0.5 },
+    candyResumeText: { fontSize: 10, fontWeight: '900', color: '#7c3aed', letterSpacing: 0.5 },
     candySummaryText: { fontSize: 14, color: '#475569', lineHeight: 22 },
+    candidateSkillRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 12 },
+    candidateExpBox: { width: 88, backgroundColor: '#faf5ff', borderWidth: 1, borderColor: '#e9d5ff', borderRadius: 12, alignItems: 'center', paddingVertical: 10, marginRight: 10 },
+    candidateExpValue: { fontSize: 26, lineHeight: 28, fontWeight: '900', color: '#7c3aed' },
+    candidateExpLabel: { fontSize: 9, fontWeight: '900', color: '#7c3aed', letterSpacing: 1 },
+    candidateSkillsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, flex: 1 },
+    candidateSkillChip: { backgroundColor: '#f8fafc', borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0', paddingHorizontal: 8, paddingVertical: 5 },
+    candidateSkillText: { fontSize: 10, fontWeight: '900', color: '#475569', textTransform: 'uppercase' },
 
     poolCandCard: { backgroundColor: '#fff', padding: 16, borderRadius: 16, borderWidth: 1, borderColor: '#f1f5f9', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1, flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
     poolCandImg: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, borderColor: '#f1f5f9', marginRight: 16 },
@@ -696,16 +753,19 @@ const styles = StyleSheet.create({
     employeeHeader: { backgroundColor: '#fff', paddingHorizontal: 24, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', zIndex: 10 },
     employeeHeaderTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
     employeeTitle: { fontSize: 24, fontWeight: 'bold', color: '#0f172a' },
-    createNewBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#9333ea', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 30, shadowColor: '#e9d5ff', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 1, shadowRadius: 8, elevation: 4 },
-    createNewBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+    createNewBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#7c3aed', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 30, shadowColor: '#ddd6fe', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 1, shadowRadius: 8, elevation: 4 },
+    createNewBtnText: { color: '#fff', fontSize: 14, fontWeight: '900' },
     employeeSub: { fontSize: 14, color: '#64748b' },
 
     empProfileCard: { backgroundColor: '#fff', padding: 20, borderRadius: 24, borderWidth: 2, borderColor: 'transparent', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1, marginBottom: 16 },
-    empProfileCardDefault: { borderColor: '#a855f7', shadowColor: '#a855f7', shadowOpacity: 0.1, shadowRadius: 12, elevation: 4 },
+    empProfileCardDefault: { borderColor: '#7c3aed', shadowColor: '#7c3aed', shadowOpacity: 0.1, shadowRadius: 12, elevation: 4 },
     empProfTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
     empProfTitle: { fontSize: 18, fontWeight: 'bold', color: '#1e293b', flex: 1 },
+    empProfBadgeRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 8, gap: 6 },
     empProfDefaultBadge: { backgroundColor: '#faf5ff', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#f3e8ff', marginLeft: 8 },
     empProfDefaultText: { fontSize: 10, fontWeight: '900', color: '#9333ea', letterSpacing: 1 },
+    empProfVerifiedBadge: { backgroundColor: 'rgba(16,185,129,0.14)', borderColor: 'rgba(16,185,129,0.32)', borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+    empProfVerifiedText: { fontSize: 10, fontWeight: '800', color: '#065f46' },
     empProfSummary: { fontSize: 14, color: '#475569', lineHeight: 20, marginBottom: 16 },
 
     empProfSkillsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },

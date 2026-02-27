@@ -13,6 +13,17 @@ import LoginScreen from './src/screens/LoginScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 import VideoRecordScreen from './src/screens/VideoRecordScreen';
 import SmartInterviewScreen from './src/screens/SmartInterviewScreen';
+import VideoCallScreen from './src/screens/VideoCallScreen';
+import EmployerAnalyticsScreen from './src/screens/EmployerAnalyticsScreen';
+import AdminDashboardScreen from './src/screens/AdminDashboardScreen';
+import PostJobScreen from './src/screens/PostJobScreen';
+import JobDetailsScreen from './src/screens/JobDetailsScreen';
+import ChatScreen from './src/screens/ChatScreen';
+import CompanyDetailsScreen from './src/screens/CompanyDetailsScreen';
+import EmployerProfileCreateScreen from './src/screens/EmployerProfileCreateScreen';
+import ApplicantTimelineScreen from './src/screens/ApplicantTimelineScreen';
+import SubscriptionScreen from './src/screens/SubscriptionScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
 
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
@@ -20,7 +31,7 @@ import VerificationRequiredScreen from './src/screens/VerificationRequiredScreen
 import OTPVerificationScreen from './src/screens/OTPVerificationScreen';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
-import { ActivityIndicator, View, Alert, Text } from 'react-native';
+import { ActivityIndicator, View, Alert, Text, Platform, StatusBar as RNStatusBar } from 'react-native';
 
 import ErrorBoundary from './src/components/ErrorBoundary';
 import OfflineBanner from './src/components/OfflineBanner';
@@ -30,26 +41,84 @@ import Constants from 'expo-constants';
 import { navigationRef, navigate } from './src/navigation/navigationRef';
 import { answerCall, endCall } from './src/services/WebRTCService';
 import { logger } from './src/utils/logger';
+import { AppStoreProvider, useAppStore } from './src/store/AppStore';
+import { logDemoAnalyticsSummary, trackEvent } from './src/services/analytics';
+import { DEMO_MODE } from './src/config';
+
+if (!__DEV__) {
+  const noop = () => {};
+  console.log = noop;
+  console.warn = noop;
+  console.info = noop;
+  console.debug = noop;
+}
 
 const Stack = createStackNavigator();
 
 const AppNav = () => {
   const { isLoading, userToken, hasCompletedOnboarding } = useContext(AuthContext);
+  const { role, setSocketStatus, incrementNotificationsCount, setNotificationsCount } = useAppStore();
   const notificationListener = useRef();
   const responseListener = useRef();
+  const hasRunInterviewResumeCheckRef = useRef(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      RNStatusBar.setBackgroundColor('#5b21b6');
+      RNStatusBar.setBarStyle('light-content');
+      RNStatusBar.setTranslucent(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    trackEvent('APP_OPEN', {
+      platform: Platform.OS,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!DEMO_MODE || !__DEV__) return undefined;
+
+    let mounted = true;
+    const logSnapshot = async () => {
+      try {
+        const { getMockDatasetSummary } = await import('./src/demo/mockApi');
+        if (!mounted) return;
+        const datasetSummary = getMockDatasetSummary();
+        logDemoAnalyticsSummary(datasetSummary);
+      } catch (error) {
+        logger.warn('Demo metrics snapshot unavailable:', error?.message || error);
+      }
+    };
+
+    logSnapshot();
+    const interval = setInterval(logSnapshot, 30000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (userToken) {
-      SocketService.connect();
+      if (DEMO_MODE) {
+        setSocketStatus('connected');
+      } else {
+        setSocketStatus('connecting');
+        SocketService.connect();
+      }
     } else {
+      setSocketStatus('disconnected');
       SocketService.disconnect();
+      setNotificationsCount(0);
     }
     return () => {
       SocketService.disconnect();
     };
-  }, [userToken]);
+  }, [userToken, setNotificationsCount, setSocketStatus]);
 
   useEffect(() => {
+    if (DEMO_MODE) return;
     if (!userToken) return;
 
     const isExpoGo = Constants.appOwnership === 'expo';
@@ -74,6 +143,7 @@ const AppNav = () => {
 
       notificationSub = Notifications.addNotificationReceivedListener(notification => {
         logger.log('Notification received:', notification);
+        incrementNotificationsCount(1);
       });
 
       responseSub = Notifications.addNotificationResponseReceivedListener(response => {
@@ -81,7 +151,9 @@ const AppNav = () => {
         if (data.type === 'message' && data.applicationId) {
           navigate('Chat', { applicationId: data.applicationId });
         } else if (data.type === 'application' && data.applicationId) {
-          navigate('EmployerDashboard');
+          navigate('MainTab', { screen: role === 'employer' ? 'My Jobs' : 'Applications' });
+        } else if ((data.type === 'INTERVIEW_READY' || data.type === 'interview_ready') && data.processingId) {
+          navigate('SmartInterview', { processingId: data.processingId, fromNotification: true });
         }
       });
 
@@ -104,9 +176,44 @@ const AppNav = () => {
       removeSubscription(notificationSub || notificationListener.current);
       removeSubscription(responseSub || responseListener.current);
     };
+  }, [userToken, role, incrementNotificationsCount]);
+
+  useEffect(() => {
+    if (DEMO_MODE) return;
+    if (!userToken) {
+      hasRunInterviewResumeCheckRef.current = false;
+      return;
+    }
+    if (hasRunInterviewResumeCheckRef.current) return;
+
+    hasRunInterviewResumeCheckRef.current = true;
+    let isMounted = true;
+
+    const resumeInterviewIfNeeded = async () => {
+      try {
+        const { default: apiClient } = await import('./src/api/client');
+        const { data } = await apiClient.get('/api/v2/interview-processing/latest');
+        if (!isMounted) return;
+
+        if (data?.processingId && (data?.status === 'pending' || data?.status === 'processing')) {
+          navigate('SmartInterview', {
+            processingId: data.processingId,
+            resumeCheck: true,
+          });
+        }
+      } catch (error) {
+        logger.warn('Interview resume check failed:', error?.message || error);
+      }
+    };
+
+    resumeInterviewIfNeeded();
+    return () => {
+      isMounted = false;
+    };
   }, [userToken]);
 
   useEffect(() => {
+    if (DEMO_MODE) return;
     if (!userToken) return;
 
     const handleIncomingCall = (payload = {}) => {
@@ -140,7 +247,7 @@ const AppNav = () => {
       <View style={{ flex: 1, backgroundColor: '#9333ea', alignItems: 'center', justifyContent: 'center' }}>
         <Text style={{ color: '#fff', fontSize: 32, fontWeight: '900' }}>HIRE</Text>
         <Text style={{ color: '#c084fc', fontSize: 32, fontWeight: '900' }}>CIRCLE</Text>
-        <ActivityIndicator color="#fff" style={{ marginTop: 24 }} />
+        {!DEMO_MODE ? <ActivityIndicator color="#fff" style={{ marginTop: 24 }} /> : null}
       </View>
     );
   }
@@ -159,18 +266,17 @@ const AppNav = () => {
             <Stack.Screen name="MainTab" component={MainTabNavigator} />
             <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
             <Stack.Screen name="SmartInterview" component={SmartInterviewScreen} />
-            <Stack.Screen name="VideoCall" component={require('./src/screens/VideoCallScreen').default} />
-            <Stack.Screen name="EmployerDashboard" component={require('./src/screens/EmployerDashboardScreen').default} />
-            <Stack.Screen name="EmployerAnalytics" component={require('./src/screens/EmployerAnalyticsScreen').default} />
-            <Stack.Screen name="AdminDashboard" component={require('./src/screens/AdminDashboardScreen').default} />
-            <Stack.Screen name="PostJob" component={require('./src/screens/PostJobScreen').default} />
-            <Stack.Screen name="JobDetails" component={require('./src/screens/JobDetailsScreen').default} />
-            <Stack.Screen name="Chat" component={require('./src/screens/ChatScreen').default} />
-            <Stack.Screen name="CompanyDetails" component={require('./src/screens/CompanyDetailsScreen').default} />
-            <Stack.Screen name="EmployerProfileCreate" component={require('./src/screens/EmployerProfileCreateScreen').default} />
-            <Stack.Screen name="ApplicantTimeline" component={require('./src/screens/ApplicantTimelineScreen').default} />
-            <Stack.Screen name="Subscription" component={require('./src/screens/SubscriptionScreen').default} />
-            <Stack.Screen name="Notifications" component={require('./src/screens/NotificationsScreen').default} options={{ title: 'Notifications', headerBackTitle: 'Back' }} />
+            <Stack.Screen name="VideoCall" component={VideoCallScreen} />
+            <Stack.Screen name="EmployerAnalytics" component={EmployerAnalyticsScreen} />
+            <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
+            <Stack.Screen name="PostJob" component={PostJobScreen} />
+            <Stack.Screen name="JobDetails" component={JobDetailsScreen} />
+            <Stack.Screen name="Chat" component={ChatScreen} />
+            <Stack.Screen name="ContactInfo" component={CompanyDetailsScreen} />
+            <Stack.Screen name="EmployerProfileCreate" component={EmployerProfileCreateScreen} />
+            <Stack.Screen name="ApplicantTimeline" component={ApplicantTimelineScreen} />
+            <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ title: 'Notifications', headerBackTitle: 'Back' }} />
             <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
             <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
           </>
@@ -197,7 +303,7 @@ const AppNav = () => {
           )
         )}
       </Stack.Navigator>
-      <StatusBar style="auto" />
+      <StatusBar style="light" backgroundColor="#5b21b6" translucent={false} />
     </NavigationContainer>
   );
 };
@@ -206,10 +312,12 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
-        <OfflineBanner />
         <AppStateProvider>
           <AuthProvider>
-            <AppNav />
+            <AppStoreProvider>
+              <OfflineBanner />
+              <AppNav />
+            </AppStoreProvider>
           </AuthProvider>
         </AppStateProvider>
       </ErrorBoundary>

@@ -1,35 +1,121 @@
 console.log('1. Starting index.js...');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+
+// LOAD ENV VARS FIRST
+dotenv.config();
+
+// SENTRY INITIALIZATION (Must be early)
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || "https://examplePublicKey@o0.ingest.sentry.io/0", // Fallback/dummy for dev
+  integrations: [
+    nodeProfilingIntegration(),
+  ],
+  tracesSampleRate: 1.0,
+  profilesSampleRate: 1.0,
+});
 // LOAD ENV VARS FIRST
 dotenv.config();
 
 console.log('2. Modules imported. Config...');
 const path = require('path');
+const morgan = require('morgan');
+const logger = require('./utils/logger');
 const connectDB = require('./config/db');
-console.log('3. DB Module loaded. Loading Routes...');
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./swagger');
+
+logger.info('3. DB Module loaded. Loading Routes...');
 const userRoutes = require('./routes/userRoutes');
+const authRoutes = require('./routes/authRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const jobRoutes = require('./routes/jobRoutes'); // Added based on app.use
+const applicationRoutes = require('./routes/applicationRoutes'); // Added based on app.use
+const chatRoutes = require('./routes/chatRoutes'); // Added based on app.use
+const matchRoutes = require('./routes/matchingRoutes'); // Added based on app.use
+const analyticsRoutes = require('./routes/analyticsRoutes'); // NEW: Analytics
+const notificationRoutes = require('./routes/notificationRoutes'); // NEW: Notifications
+const adminRoutes = require('./routes/adminRoutes'); // NEW: Admin API
+const feedbackRoutes = require('./routes/feedbackRoutes'); // NEW: Beta Feedback
+const paymentRoutes = require('./routes/paymentRoutes'); // NEW: Stripe Payments
+const insightRoutes = require('./routes/insightRoutes'); // NEW: AI Insights
+const growthRoutes = require('./routes/growthRoutes'); // NEW: Viral loops
+const orgRoutes = require('./routes/orgRoutes'); // NEW: Enterprise Features
+const publicApiRoutes = require('./routes/publicApiRoutes'); // NEW: Developer API
 
 console.log('4. Connecting to DB...');
+logger.info('4. Connecting to DB...');
 connectDB();
 
 const app = express();
-console.log('5. Express initialized.');
+logger.info('5. Express initialized.');
 
-app.use(cors());
+// SENTRY: The request handler must be the first middleware on the app
+// Sentry v8+ handles this differently, commenting out to avoid crash
+// app.use(Sentry.Handlers.requestHandler());
+// app.use(Sentry.Handlers.tracingHandler());
+
+// Security Headers
+app.use(helmet());
+
+// API Rate Limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many requests from this IP, please try again after 15 minutes'
+});
+app.use('/api/', apiLimiter);
+
+// Strict CORS
+const allowedOrigins = [
+  'http://localhost:19006',
+  'http://localhost:8081',
+  'http://localhost:5001'
+];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true); // Allow mobile/curl
+    if (allowedOrigins.indexOf(origin) === -1) {
+      return callback(new Error('CORS policy restricted.'), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
+
+// STRIPE WEBHOOK MUST BE BEFORE express.json()
+app.use('/api/payment', paymentRoutes);
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Request Logging Middleware
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
+// Request Logging Middleware (Morgan + Winston)
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('dev'));
+} else {
+  app.use(morgan('combined', { stream: logger.stream }));
+}
 
 // Serve the uploads folder so users can watch their videos
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Swagger API Docs
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { background-color: #9333ea; }',
+  customSiteTitle: 'HireCircle API Docs',
+}));
+
+// Uptime Monitoring / Health Check
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: Date.now() });
+});
 
 app.get('/', (req, res) => {
   res.send('API is running...');
@@ -37,13 +123,24 @@ app.get('/', (req, res) => {
 
 // Use the routes
 app.use('/api/users', userRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/upload', uploadRoutes); // Register Upload Routes
-app.use('/api/jobs', require('./routes/jobRoutes'));
-app.use('/api/applications', require('./routes/applicationRoutes'));
-app.use('/api/chat', require('./routes/chatRoutes'));
-app.use('/api/matches', require('./routes/matchingRoutes'));
+app.use('/api/jobs', jobRoutes);
+app.use('/api/applications', applicationRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/matches', matchRoutes);
+app.use('/api/analytics', analyticsRoutes); // Attach analytics routes
+app.use('/api/notifications', notificationRoutes); // Attach notification routes
+app.use('/api/admin', adminRoutes); // Attach admin routes
+app.use('/api/feedback', feedbackRoutes); // Attach feedback routes
+app.use('/api/insights', insightRoutes); // Attach AI insights
+app.use('/api/growth', growthRoutes); // Attach Viral loops
+app.use('/api/organizations', orgRoutes); // Attach Enterprise orgs
+app.use('/api/public', publicApiRoutes); // Attach Developer Partner API
 
-// Port 5001 matches the frontend fetch logic
+// SENTRY: The error handler must be before any other error middleware and after all controllers
+// app.use(Sentry.Handlers.errorHandler());
+
 // Port 5001 matches the frontend fetch logic
 const PORT = process.env.PORT || 5001;
 
@@ -102,5 +199,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  logger.info(`Server is running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
 });

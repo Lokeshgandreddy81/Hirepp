@@ -8,6 +8,7 @@ import {
     IconMic, IconUsers, IconMapPin, IconBriefcase, IconCheck, IconVideo, IconGlobe, IconFile, IconX, IconMessageSquare, IconPlus
 } from '../components/Icons';
 import SkeletonLoader from '../components/SkeletonLoader';
+import EmptyState from '../components/EmptyState';
 
 // ─── MOCK DATA ───────────────────────────────────────────────────────────────
 const MOCK_ROLE = 'employee'; // toggle to 'employer' to see employer view
@@ -223,6 +224,14 @@ export default function ProfilesScreen({ navigation }) {
                     <SkeletonLoader height={160} style={{ borderRadius: 24, marginBottom: 16 }} />
                     <SkeletonLoader height={160} style={{ borderRadius: 24, marginBottom: 16 }} />
                 </View>
+            ) : profiles.length === 0 ? (
+                <EmptyState
+                    title="No Profiles Yet"
+                    message="Create your first work profile to start getting matched"
+                    icon={<IconUsers size={64} color="#94a3b8" />}
+                    actionLabel="Create Profile"
+                    onAction={() => { /* trig interview */ }}
+                />
             ) : (
                 <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
                     {profiles.map((prof) => (

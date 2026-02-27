@@ -11,6 +11,31 @@ export const AuthProvider = ({ children }) => {
     const [userInfo, setUserInfo] = useState(null);
     const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false);
 
+    const isTokenValid = (token) => {
+        try {
+            if (!token || typeof token !== 'string') return false;
+            const payloadChunk = token.split('.')[1];
+            if (!payloadChunk) return false;
+
+            const decodeBase64 = typeof globalThis?.atob === 'function'
+                ? globalThis.atob
+                : (value) => {
+                    if (!globalThis?.Buffer) return null;
+                    return globalThis.Buffer.from(value, 'base64').toString('utf8');
+                };
+
+            const base64 = payloadChunk.replace(/-/g, '+').replace(/_/g, '/');
+            const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`;
+            const decodedString = decodeBase64(padded);
+            if (!decodedString) return false;
+            const decoded = JSON.parse(decodedString);
+
+            return Boolean(decoded?.exp) && decoded.exp * 1000 > Date.now();
+        } catch {
+            return false;
+        }
+    };
+
     const login = async (data) => {
         setIsLoading(true);
         try {
@@ -65,18 +90,30 @@ export const AuthProvider = ({ children }) => {
     const isLoggedIn = async () => {
         try {
             setIsLoading(true);
-            let userInfoStr = await SecureStore.getItemAsync('userInfo');
+            const userInfoStr = await SecureStore.getItemAsync('userInfo');
+            const onboardingStr = await SecureStore.getItemAsync('hasCompletedOnboarding');
+            let resolvedOnboarding = onboardingStr === 'true';
+
             if (userInfoStr) {
                 let user = JSON.parse(userInfoStr);
-                user = { ...user, primaryRole: getPrimaryRoleFromUser(user) };
-                await SecureStore.setItemAsync('userInfo', JSON.stringify(user));
-                setUserInfo(user);
-                setUserToken(user.token);
+                if (isTokenValid(user?.token)) {
+                    user = { ...user, primaryRole: getPrimaryRoleFromUser(user) };
+                    await SecureStore.setItemAsync('userInfo', JSON.stringify(user));
+                    setUserInfo(user);
+                    setUserToken(user.token);
+
+                    if (!resolvedOnboarding) {
+                        await SecureStore.setItemAsync('hasCompletedOnboarding', 'true');
+                        resolvedOnboarding = true;
+                    }
+                } else {
+                    await SecureStore.deleteItemAsync('userInfo');
+                    setUserInfo(null);
+                    setUserToken(null);
+                }
             }
-            let onboardingStr = await SecureStore.getItemAsync('hasCompletedOnboarding');
-            if (onboardingStr === 'true') {
-                setHasCompletedOnboarding(true);
-            }
+
+            setHasCompletedOnboarding(resolvedOnboarding);
         } catch (e) {
             console.error('isLoggedIn error', e);
         }

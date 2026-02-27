@@ -49,6 +49,10 @@ const jobSchema = mongoose.Schema(
                 type: String, // e.g., "Heavy Vehicle", "Commercial"
             }
         ],
+        isPulse: {
+            type: Boolean,
+            default: false,
+        },
         isOpen: {
             type: Boolean,
             default: true
@@ -58,5 +62,9 @@ const jobSchema = mongoose.Schema(
         timestamps: true,
     }
 );
+
+// Indexes
+jobSchema.index({ employerId: 1 });
+jobSchema.index({ isOpen: 1, location: 1 }); // Used for candidate matching
 
 module.exports = mongoose.model('Job', jobSchema);

@@ -1,13 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
 import {
-    View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, Image, ActivityIndicator, FlatList
+    View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, Image, ActivityIndicator, FlatList, Alert, Share
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     IconUsers, IconMessageSquare, IconPlus, IconCheck,
     IconSparkles, IconSearch, IconBell, IconAward, IconVideo,
     IconX, IconMic, IconImage, IconSend, IconSettings, IconMapPin, IconBookOpen
 } from '../components/Icons';
+import client from '../api/client';
+import { AuthContext } from '../context/AuthContext';
 
 // ─── MOCK DATA ────────────────────────────────────────────────────────────────
 const MOCK_POSTS = [
@@ -53,6 +56,24 @@ const MOCK_CIRCLES = [
 
 const SUB_TABS = ['Feed', 'Pulse', 'Academy', 'Circles', 'Bounties'];
 const CURRENT_USER = { avatar: 'https://i.pravatar.cc/150?img=11', name: 'Lokesh' };
+
+const timeAgo = (dateString) => {
+    if (!dateString) return 'Just now';
+    const date = new Date(dateString);
+    const diffMs = Date.now() - date.getTime();
+    const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+    if (diffMinutes < 1) return 'Just now';
+    if (diffMinutes < 60) return `${diffMinutes}m ago`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+};
+
+const firstSalaryNumber = (value = '') => {
+    const match = String(value).replace(/,/g, '').match(/\d+/);
+    return match ? Number(match[0]) : 0;
+};
 
 // ─── POST COMPONENTS ──────────────────────────────────────────────────────────
 function PostHeader({ post, isBounty = false }) {
@@ -152,11 +173,19 @@ function FeedPost({ post, onVouch }) {
 // ─── MAIN SCREEN ──────────────────────────────────────────────────────────────
 export default function ConnectScreen() {
     const insets = useSafeAreaInsets();
+    const navigation = useNavigation();
+    const { userInfo } = useContext(AuthContext);
     const [activeTab, setActiveTab] = useState('Feed');
     const [joinedCircles, setJoinedCircles] = useState(new Set(['c1']));
     const [selectedCircle, setSelectedCircle] = useState(null);
     const [circleDetailTab, setCircleDetailTab] = useState('DISCUSSION');
     const [chatText, setChatText] = useState('');
+    const [circlesData, setCirclesData] = useState([]);
+    const [academyCourses, setAcademyCourses] = useState([]);
+    const [enrolledCourses, setEnrolledCourses] = useState([]);
+    const [pulseItems, setPulseItems] = useState([]);
+    const [referralStats, setReferralStats] = useState(null);
+    const [bountyItems, setBountyItems] = useState([]);
 
     // ── Agent 4: Circles State ──
     const [isCircleRecording, setIsCircleRecording] = useState(false);
@@ -177,6 +206,10 @@ export default function ConnectScreen() {
     const [composerMediaType, setComposerMediaType] = useState(null); // 'VOICE'|'PHOTOS'|'VIDEO'|'TEXT'
     const [composerText, setComposerText] = useState('');
     const [feedPosts, setFeedPosts] = useState(MOCK_POSTS);
+    const [feedPage, setFeedPage] = useState(1);
+    const [hasMoreFeed, setHasMoreFeed] = useState(true);
+    const [loadingFeed, setLoadingFeed] = useState(false);
+    const [loadingMoreFeed, setLoadingMoreFeed] = useState(false);
     const [likedPostIds, setLikedPostIds] = useState(new Set());
     const [likeCountMap, setLikeCountMap] = useState(
         Object.fromEntries(MOCK_POSTS.map(p => [p._id, p.likes]))
@@ -185,34 +218,132 @@ export default function ConnectScreen() {
     const [activeCommentPostId, setActiveCommentPostId] = useState(null);
     const [commentInputMap, setCommentInputMap] = useState({});
 
+    const mapApiPost = useCallback((post) => {
+        const authorName = post?.user?.name || 'Member';
+        const mappedType = post?.type === 'photo' ? 'gallery' : (post?.type || 'text');
+        return {
+            _id: String(post?._id || `post-${Date.now()}`),
+            type: mappedType,
+            author: authorName,
+            role: post?.user?.primaryRole === 'employer' ? 'Employer' : 'Member',
+            time: timeAgo(post?.createdAt),
+            karma: 0,
+            text: post?.content || '',
+            likes: Array.isArray(post?.likes) ? post.likes.length : 0,
+            comments: Array.isArray(post?.comments) ? post.comments.length : 0,
+            vouched: false,
+            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=9333ea&color=fff`,
+            duration: mappedType === 'voice' ? '0:15' : undefined,
+            mediaUrl: post?.mediaUrl || '',
+        };
+    }, []);
+
+    const fetchFeedPosts = useCallback(async (pageToLoad = 1, replace = false) => {
+        if (replace) setLoadingFeed(true);
+        else setLoadingMoreFeed(true);
+
+        try {
+            const { data } = await client.get('/api/feed/posts', {
+                params: {
+                    page: pageToLoad,
+                    limit: 10,
+                },
+            });
+            const apiPosts = Array.isArray(data?.posts) ? data.posts : [];
+            const mappedPosts = apiPosts.map(mapApiPost);
+            setFeedPosts((prev) => replace ? mappedPosts : [...prev, ...mappedPosts]);
+            setFeedPage(pageToLoad);
+            setHasMoreFeed(Boolean(data?.hasMore));
+
+            if (replace) {
+                const counts = {};
+                const liked = new Set();
+                mappedPosts.forEach((post) => {
+                    counts[post._id] = post.likes || 0;
+                });
+                setLikeCountMap(counts);
+                setLikedPostIds(liked);
+            }
+        } catch (error) {
+            if (replace) {
+                Alert.alert('Feed Unavailable', 'Could not load posts right now.');
+            }
+        } finally {
+            setLoadingFeed(false);
+            setLoadingMoreFeed(false);
+        }
+    }, [mapApiPost]);
+
     const handleMediaButtonClick = (type) => { setComposerOpen(true); setComposerMediaType(type); };
     const handleInputAreaClick = () => { setComposerOpen(true); setComposerMediaType('TEXT'); };
     const handleCancelComposer = () => { setComposerOpen(false); setComposerMediaType(null); setComposerText(''); };
-    const handlePost = () => {
+    const handlePost = async () => {
         if (!composerText.trim()) return;
-        const newPost = {
-            _id: 'p' + Date.now(), type: composerMediaType === 'VOICE' ? 'voice' : composerMediaType === 'PHOTOS' ? 'gallery' : 'text',
-            author: CURRENT_USER.name, role: 'Member', time: 'Just now', karma: 0,
-            text: composerText, likes: 0, comments: 0, vouched: false, avatar: CURRENT_USER.avatar,
-            duration: composerMediaType === 'VOICE' ? '0:10' : undefined,
-        };
-        setFeedPosts(prev => [newPost, ...prev]);
-        setLikeCountMap(prev => ({ ...prev, [newPost._id]: 0 }));
-        setComposerText(''); setComposerOpen(false); setComposerMediaType(null);
+        try {
+            const feedType = composerMediaType === 'VOICE'
+                ? 'voice'
+                : composerMediaType === 'PHOTOS'
+                    ? 'photo'
+                    : composerMediaType === 'VIDEO'
+                        ? 'video'
+                        : 'text';
+            const { data } = await client.post('/api/feed/posts', {
+                type: feedType,
+                content: composerText.trim(),
+            });
+            const createdPost = data?.post ? mapApiPost(data.post) : {
+                _id: `local-${Date.now()}`,
+                type: feedType === 'photo' ? 'gallery' : feedType,
+                author: userInfo?.name || CURRENT_USER.name,
+                role: 'Member',
+                time: 'Just now',
+                karma: 0,
+                text: composerText.trim(),
+                likes: 0,
+                comments: 0,
+                vouched: false,
+                avatar: CURRENT_USER.avatar,
+            };
+            setFeedPosts(prev => [createdPost, ...prev]);
+            setLikeCountMap(prev => ({ ...prev, [createdPost._id]: 0 }));
+            setComposerText('');
+            setComposerOpen(false);
+            setComposerMediaType(null);
+        } catch (error) {
+            Alert.alert('Post Failed', 'Could not publish your post right now.');
+        }
     };
-    const handleToggleLike = (postId) => {
-        setLikedPostIds(prev => {
-            const next = new Set(prev);
-            if (next.has(postId)) { next.delete(postId); setLikeCountMap(cm => ({ ...cm, [postId]: (cm[postId] || 1) - 1 })); }
-            else { next.add(postId); setLikeCountMap(cm => ({ ...cm, [postId]: (cm[postId] || 0) + 1 })); }
-            return next;
-        });
+    const handleToggleLike = async (postId) => {
+        try {
+            const { data } = await client.post(`/api/feed/posts/${postId}/like`);
+            const isLiked = Boolean(data?.liked);
+            setLikedPostIds(prev => {
+                const next = new Set(prev);
+                if (isLiked) next.add(postId);
+                else next.delete(postId);
+                return next;
+            });
+            setLikeCountMap(cm => ({ ...cm, [postId]: Number(data?.likesCount || 0) }));
+        } catch (error) {
+            // Preserve previous local fallback behavior if API fails.
+            setLikedPostIds(prev => {
+                const next = new Set(prev);
+                if (next.has(postId)) { next.delete(postId); setLikeCountMap(cm => ({ ...cm, [postId]: (cm[postId] || 1) - 1 })); }
+                else { next.add(postId); setLikeCountMap(cm => ({ ...cm, [postId]: (cm[postId] || 0) + 1 })); }
+                return next;
+            });
+        }
     };
-    const handleSubmitComment = (postId) => {
+    const handleSubmitComment = async (postId) => {
         const text = (commentInputMap[postId] || '').trim();
         if (!text) return;
-        setCommentsByPostId(prev => ({ ...prev, [postId]: [...(prev[postId] || []), text] }));
-        setCommentInputMap(prev => ({ ...prev, [postId]: '' }));
+        try {
+            await client.post(`/api/feed/posts/${postId}/comments`, { text });
+            setCommentsByPostId(prev => ({ ...prev, [postId]: [...(prev[postId] || []), text] }));
+            setCommentInputMap(prev => ({ ...prev, [postId]: '' }));
+        } catch (error) {
+            Alert.alert('Comment Failed', 'Could not add comment right now.');
+        }
     };
 
     // ── Agent 2: Pulse State ──
@@ -221,14 +352,74 @@ export default function ConnectScreen() {
     const [radarRefreshing, setRadarRefreshing] = useState(false);
     const [pulseToast, setPulseToast] = useState(null);
     const showPulseToast = (msg) => { setPulseToast(msg); setTimeout(() => setPulseToast(null), 2500); };
-    const handleRefreshRadar = () => { setRadarRefreshing(true); setTimeout(() => setRadarRefreshing(false), 1200); };
-    const handleApplyGig = (gig) => { setAppliedGigIds(prev => new Set(prev).add(gig.id)); showPulseToast(`Request sent to ${gig.employer}!`); };
+    const fetchPulseItems = useCallback(async () => {
+        try {
+            const { data } = await client.get('/api/pulse');
+            const items = Array.isArray(data?.items) ? data.items : [];
+            const mapped = items.map((item) => ({
+                id: item._id,
+                title: item.title || 'Urgent Requirement',
+                employer: item.companyName || 'Employer',
+                distance: 'Nearby',
+                pay: item.salaryRange || 'Negotiable',
+                urgent: true,
+                timePosted: timeAgo(item.createdAt),
+                category: item.requirements?.[0] || 'Pulse',
+                categoryBg: '#fef3c7',
+                categoryColor: '#b45309',
+            }));
+            setPulseItems(mapped);
+        } catch (error) {
+            // Keep UI fallback data when API is unavailable.
+        }
+    }, []);
+    const handleRefreshRadar = async () => {
+        setRadarRefreshing(true);
+        await fetchPulseItems();
+        setRadarRefreshing(false);
+    };
+    const handleApplyGig = async (gig) => {
+        try {
+            if (!gig?.id) return;
+            await client.post('/api/applications', {
+                jobId: gig.id,
+                workerId: userInfo?._id,
+                initiatedBy: 'worker',
+            });
+            setAppliedGigIds(prev => new Set(prev).add(gig.id));
+            showPulseToast(`Request sent to ${gig.employer}!`);
+        } catch (error) {
+            showPulseToast('Could not apply right now. Please retry.');
+        }
+    };
     const handleHirePro = (pro) => { setHiredProIds(prev => new Set(prev).add(pro.id)); showPulseToast(`Hire request sent to ${pro.name}!`); };
 
     // ── Agent 3: Academy State ──
     const [enrolledCourseIds, setEnrolledCourseIds] = useState(new Set());
     const [connectedMentorIds, setConnectedMentorIds] = useState(new Set());
-    const handleEnrollCourse = (id) => setEnrolledCourseIds(prev => new Set(prev).add(id));
+    const fetchAcademyData = useCallback(async () => {
+        try {
+            const [coursesRes, enrolledRes] = await Promise.all([
+                client.get('/api/academy/courses'),
+                client.get('/api/academy/enrolled'),
+            ]);
+            const courses = Array.isArray(coursesRes?.data?.courses) ? coursesRes.data.courses : [];
+            const enrolled = Array.isArray(enrolledRes?.data?.enrolled) ? enrolledRes.data.enrolled : [];
+            setAcademyCourses(courses);
+            setEnrolledCourses(enrolled);
+            setEnrolledCourseIds(new Set(enrolled.map((item) => item.courseId)));
+        } catch (error) {
+            // Keep local fallback demo data if academy API call fails.
+        }
+    }, []);
+    const handleEnrollCourse = async (id) => {
+        try {
+            await client.post(`/api/academy/courses/${id}/enroll`);
+            setEnrolledCourseIds(prev => new Set(prev).add(id));
+        } catch (error) {
+            Alert.alert('Enrollment Failed', 'Could not enroll right now.');
+        }
+    };
     const handleConnectMentor = (id) => setConnectedMentorIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
     // ── Agent 5: Bounties State ──
@@ -238,91 +429,174 @@ export default function ConnectScreen() {
     const [referPhoneError, setReferPhoneError] = useState('');
     const [bountyToast, setBountyToast] = useState(null);
     const showBountyToast = (msg) => { setBountyToast(msg); setTimeout(() => setBountyToast(null), 3000); };
+    const fetchBounties = useCallback(async () => {
+        try {
+            const statsRes = await client.get('/api/growth/referrals');
+            setReferralStats(statsRes?.data || null);
+            const sourceRes = await client.get('/api/matches/candidate');
+            const source = Array.isArray(sourceRes?.data) ? sourceRes.data : [];
+            const mapped = source.map((matchItem, index) => {
+                const job = matchItem?.job || {};
+                const baseReward = firstSalaryNumber(job.salaryRange) ? Math.max(1500, Math.round(firstSalaryNumber(job.salaryRange) * 0.1)) : 2000;
+                return {
+                    id: job._id || `bounty-${index}`,
+                    company: job.companyName || 'Employer',
+                    logoLetter: String(job.companyName || 'H')[0].toUpperCase(),
+                    logoBg: '#7c3aed',
+                    role: job.title || 'Open Role',
+                    bonus: `₹${baseReward.toLocaleString()}`,
+                    bonusValue: baseReward,
+                    expiresInDays: 7,
+                    totalPot: `₹${(baseReward * 10).toLocaleString()}`,
+                    referrals: 0,
+                    category: job.requirements?.[0] || 'General',
+                };
+            });
+            if (mapped.length > 0) setBountyItems(mapped);
+        } catch (error) {
+            // Keep existing fallback bounty cards if API calls fail.
+        }
+    }, []);
     const handleOpenReferModal = (bounty) => { setReferringBounty(bounty); setReferPhoneInput(''); setReferPhoneError(''); };
     const handleCloseReferModal = () => { setReferringBounty(null); setReferPhoneInput(''); setReferPhoneError(''); };
-    const handleSendReferral = () => {
+    const handleSendReferral = async () => {
         if (!referPhoneInput.trim() || referPhoneInput.replace(/\D/g, '').length < 10) {
             setReferPhoneError('Please enter a valid 10-digit phone number'); return;
         }
         if (!referringBounty) return;
-        setReferredBountyIds(prev => new Set(prev).add(referringBounty.id));
-        const earned = referringBounty.bonus;
-        handleCloseReferModal();
-        showBountyToast(`Referral sent! You'll earn ${earned} when they join.`);
+        try {
+            await client.post('/api/growth/referrals', {
+                jobId: referringBounty.id,
+                candidateContact: referPhoneInput,
+                reward: referringBounty.bonusValue || 0,
+            });
+            const linkRes = await client.get(`/api/growth/share-link/job/${referringBounty.id}`);
+            const shareLink = linkRes?.data?.shareLink;
+            if (shareLink) {
+                await Share.share({
+                    message: `Check this opportunity on HireCircle: ${shareLink}`,
+                });
+            }
+            setReferredBountyIds(prev => new Set(prev).add(referringBounty.id));
+            const earned = referringBounty.bonus;
+            handleCloseReferModal();
+            showBountyToast(`Referral sent! You'll earn ${earned} when they join.`);
+        } catch (error) {
+            setReferPhoneError('Could not send referral. Please try again.');
+        }
     };
 
     const handleVouch = (postId) => {
         setFeedPosts(prev => prev.map(p => p._id === postId ? { ...p, vouched: !p.vouched } : p));
     };
 
-    const toggleJoinCircle = (id) => {
-        const next = new Set(joinedCircles);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        setJoinedCircles(next);
+    const fetchCircles = useCallback(async () => {
+        try {
+            const [allRes, myRes] = await Promise.all([
+                client.get('/api/circles'),
+                client.get('/api/circles/my'),
+            ]);
+            const allCircles = Array.isArray(allRes?.data?.circles) ? allRes.data.circles : [];
+            const myCircles = Array.isArray(myRes?.data?.circles) ? myRes.data.circles : [];
+            setCirclesData(allCircles);
+            setJoinedCircles(new Set(myCircles.map((circle) => String(circle._id))));
+        } catch (error) {
+            // Keep mock circles as fallback.
+        }
+    }, []);
+
+    const toggleJoinCircle = async (id) => {
+        const alreadyJoined = joinedCircles.has(id);
+        if (alreadyJoined) return;
+        try {
+            await client.post(`/api/circles/${id}/join`);
+            setJoinedCircles(prev => new Set(prev).add(id));
+        } catch (error) {
+            Alert.alert('Join Failed', 'Could not join this circle right now.');
+        }
     };
 
+    useEffect(() => {
+        fetchFeedPosts(1, true);
+        fetchPulseItems();
+        fetchAcademyData();
+        fetchCircles();
+        fetchBounties();
+    }, [fetchFeedPosts, fetchPulseItems, fetchAcademyData, fetchCircles, fetchBounties]);
+
     const renderFeed = () => (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
-            {/* Composer */}
-            <View style={styles.createPostBox}>
-                <View style={styles.createPostRow}>
-                    <Image source={{ uri: CURRENT_USER.avatar }} style={styles.createAvatarImg} />
-                    <TouchableOpacity style={styles.createInputBg} onPress={handleInputAreaClick}>
-                        <Text style={styles.createInputText}>Share your work today...</Text>
-                    </TouchableOpacity>
-                </View>
-                {composerOpen && (
-                    <TextInput
-                        style={styles.composerTextarea}
-                        value={composerText}
-                        onChangeText={setComposerText}
-                        placeholder={composerMediaType === 'VOICE' ? 'Describe your voice note...' : composerMediaType === 'PHOTOS' ? 'Caption your photos...' : 'What do you want to share?'}
-                        placeholderTextColor="#94a3b8"
-                        multiline
-                        numberOfLines={3}
-                        autoFocus
-                    />
-                )}
-                <View style={styles.createPostToolbar}>
-                    <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('VOICE')}>
-                        <IconMic size={14} color={composerMediaType === 'VOICE' ? '#9333ea' : '#64748b'} />
-                        <Text style={[styles.toolbarBtnText, composerMediaType === 'VOICE' && { color: '#9333ea' }]}>VOICE</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('PHOTOS')}>
-                        <IconImage size={14} color={composerMediaType === 'PHOTOS' ? '#2563eb' : '#64748b'} />
-                        <Text style={[styles.toolbarBtnText, composerMediaType === 'PHOTOS' && { color: '#2563eb' }]}>PHOTOS</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('VIDEO')}>
-                        <IconVideo size={14} color={composerMediaType === 'VIDEO' ? '#d97706' : '#64748b'} />
-                        <Text style={[styles.toolbarBtnText, composerMediaType === 'VIDEO' && { color: '#d97706' }]}>VIDEO</Text>
-                    </TouchableOpacity>
-                    <View style={styles.toolbarDivider} />
-                    {composerOpen ? (
-                        <View style={{ flexDirection: 'row', gap: 8 }}>
-                            <TouchableOpacity style={styles.toolbarCancelBtn} onPress={handleCancelComposer}>
-                                <Text style={styles.toolbarCancelBtnText}>CANCEL</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.toolbarPostBtn, !composerText.trim() && { opacity: 0.4 }]} onPress={handlePost} disabled={!composerText.trim()}>
+        <FlatList
+            data={feedPosts}
+            keyExtractor={(item) => String(item._id)}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.tabContent}
+            refreshing={loadingFeed}
+            onRefresh={() => fetchFeedPosts(1, true)}
+            onEndReached={() => {
+                if (hasMoreFeed && !loadingMoreFeed) {
+                    fetchFeedPosts(feedPage + 1, false);
+                }
+            }}
+            onEndReachedThreshold={0.3}
+            ListHeaderComponent={(
+                <View style={styles.createPostBox}>
+                    <View style={styles.createPostRow}>
+                        <Image source={{ uri: CURRENT_USER.avatar }} style={styles.createAvatarImg} />
+                        <TouchableOpacity style={styles.createInputBg} onPress={handleInputAreaClick}>
+                            <Text style={styles.createInputText}>Share your work today...</Text>
+                        </TouchableOpacity>
+                    </View>
+                    {composerOpen && (
+                        <TextInput
+                            style={styles.composerTextarea}
+                            value={composerText}
+                            onChangeText={setComposerText}
+                            placeholder={composerMediaType === 'VOICE' ? 'Describe your voice note...' : composerMediaType === 'PHOTOS' ? 'Caption your photos...' : 'What do you want to share?'}
+                            placeholderTextColor="#94a3b8"
+                            multiline
+                            numberOfLines={3}
+                            autoFocus
+                        />
+                    )}
+                    <View style={styles.createPostToolbar}>
+                        <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('VOICE')}>
+                            <IconMic size={14} color={composerMediaType === 'VOICE' ? '#9333ea' : '#64748b'} />
+                            <Text style={[styles.toolbarBtnText, composerMediaType === 'VOICE' && { color: '#9333ea' }]}>VOICE</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('PHOTOS')}>
+                            <IconImage size={14} color={composerMediaType === 'PHOTOS' ? '#2563eb' : '#64748b'} />
+                            <Text style={[styles.toolbarBtnText, composerMediaType === 'PHOTOS' && { color: '#2563eb' }]}>PHOTOS</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.toolbarBtn} onPress={() => handleMediaButtonClick('VIDEO')}>
+                            <IconVideo size={14} color={composerMediaType === 'VIDEO' ? '#d97706' : '#64748b'} />
+                            <Text style={[styles.toolbarBtnText, composerMediaType === 'VIDEO' && { color: '#d97706' }]}>VIDEO</Text>
+                        </TouchableOpacity>
+                        <View style={styles.toolbarDivider} />
+                        {composerOpen ? (
+                            <View style={{ flexDirection: 'row', gap: 8 }}>
+                                <TouchableOpacity style={styles.toolbarCancelBtn} onPress={handleCancelComposer}>
+                                    <Text style={styles.toolbarCancelBtnText}>CANCEL</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.toolbarPostBtn, !composerText.trim() && { opacity: 0.4 }]} onPress={handlePost} disabled={!composerText.trim()}>
+                                    <Text style={styles.toolbarPostBtnText}>POST</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <TouchableOpacity style={styles.toolbarPostBtn} onPress={handleInputAreaClick}>
                                 <Text style={styles.toolbarPostBtnText}>POST</Text>
                             </TouchableOpacity>
-                        </View>
-                    ) : (
-                        <TouchableOpacity style={styles.toolbarPostBtn} onPress={handleInputAreaClick}>
-                            <Text style={styles.toolbarPostBtnText}>POST</Text>
-                        </TouchableOpacity>
-                    )}
+                        )}
+                    </View>
                 </View>
-            </View>
-
-            {feedPosts.map(post => {
+            )}
+            renderItem={({ item: post }) => {
                 const isLiked = likedPostIds.has(post._id);
                 const isBounty = post.type === 'bounty';
                 const postContainerStyle = isBounty ? [styles.postCard, styles.bountyCardGradient] : styles.postCard;
                 const textColor = isBounty ? 'rgba(255,255,255,0.9)' : '#334155';
                 const commentList = commentsByPostId[post._id] || [];
                 return (
-                    <View key={post._id} style={postContainerStyle}>
+                    <View style={postContainerStyle}>
                         {isBounty && <View style={styles.bountyAwardBg}><IconAward size={64} color="rgba(255,255,255,0.1)" /></View>}
                         <PostHeader post={post} isBounty={isBounty} />
                         <Text style={[styles.postText, { color: textColor }]}>{post.text}</Text>
@@ -390,13 +664,30 @@ export default function ConnectScreen() {
                         )}
                     </View>
                 );
-            })}
-            <View style={{ height: 80 }} />
-        </ScrollView>
+            }}
+            ListFooterComponent={loadingMoreFeed ? (
+                <View style={{ paddingVertical: 16 }}>
+                    <ActivityIndicator color="#9333ea" />
+                </View>
+            ) : <View style={{ height: 80 }} />}
+        />
     );
 
-    const renderCircles = () => (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
+    const renderCircles = () => {
+        const circlesList = circlesData.length > 0
+            ? circlesData.map((circle) => ({
+                _id: String(circle._id),
+                name: circle.name,
+                category: circle.skill || 'Community',
+                members: `${Array.isArray(circle.members) ? circle.members.length : 0}`,
+                online: 0,
+                desc: circle.description || 'Join this circle to connect with professionals nearby.',
+                topics: [circle.skill || 'Updates'],
+                rates: [],
+            }))
+            : MOCK_CIRCLES;
+        return (
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
             <View style={styles.circlesHeroBg}>
                 <View style={styles.circlesHeroBlurRing} />
                 <Text style={styles.circlesHeroTitle}>Find Your Tribe</Text>
@@ -409,7 +700,7 @@ export default function ConnectScreen() {
                         <IconCheck size={16} color="#7c3aed" />
                         <Text style={styles.circlesSectionTitle}>MY COMMUNITIES</Text>
                     </View>
-                    {MOCK_CIRCLES.filter(c => joinedCircles.has(c._id)).map(circle => (
+                    {circlesList.filter(c => joinedCircles.has(c._id)).map(circle => (
                         <View key={circle._id} style={styles.joinedCircleCard}>
                             <View style={styles.joinedCircleLeft}>
                                 <View style={styles.relativeAvatar}>
@@ -434,7 +725,7 @@ export default function ConnectScreen() {
                     <IconSearch size={16} color="#94a3b8" />
                     <Text style={styles.circlesSectionTitle}>EXPLORE CATEGORIES</Text>
                 </View>
-                {MOCK_CIRCLES.filter(c => !joinedCircles.has(c._id)).map(circle => (
+                {circlesList.filter(c => !joinedCircles.has(c._id)).map(circle => (
                     <View key={circle._id} style={styles.exploreCircleCard}>
                         <IconUsers size={96} color="#0f172a" style={styles.exploreCircleBgIcon} />
                         <View style={styles.exploreCircleTop}>
@@ -468,14 +759,16 @@ export default function ConnectScreen() {
             </View>
             <View style={{ height: 32 }} />
         </ScrollView>
-    );
+        );
+    };
 
     const renderPulse = () => {
-        const nearbyGigs = [
+        const fallbackGigs = [
             { id: 1, title: 'Electrician Needed — Emergency', employer: 'Amir Khan', distance: '0.4 km', pay: '₹800', urgent: true, timePosted: '8 min ago', category: 'Trades', categoryBg: '#fef3c7', categoryColor: '#b45309' },
             { id: 2, title: 'AC Repair Assistant', employer: 'Sharma Cooling Co.', distance: '1.2 km', pay: '₹600', urgent: false, timePosted: '1h ago', category: 'Trades', categoryBg: '#fef3c7', categoryColor: '#b45309' },
             { id: 3, title: 'Delivery Run — Gachibowli Loop', employer: 'QuickMove Logistics', distance: '1.8 km', pay: '₹350', urgent: false, timePosted: '2h ago', category: 'Delivery', categoryBg: '#eff6ff', categoryColor: '#1d4ed8' },
         ];
+        const nearbyGigs = pulseItems.length > 0 ? pulseItems : fallbackGigs;
         const nearbyPros = [
             { id: 1, name: 'Siva Kumar', role: 'Electrician', distance: '0.6 km', karma: 890, available: true, avatar: 'https://i.pravatar.cc/150?u=siva' },
             { id: 2, name: 'Priya R.', role: 'Tailor', distance: '1.1 km', karma: 420, available: true, avatar: 'https://i.pravatar.cc/150?u=priya' },
@@ -571,11 +864,23 @@ export default function ConnectScreen() {
     };
 
     const renderAcademy = () => {
-        const courses = [
+        const fallbackCourses = [
             { id: 1, title: 'Safe Driving on Highways', instructor: 'Rajiv Menon', duration: '3h 20m', level: 'Beginner', enrolled: 1420, rating: 4.8, thumb: 'https://picsum.photos/id/1076/200/120' },
             { id: 2, title: 'Electrical Safety at Work Sites', instructor: 'Kavya Srinivas', duration: '2h 05m', level: 'Intermediate', enrolled: 890, rating: 4.6, thumb: 'https://picsum.photos/id/160/200/120' },
             { id: 3, title: 'Inventory Management Basics', instructor: 'Anand Rao', duration: '1h 45m', level: 'Beginner', enrolled: 2100, rating: 4.7, thumb: 'https://picsum.photos/id/180/200/120' },
         ];
+        const courses = academyCourses.length > 0
+            ? academyCourses.map((course, index) => ({
+                id: course.id,
+                title: course.title,
+                instructor: 'HireCircle Academy',
+                duration: course.duration || '2h',
+                level: course.level ? `${course.level.charAt(0).toUpperCase()}${course.level.slice(1)}` : 'Beginner',
+                enrolled: enrolledCourses.filter((item) => item.courseId === course.id).length || 0,
+                rating: 4.7,
+                thumb: `https://picsum.photos/id/${160 + index}/200/120`,
+            }))
+            : fallbackCourses;
         const mentors = [
             { id: 1, name: 'Suresh V.', exp: '20y', skill: 'Heavy Transport', rating: 4.9, sessions: 340, avatar: 'https://i.pravatar.cc/150?u=suresh' },
             { id: 2, name: 'Kavya S.', exp: '12y', skill: 'Electrical Work', rating: 4.8, sessions: 215, avatar: 'https://i.pravatar.cc/150?u=kavya' },
@@ -673,7 +978,7 @@ export default function ConnectScreen() {
     };
 
     const renderBounties = () => {
-        const bounties = [
+        const fallbackBounties = [
             { id: 1, company: 'Zomato', logoLetter: 'Z', logoBg: '#ef4444', role: 'Operations Lead', bonus: '₹5,000', bonusValue: 5000, expiresInDays: 2, totalPot: '₹50,000', referrals: 12, category: 'Operations' },
             { id: 2, company: 'Delhivery', logoLetter: 'D', logoBg: '#2563eb', role: 'Senior HMV Driver', bonus: '₹3,500', bonusValue: 3500, expiresInDays: 5, totalPot: '₹35,000', referrals: 8, category: 'Driving' },
             { id: 3, company: 'Amazon', logoLetter: 'A', logoBg: '#f59e0b', role: 'Warehouse Supervisor', bonus: '₹8,000', bonusValue: 8000, expiresInDays: 7, totalPot: '₹80,000', referrals: 22, category: 'Warehouse' },
@@ -681,7 +986,9 @@ export default function ConnectScreen() {
             { id: 5, company: 'BigBasket', logoLetter: 'B', logoBg: '#16a34a', role: 'Store Inventory Staff', bonus: '₹4,000', bonusValue: 4000, expiresInDays: 10, totalPot: '₹40,000', referrals: 6, category: 'Operations' },
             { id: 6, company: 'LogiTech Corp', logoLetter: 'L', logoBg: '#7c3aed', role: 'Fleet Coordinator', bonus: '₹6,500', bonusValue: 6500, expiresInDays: 3, totalPot: '₹65,000', referrals: 18, category: 'Logistics' },
         ];
-        const totalEarned = [...referredBountyIds].reduce((sum, id) => { const b = bounties.find(x => x.id === id); return sum + (b ? b.bonusValue : 0); }, 0);
+        const bounties = bountyItems.length > 0 ? bountyItems : fallbackBounties;
+        const localEarnings = [...referredBountyIds].reduce((sum, id) => { const b = bounties.find(x => x.id === id); return sum + (b ? b.bonusValue : 0); }, 0);
+        const totalEarned = Number(referralStats?.totalEarnings || 0) || localEarnings;
         const getExpiryStyle = (d) => d <= 2 ? { bg: '#ef4444', color: '#fff', label: 'EXPIRES SOON' } : d <= 5 ? { bg: '#fef3c7', color: '#92400e', label: `${d}d left` } : { bg: '#dcfce7', color: '#15803d', label: `${d}d left` };
         return (
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
@@ -753,7 +1060,7 @@ export default function ConnectScreen() {
                     <Text style={styles.logoTitle}>HIRE<Text style={styles.logoCircle}>CIRCLE</Text></Text>
                 </View>
                 <View style={styles.headerRight}>
-                    <TouchableOpacity style={styles.bellBtn}>
+                    <TouchableOpacity style={styles.bellBtn} onPress={() => navigation.navigate('Notifications')}>
                         <IconBell size={20} color="#64748b" />
                         <View style={styles.bellDot} />
                     </TouchableOpacity>
@@ -1318,4 +1625,3 @@ const styles = StyleSheet.create({
     toastContainer: { position: 'absolute', bottom: 90, alignSelf: 'center', backgroundColor: '#0f172a', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20, elevation: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
     toastText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 });
-

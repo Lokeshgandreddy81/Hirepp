@@ -32,9 +32,62 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isEmailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    otpCode: {
+      type: String,
+    },
+    otpExpiry: {
+      type: Date,
+    },
     verificationToken: String,
     resetPasswordToken: String,
     resetPasswordExpire: Date,
+    loginAttempts: {
+      type: Number,
+      required: true,
+      default: 0
+    },
+    lockUntil: {
+      type: Number
+    },
+    // --- STRIPE & BILLING ---
+    subscription: {
+      plan: {
+        type: String,
+        enum: ['free', 'pro', 'enterprise'],
+        default: 'free'
+      },
+      stripeCustomerId: String,
+      stripeSubscriptionId: String,
+      credits: {
+        type: Number,
+        default: 3 // Give 3 free credits on signup
+      }
+    },
+    // --- MARKETING & REFERRAL ---
+    referralCode: {
+      type: String,
+      unique: true,
+      sparse: true // Allows nulls while enforcing uniqueness for non-nulls
+    },
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+
+    // Enterprise Features
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization'
+    },
+    orgRole: {
+      type: String,
+      enum: ['admin', 'hiring_manager', 'recruiter', 'viewer'],
+      default: 'viewer'
+    }
   },
   {
     timestamps: true,
@@ -42,9 +95,9 @@ const userSchema = mongoose.Schema(
 );
 
 // (The encryption logic below is unchanged from your original team code)
-userSchema.pre('save', async function (next) {
+userSchema.pre('save', async function () {
   if (!this.isModified('password')) {
-    next();
+    return;
   }
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);

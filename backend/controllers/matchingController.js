@@ -1,4 +1,5 @@
 const Job = require('../models/Job');
+const Application = require('../models/Application');
 const WorkerProfile = require('../models/WorkerProfile');
 const User = require('../models/userModel');
 const MatchFeedback = require('../models/MatchFeedback');
@@ -63,6 +64,7 @@ const setToCache = async (key, value) => {
 const getMatchesForEmployer = async (req, res) => {
     try {
         console.log('🔍 [v7.0 Hybrid] Employer Match Request for jobId:', req.params.jobId);
+        const jobId = req.params.jobId;
 
         // 1. Validation & Data Fetching
         const employer = await User.findById(req.user._id);
@@ -70,19 +72,35 @@ const getMatchesForEmployer = async (req, res) => {
             return res.status(403).json({ message: 'Please complete your profile first' });
         }
 
-        const job = await Job.findById(req.params.jobId);
+        const job = await Job.findById(jobId);
         if (!job || !job.isOpen) {
             return res.status(404).json({ message: 'Job not found or closed' });
         }
 
+        // Talent view is application-centric: only candidates who applied to this job.
+        const applications = await Application.find({ job: jobId })
+            .select('_id worker status updatedAt')
+            .sort({ updatedAt: -1 })
+            .lean();
+
+        if (!applications.length) {
+            return res.json({ matches: [] });
+        }
+
+        const workerIds = applications.map((application) => application.worker);
+        const applicationByWorkerId = new Map(
+            applications.map((application) => [String(application.worker), application])
+        );
+
         // 2. Database Filtering (Optimized Phase 1)
-        const limit = 300; // Larger fetch for Python processing
-        const workers = await WorkerProfile.find({ isAvailable: true })
+        const workers = await WorkerProfile.find({
+            _id: { $in: workerIds },
+        })
             .sort({ createdAt: -1 })
-            .limit(limit)
             .populate('user', 'name hasCompletedProfile');
 
-        const validWorkers = workers.filter(w => w.user && w.user.hasCompletedProfile && w.roleProfiles?.length > 0);
+        const allAppliedWorkers = workers.filter((worker) => Boolean(worker.user));
+        const validWorkers = allAppliedWorkers.filter(w => w.user?.hasCompletedProfile && w.roleProfiles?.length > 0);
         console.log(`✅ [v7.0] Initial Candidates: ${validWorkers.length}`);
 
         let results = [];
@@ -144,13 +162,16 @@ const getMatchesForEmployer = async (req, res) => {
                 // Map Python results to UI structure
                 results = pyResponse.data.map(m => {
                     const fullWorker = validWorkers.find(w => w._id.toString() === m.workerId);
+                    const applicationMeta = applicationByWorkerId.get(String(m.workerId));
                     return {
                         worker: fullWorker, // Attach full Mongoose object
                         matchScore: m.matchScore,
                         tier: m.tier,
-                        labels: m.labels
+                        labels: m.labels,
+                        applicationId: applicationMeta?._id || null,
+                        applicationStatus: applicationMeta?.status || 'pending',
                     };
-                });
+                }).filter((item) => item.worker);
                 usedPython = true;
             }
 
@@ -199,6 +220,7 @@ const getMatchesForEmployer = async (req, res) => {
                 finalScore = Math.min(Math.max(finalScore, 0), 1.0); // Clamp 0-1
 
                 if (finalScore >= algo.CONFIG.DISPLAY_THRESHOLD) {
+                    const applicationMeta = applicationByWorkerId.get(String(worker._id));
                     results.push({
                         worker,
                         matchScore: Math.round(finalScore * 100),
@@ -207,7 +229,9 @@ const getMatchesForEmployer = async (req, res) => {
                             roleData.roleName,
                             `${Math.round(skillScore * 100)}% Skill Match`,
                             finalScore >= 0.85 ? 'Highly Recommended' : ''
-                        ].filter(Boolean)
+                        ].filter(Boolean),
+                        applicationId: applicationMeta?._id || null,
+                        applicationStatus: applicationMeta?.status || 'pending',
                     });
                 }
             }
@@ -215,8 +239,24 @@ const getMatchesForEmployer = async (req, res) => {
             results = results.slice(0, 20);
         }
 
+        // Ensure applicants always render in Talent, even when AI/model scoring filters everyone out.
+        if (!results.length) {
+            const fallbackWorkers = allAppliedWorkers.length > 0 ? allAppliedWorkers : validWorkers;
+            results = fallbackWorkers.map((worker) => {
+                const applicationMeta = applicationByWorkerId.get(String(worker._id));
+                return {
+                    worker,
+                    matchScore: 0,
+                    tier: 'Applied',
+                    labels: ['New Applicant'],
+                    applicationId: applicationMeta?._id || null,
+                    applicationStatus: applicationMeta?.status || 'pending',
+                };
+            });
+        }
+
         console.log(`🎯 [v7.0 Hybrid] Returned ${results.length} matches (Source: ${usedPython ? 'PYTHON' : 'NODE'})`);
-        res.json(results);
+        res.json({ matches: results });
 
     } catch (error) {
         console.error("❌ [v7.0 FATAL] Employer Match Error:", error);

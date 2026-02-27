@@ -25,6 +25,89 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    phoneNumber: {
+      type: String,
+      default: null,
+    },
+    city: {
+      type: String,
+      default: null,
+    },
+    isExperimentUser: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    notificationPreferences: {
+      pushEnabled: { type: Boolean, default: true },
+      smsEnabled: { type: Boolean, default: false },
+      emailEnabled: { type: Boolean, default: true },
+      notifyNewJobRecommendations: { type: Boolean, default: true },
+      notifyInterviewReady: { type: Boolean, default: true },
+      notifyApplicationStatus: { type: Boolean, default: true },
+      notifyPromotions: { type: Boolean, default: true },
+      notifyMatch: { type: Boolean, default: true },
+      notifyApplication: { type: Boolean, default: true },
+      notifyHire: { type: Boolean, default: true },
+    },
+    privacyPreferences: {
+      profileVisibleToEmployers: { type: Boolean, default: true },
+      showSalaryExpectation: { type: Boolean, default: true },
+      showInterviewBadge: { type: Boolean, default: true },
+      showLastActive: { type: Boolean, default: true },
+      allowLocationSharing: { type: Boolean, default: true },
+      locationVisibilityRadiusKm: { type: Number, default: 25, min: 1, max: 200 },
+    },
+    featureToggles: {
+      FEATURE_MATCH_UI_V1: { type: Boolean, default: true },
+      FEATURE_PROBABILISTIC_MATCH: { type: Boolean, default: true },
+      FEATURE_COLD_START_BOOST_SUGGESTIONS: { type: Boolean, default: false },
+      FEATURE_MATCH_ALERTS: { type: Boolean, default: true },
+      FEATURE_SETTINGS_ADVANCED: { type: Boolean, default: false },
+      FEATURE_DETAILED_JOB_ANALYTICS: { type: Boolean, default: false },
+      FEATURE_SMART_PUSH_TIMING: { type: Boolean, default: false },
+    },
+    securitySettings: {
+      twoFactorEnabled: { type: Boolean, default: false },
+      twoFactorMethod: {
+        type: String,
+        enum: ['sms', 'email'],
+        default: 'email',
+      },
+    },
+    linkedAccounts: {
+      google: { type: Boolean, default: false },
+      apple: { type: Boolean, default: false },
+      emailPassword: { type: Boolean, default: true },
+    },
+    exportRequests: [
+      {
+        requestType: {
+          type: String,
+          enum: ['settings_data_export', 'job_history_export', 'interview_history_export'],
+          default: 'settings_data_export',
+        },
+        status: {
+          type: String,
+          enum: ['pending', 'ready', 'failed'],
+          default: 'pending',
+        },
+        requestedAt: { type: Date, default: Date.now },
+        readyAt: { type: Date, default: null },
+        expiresAt: { type: Date, default: null },
+        downloadUrl: { type: String, default: null },
+        error: { type: String, default: null },
+      },
+    ],
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
     // --- NEW FIELDS END ---
 
     email: {
@@ -76,7 +159,16 @@ const userSchema = mongoose.Schema(
       credits: {
         type: Number,
         default: 3 // Give 3 free credits on signup
-      }
+      },
+      billingPeriod: {
+        type: String,
+        enum: ['monthly', 'yearly', 'none'],
+        default: 'none',
+      },
+      nextBillingDate: {
+        type: Date,
+        default: null,
+      },
     },
     // --- MARKETING & REFERRAL ---
     referralCode: {
@@ -87,6 +179,21 @@ const userSchema = mongoose.Schema(
     referredBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User'
+    },
+    acquisitionSource: {
+      type: String,
+      enum: ['camp', 'referral', 'organic', 'circle', 'unknown'],
+      default: 'unknown',
+      index: true,
+    },
+    acquisitionCity: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    acquisitionCampaign: {
+      type: String,
+      default: null,
     },
 
     // Enterprise Features

@@ -7,10 +7,13 @@ import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
 import { logger } from '../utils/logger';
 import { getLegacyRoleForPrimaryRole, getModeCopy, getPrimaryRoleFromUser } from '../utils/roleMode';
+import { useAppStore } from '../store/AppStore';
+import { trackEvent } from '../services/analytics';
 
 export default function SettingsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
     const { logout, userInfo, updateUserInfo } = React.useContext(AuthContext);
+    const { role: appRole, setRole } = useAppStore();
 
     const [notificationsOn, setNotificationsOn] = useState(true);
     const [darkModeOn, setDarkModeOn] = useState(false);
@@ -34,7 +37,7 @@ export default function SettingsScreen({ navigation }) {
         email: '',
         avatar: null,
     });
-    const [primaryRole, setPrimaryRole] = useState(getPrimaryRoleFromUser(userInfo));
+    const [primaryRole, setPrimaryRole] = useState(appRole || getPrimaryRoleFromUser(userInfo));
 
     useEffect(() => {
         const loadUserHeader = async () => {
@@ -46,7 +49,7 @@ export default function SettingsScreen({ navigation }) {
                 }
             }
 
-            const resolvedPrimaryRole = getPrimaryRoleFromUser(user);
+            const resolvedPrimaryRole = appRole || getPrimaryRoleFromUser(user);
             setPrimaryRole(resolvedPrimaryRole);
 
             setIsAdmin(String(user.role || '').toLowerCase() === 'admin');
@@ -85,7 +88,7 @@ export default function SettingsScreen({ navigation }) {
             setNotifJobAlerts(vals['@notif_job_alerts'] ?? true);
             setNotifAppUpdates(vals['@notif_app_updates'] ?? false);
         });
-    }, [userInfo]);
+    }, [userInfo, appRole]);
 
     const handleToggle = async (key, setter, value) => {
         setter(value);
@@ -102,11 +105,17 @@ export default function SettingsScreen({ navigation }) {
             await client.put('/api/users/profile', { primaryRole: nextPrimaryRole });
             await SecureStore.setItemAsync('selectedRole', getLegacyRoleForPrimaryRole(nextPrimaryRole));
             await updateUserInfo({ primaryRole: nextPrimaryRole });
+            setRole(nextPrimaryRole);
             setPrimaryRole(nextPrimaryRole);
             setProfileHeader((prev) => ({
                 ...prev,
                 role: nextPrimaryRole === 'employer' ? 'I Need Someone (Demand)' : 'Helping Others (Supply)',
             }));
+            const rolePayload = {
+                source: 'settings_screen',
+                role: nextPrimaryRole,
+            };
+            trackEvent('ROLE_SELECTED', rolePayload);
             Alert.alert('Mode Switched', modeCopy.switchedMessage);
         } catch (error) {
             logger.error('Switch mode error:', error);

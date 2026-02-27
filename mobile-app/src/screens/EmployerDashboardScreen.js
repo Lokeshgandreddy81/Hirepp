@@ -9,11 +9,14 @@ import {
     Modal,
     TextInput,
     KeyboardAvoidingView,
-    Platform
+    Platform,
+    Alert,
+    Linking,
 } from 'react-native';
 import { logger } from '../utils/logger';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
 
 import client from '../api/client';
 
@@ -30,11 +33,33 @@ export default function EmployerDashboardScreen({ navigation }) {
     const [errorMsg, setErrorMsg] = useState('');
     const [selectedJob, setSelectedJob] = useState(null);
     const [activeFilter, setActiveFilter] = useState('All');
+    const [employerId, setEmployerId] = useState(null);
+    const [fillRateMeter, setFillRateMeter] = useState(null);
+    const [loadingFillRate, setLoadingFillRate] = useState(false);
     const insets = useSafeAreaInsets();
 
     React.useEffect(() => {
         fetchMyJobs();
+        hydrateEmployerId();
     }, []);
+
+    const hydrateEmployerId = async () => {
+        try {
+            const raw = await SecureStore.getItemAsync('userInfo');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (parsed?._id) {
+                setEmployerId(parsed._id);
+            }
+        } catch (error) {
+            logger.warn('Failed to read employer id:', error?.message || error);
+        }
+    };
+
+    React.useEffect(() => {
+        if (!employerId) return;
+        fetchFillRateMeter(employerId);
+    }, [employerId]);
 
     const fetchMyJobs = async () => {
         setIsLoading(true);
@@ -67,6 +92,38 @@ export default function EmployerDashboardScreen({ navigation }) {
             setErrorMsg('Failed to load jobs. Please try again.');
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const fetchFillRateMeter = async (id) => {
+        setLoadingFillRate(true);
+        try {
+            const { data } = await client.get(`/api/analytics/employer/${id}/fill-rate-meter`);
+            setFillRateMeter(data?.metrics || null);
+        } catch (error) {
+            logger.warn('Fill-rate meter unavailable:', error?.message || error);
+            setFillRateMeter(null);
+        } finally {
+            setLoadingFillRate(false);
+        }
+    };
+
+    const handleBoostTopJob = async () => {
+        const topJob = jobs[0];
+        if (!topJob?.id) {
+            Alert.alert('No jobs yet', 'Create a job first to run a boost.');
+            return;
+        }
+
+        try {
+            const { data } = await client.post('/api/payment/create-featured-listing', { jobId: topJob.id });
+            if (data?.url) {
+                Linking.openURL(data.url);
+            } else {
+                Alert.alert('Boost unavailable', 'Could not start checkout right now.');
+            }
+        } catch (error) {
+            Alert.alert('Boost unavailable', 'Could not start checkout right now.');
         }
     };
 
@@ -271,6 +328,40 @@ export default function EmployerDashboardScreen({ navigation }) {
                 {isLoading && <Text style={{ color: '#64748b', marginTop: 8 }}>Loading jobs...</Text>}
                 {errorMsg ? <Text style={{ color: 'red', marginTop: 8 }}>{errorMsg}</Text> : null}
 
+                <View style={styles.fillRateCard}>
+                    <View style={styles.fillRateHeader}>
+                        <Text style={styles.fillRateTitle}>Fill Rate Meter</Text>
+                        {loadingFillRate ? <Text style={styles.fillRateSubtle}>Refreshing...</Text> : null}
+                    </View>
+                    <View style={styles.fillRateGrid}>
+                        <View style={styles.fillRateItem}>
+                            <Text style={styles.fillRateLabel}>Applications</Text>
+                            <Text style={styles.fillRateValue}>{fillRateMeter?.applicationsCount ?? '--'}</Text>
+                        </View>
+                        <View style={styles.fillRateItem}>
+                            <Text style={styles.fillRateLabel}>Shortlist Rate</Text>
+                            <Text style={styles.fillRateValue}>
+                                {fillRateMeter ? `${Math.round((fillRateMeter.shortlistRate || 0) * 100)}%` : '--'}
+                            </Text>
+                        </View>
+                        <View style={styles.fillRateItem}>
+                            <Text style={styles.fillRateLabel}>ETA to Fill</Text>
+                            <Text style={styles.fillRateValue}>
+                                {fillRateMeter ? `${fillRateMeter.estimatedTimeToFillDays}d` : '--'}
+                            </Text>
+                        </View>
+                        <View style={styles.fillRateItem}>
+                            <Text style={styles.fillRateLabel}>City Benchmark</Text>
+                            <Text style={styles.fillRateValue}>
+                                {fillRateMeter ? `${Math.round((fillRateMeter.cityAverageFillRate || 0) * 100)}%` : '--'}
+                            </Text>
+                        </View>
+                    </View>
+                    <TouchableOpacity style={styles.fillRateBoostButton} onPress={handleBoostTopJob}>
+                        <Text style={styles.fillRateBoostText}>Boost Top Job</Text>
+                    </TouchableOpacity>
+                </View>
+
                 <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -343,6 +434,65 @@ const styles = StyleSheet.create({
         shadowRadius: 2,
         elevation: 2,
         zIndex: 10,
+    },
+    fillRateCard: {
+        marginTop: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#ffffff',
+        padding: 12,
+    },
+    fillRateHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    fillRateTitle: {
+        color: '#0f172a',
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    fillRateSubtle: {
+        color: '#64748b',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    fillRateGrid: {
+        marginTop: 10,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    fillRateItem: {
+        width: '48%',
+        borderRadius: 10,
+        backgroundColor: '#f8fafc',
+        padding: 8,
+    },
+    fillRateLabel: {
+        color: '#64748b',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    fillRateValue: {
+        marginTop: 4,
+        color: '#111827',
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    fillRateBoostButton: {
+        marginTop: 10,
+        alignSelf: 'flex-start',
+        borderRadius: 10,
+        backgroundColor: '#4f46e5',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    fillRateBoostText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: '700',
     },
     headerTitle: {
         fontSize: 20,

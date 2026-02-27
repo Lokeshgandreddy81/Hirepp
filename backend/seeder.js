@@ -13,8 +13,11 @@ const importData = async () => {
 
     // Create a default user
     const user = await User.create({
+      name: 'Admin User',
       email: 'user@example.com',
       password: '123456', // This will be encrypted automatically by your model
+      role: 'recruiter',
+      hasCompletedProfile: true,
     });
 
     console.log('User Imported!');

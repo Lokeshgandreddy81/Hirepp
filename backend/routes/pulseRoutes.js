@@ -8,6 +8,7 @@ router.get('/', protect, async (req, res) => {
         const pulseItems = await Job.find({
             isPulse: true,
             isOpen: true,
+            status: 'active',
         })
             .sort({ createdAt: -1 })
             .limit(20)

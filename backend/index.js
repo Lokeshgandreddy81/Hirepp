@@ -41,6 +41,7 @@ logger.info('3. DB Module loaded. Loading Routes...');
 const userRoutes = require('./routes/userRoutes');
 const authRoutes = require('./routes/authRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const uploadV2Routes = require('./routes/uploadV2Routes');
 const jobRoutes = require('./routes/jobRoutes'); // Added based on app.use
 const applicationRoutes = require('./routes/applicationRoutes'); // Added based on app.use
 const chatRoutes = require('./routes/chatRoutes'); // Added based on app.use
@@ -54,10 +55,12 @@ const insightRoutes = require('./routes/insightRoutes'); // NEW: AI Insights
 const growthRoutes = require('./routes/growthRoutes'); // NEW: Viral loops
 const orgRoutes = require('./routes/orgRoutes'); // NEW: Enterprise Features
 const publicApiRoutes = require('./routes/publicApiRoutes'); // NEW: Developer API
+const settingsRoutes = require('./routes/settingsRoutes'); // NEW: Settings API
 const feedRoutes = require('./routes/feedRoutes');
 const pulseRoutes = require('./routes/pulseRoutes');
 const academyRoutes = require('./routes/academyRoutes');
 const circlesRoutes = require('./routes/circlesRoutes');
+const interviewProcessingRoutes = require('./routes/interviewProcessingRoutes');
 
 console.log('4. Connecting to DB...');
 logger.info('4. Connecting to DB...');
@@ -121,6 +124,7 @@ if (process.env.NODE_ENV === 'development') {
 
 // Serve the uploads folder so users can watch their videos
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/exports', express.static(path.join(__dirname, 'exports')));
 
 // Swagger API Docs
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
@@ -144,10 +148,13 @@ app.get('/', (req, res) => {
 app.use('/api/users', userRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/upload', uploadRoutes); // Register Upload Routes
+app.use('/api/v2/upload', uploadV2Routes);
+app.use('/api/v2/interview-processing', interviewProcessingRoutes);
 app.use('/api/jobs', jobRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/matches', matchRoutes);
+app.use('/api/match', matchRoutes);
 app.use('/api/analytics', analyticsRoutes); // Attach analytics routes
 app.use('/api/notifications', notificationRoutes); // Attach notification routes
 app.use('/api/admin', adminRoutes); // Attach admin routes
@@ -156,6 +163,7 @@ app.use('/api/insights', insightRoutes); // Attach AI insights
 app.use('/api/growth', growthRoutes); // Attach Viral loops
 app.use('/api/organizations', orgRoutes); // Attach Enterprise orgs
 app.use('/api/public', publicApiRoutes); // Attach Developer Partner API
+app.use('/api/settings', settingsRoutes);
 app.use('/api/feed', feedRoutes);
 app.use('/api/pulse', pulseRoutes);
 app.use('/api/academy', academyRoutes);
@@ -244,7 +252,7 @@ io.on('connection', (socket) => {
       // Push notification to the other party in this application chat
       try {
         const User = require('./models/userModel');
-        const { sendPushNotification } = require('./services/pushService');
+        const { sendPushNotificationForUser } = require('./services/pushService');
 
         let receiverUserId = null;
         if (senderIdStr === employerIdStr) {
@@ -254,12 +262,13 @@ io.on('connection', (socket) => {
         }
 
         if (receiverUserId && receiverUserId !== senderIdStr) {
-          const receiver = await User.findById(receiverUserId).select('pushTokens');
-          await sendPushNotification(
-            receiver?.pushTokens || [],
+          const receiver = await User.findById(receiverUserId).select('pushTokens notificationPreferences');
+          await sendPushNotificationForUser(
+            receiver,
             'New Message',
             trimmedText || 'You have a new message',
-            { type: 'message', applicationId: String(applicationId) }
+            { type: 'message', applicationId: String(applicationId) },
+            'application_status'
           );
         }
       } catch (pushError) {
@@ -277,6 +286,10 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  logger.info(`Server is running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    logger.info(`Server is running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+  });
+}
+
+module.exports = { app, server, io };

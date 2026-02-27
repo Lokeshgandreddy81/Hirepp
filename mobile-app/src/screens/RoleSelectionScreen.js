@@ -5,6 +5,7 @@ import {
 import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
+import { trackEvent } from '../services/analytics';
 
 const { height } = Dimensions.get('window');
 
@@ -45,6 +46,11 @@ export default function RoleSelectionScreen({ navigation }) {
 
     const handleRoleSelect = async (roleKey) => {
         setSelectedRole(roleKey);
+        const rolePayload = {
+            source: 'role_selection_screen',
+            role: roleKey === 'recruiter' ? 'employer' : 'worker',
+        };
+        trackEvent('ROLE_SELECTED', rolePayload);
         await SecureStore.setItemAsync('selectedRole', roleKey);
         navigation.navigate('Login'); // Instantly navigate on tap, matching web
     };

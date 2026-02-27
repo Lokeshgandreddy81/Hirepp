@@ -3,7 +3,18 @@ const Job = require('../models/Job');
 const WorkerProfile = require('../models/WorkerProfile');
 const User = require('../models/userModel');
 const { createNotification } = require('./notificationController');
-const { sendPushNotification } = require('../services/pushService');
+const { sendPushNotificationForUser } = require('../services/pushService');
+const {
+    fireAndForget,
+    markFirstShortlistOnce,
+    markFirstHireOnce,
+    recordLifecycleEvent,
+    normalizeSalaryBand,
+} = require('../services/revenueInstrumentationService');
+const {
+    recordMatchPerformanceMetric,
+    recordJobFillCompletedOnce,
+} = require('../services/matchMetricsService');
 
 const ALLOWED_STATUSES = new Set([
     'requested',
@@ -76,6 +87,35 @@ const sendRequest = async (req, res) => {
             });
         }
 
+        fireAndForget('recordApplicationCreatedLifecycle', () => recordLifecycleEvent({
+            eventType: 'APPLICATION_CREATED',
+            employerId: job.employerId,
+            workerId: resolvedWorkerProfile._id,
+            jobId: job._id,
+            applicationId: application._id,
+            city: job.location || 'Hyderabad',
+            roleCluster: job.title || 'general',
+            salaryBand: normalizeSalaryBand(job.salaryRange),
+            shift: job.shift || 'unknown',
+            metadata: {
+                initiatedBy,
+            },
+        }).then(() => recordMatchPerformanceMetric({
+            eventName: 'APPLICATION_CREATED',
+            jobId: job._id,
+            workerId: resolvedWorkerProfile._id,
+            applicationId: application._id,
+            city: job.location || 'Hyderabad',
+            roleCluster: job.title || 'general',
+            metadata: {
+                initiatedBy,
+                source: 'application_controller',
+            },
+        })), {
+            applicationId: String(application._id),
+            jobId: String(job._id),
+        });
+
         res.status(201).json(application);
     } catch (error) {
         console.error("Send Request Error:", error);
@@ -130,15 +170,95 @@ const updateStatus = async (req, res) => {
 
         await application.save();
 
+        if (normalizedStatus === 'shortlisted') {
+            fireAndForget('markFirstShortlistOnce', async () => {
+                const job = await Job.findById(application.job).select('location title salaryRange shift');
+                await markFirstShortlistOnce({
+                    employerId: application.employer,
+                    applicationId: application._id,
+                    jobId: application.job,
+                    city: job?.location || null,
+                });
+                await recordLifecycleEvent({
+                    eventType: 'APPLICATION_SHORTLISTED',
+                    employerId: application.employer,
+                    workerId: application.worker,
+                    jobId: application.job,
+                    applicationId: application._id,
+                    city: job?.location || 'Hyderabad',
+                    roleCluster: job?.title || 'general',
+                    salaryBand: normalizeSalaryBand(job?.salaryRange),
+                    shift: job?.shift || 'unknown',
+                });
+                await recordMatchPerformanceMetric({
+                    eventName: 'APPLICATION_SHORTLISTED',
+                    jobId: application.job,
+                    workerId: application.worker,
+                    applicationId: application._id,
+                    city: job?.location || 'Hyderabad',
+                    roleCluster: job?.title || 'general',
+                    metadata: {
+                        source: 'application_controller',
+                    },
+                });
+            }, { applicationId: String(application._id), employerId: String(application.employer) });
+        }
+
+        if (normalizedStatus === 'hired') {
+            fireAndForget('markFirstHireOnce', async () => {
+                const job = await Job.findById(application.job).select('location title salaryRange shift');
+                await markFirstHireOnce({
+                    employerId: application.employer,
+                    applicationId: application._id,
+                    jobId: application.job,
+                    city: job?.location || null,
+                });
+                await recordLifecycleEvent({
+                    eventType: 'APPLICATION_HIRED',
+                    employerId: application.employer,
+                    workerId: application.worker,
+                    jobId: application.job,
+                    applicationId: application._id,
+                    city: job?.location || 'Hyderabad',
+                    roleCluster: job?.title || 'general',
+                    salaryBand: normalizeSalaryBand(job?.salaryRange),
+                    shift: job?.shift || 'unknown',
+                });
+                await recordMatchPerformanceMetric({
+                    eventName: 'APPLICATION_HIRED',
+                    jobId: application.job,
+                    workerId: application.worker,
+                    applicationId: application._id,
+                    city: job?.location || 'Hyderabad',
+                    roleCluster: job?.title || 'general',
+                    metadata: {
+                        source: 'application_controller',
+                    },
+                });
+                await recordJobFillCompletedOnce({
+                    jobId: application.job,
+                    workerId: application.worker,
+                    city: job?.location || 'Hyderabad',
+                    roleCluster: job?.title || 'general',
+                    metadata: {
+                        source: 'application_controller',
+                        triggerStatus: 'hired',
+                        applicationId: String(application._id),
+                    },
+                });
+            }, { applicationId: String(application._id), employerId: String(application.employer) });
+        }
+
         // Push notification to the candidate side when status changes
         try {
             if (workerProfile?.user) {
-                const candidateUser = await User.findById(workerProfile.user).select('pushTokens');
-                await sendPushNotification(
-                    candidateUser?.pushTokens || [],
+                const candidateUser = await User.findById(workerProfile.user).select('pushTokens notificationPreferences');
+                await sendPushNotificationForUser(
+                    candidateUser,
                     'Application Update',
                     `Your application status is now ${normalizedStatus}.`,
-                    { type: 'status', applicationId: application._id.toString() }
+                    { type: 'status', applicationId: application._id.toString() },
+                    'application_status'
                 );
             }
         } catch (pushError) {

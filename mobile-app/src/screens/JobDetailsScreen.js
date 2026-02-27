@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
     Alert, ActivityIndicator, Dimensions, Image
@@ -11,11 +11,12 @@ import client from '../api/client';
 import { IconSparkles, IconMapPin, IconGlobe, IconMessageSquare } from '../components/Icons';
 import { useAppState } from '../context/AppStateContext';
 import { triggerHaptic } from '../utils/haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { trackEvent } from '../services/analytics';
+import { FEATURE_MATCH_UI_V1 } from '../config';
+import { useAppStore } from '../store/AppStore';
 
 const { width } = Dimensions.get('window');
-
-// ─── MOCK DATA ───────────────────────────────────────────────────────────────
-const MOCK_ROLE = 'employee'; // toggle to 'employer' to see bar chart
 
 const SIMILAR_JOBS = [
     { id: '1', title: 'Senior Operator', company: 'LogiTech', location: 'Hyderabad', salary: '₹40k' },
@@ -28,17 +29,57 @@ const FUNNEL_DATA = [
     { name: 'Interview', value: 5, color: '#a855f7' },
     { name: 'Offer', value: 2, color: '#7c3aed' },
 ];
+const MAX_FUNNEL_VALUE = Math.max(...FUNNEL_DATA.map(item => item.value), 1);
+
+const clamp01 = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.max(0, Math.min(1, numeric));
+};
+
+const normalizeImpactToScore = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    if (numeric >= 0 && numeric <= 1) return numeric;
+    return clamp01(1 / (1 + Math.exp(-(numeric * 4))));
+};
+
+const tierFromProbability = (probability) => {
+    const score = clamp01(probability);
+    if (score >= 0.85) return 'STRONG';
+    if (score >= 0.7) return 'GOOD';
+    if (score >= 0.62) return 'POSSIBLE';
+    return 'REJECT';
+};
 
 export default function JobDetailsScreen({ navigation, route }) {
     const insets = useSafeAreaInsets();
-    const { job, matchScore, fitReason } = route.params || {};
+    const {
+        job,
+        matchScore,
+        fitReason,
+        workerIdForMatch,
+        finalScore: routeFinalScore,
+        tier: routeTier,
+        explainability: routeExplainability,
+    } = route.params || {};
     const [applying, setApplying] = useState(false);
     const [applied, setApplied] = useState(false);
 
     const [isSaved, setIsSaved] = useState(false);
     const [loadingAI, setLoadingAI] = useState(false);
     const [explanation, setExplanation] = useState(null);
+    const [viewerRole, setViewerRole] = useState('employee');
+    const [resolvedWorkerId, setResolvedWorkerId] = useState(String(workerIdForMatch || ''));
+    const [loadingMatchInsights, setLoadingMatchInsights] = useState(false);
+    const [matchProbability, setMatchProbability] = useState(null);
+    const [matchTier, setMatchTier] = useState(String(routeTier || '').toUpperCase() || null);
+    const [probabilityExplainability, setProbabilityExplainability] = useState(routeExplainability || {});
+    const [matchModelVersionUsed, setMatchModelVersionUsed] = useState(null);
     const { dispatch } = useAppState();
+    const { featureFlags } = useAppStore();
+    const isMatchUiEnabled = featureFlags?.FEATURE_MATCH_UI_V1 ?? FEATURE_MATCH_UI_V1;
+    const isEmployer = viewerRole === 'employer';
 
     // Safely handle missing params
     const safeJob = job || {
@@ -49,8 +90,116 @@ export default function JobDetailsScreen({ navigation, route }) {
         type: 'Full-time',
         requirements: ['Valid Heavy License', '5+ Years Exp', 'Clean Record'],
     };
-    const safeMatchScore = matchScore || 92;
+    const safeMatchScore = Number.isFinite(Number(matchScore)) ? Number(matchScore) : 92;
     const safeFitReason = fitReason || `Your profile is a strong match for this ${safeJob.title} role based on your 8 years of experience.`;
+    const fallbackProbability = Number.isFinite(Number(routeFinalScore))
+        ? clamp01(routeFinalScore)
+        : clamp01(safeMatchScore / 100);
+
+    useEffect(() => {
+        let isMounted = true;
+
+        const hydrateContext = async () => {
+            try {
+                const userInfoStr = await SecureStore.getItemAsync('userInfo');
+                const userInfo = JSON.parse(userInfoStr || '{}');
+                const normalizedRole = String(userInfo?.primaryRole || userInfo?.role || '').toLowerCase();
+
+                if (!isMounted) return;
+                setViewerRole(normalizedRole === 'employer' ? 'employer' : 'employee');
+
+                if (!isMatchUiEnabled || normalizedRole === 'employer') {
+                    return;
+                }
+
+                let workerId = String(workerIdForMatch || userInfo?.workerProfileId || '');
+                if (!workerId) {
+                    try {
+                        const { data } = await client.get('/api/users/profile');
+                        workerId = String(data?.profile?._id || '');
+                    } catch (profileError) {
+                        logger.warn('Worker profile lookup failed in JobDetails', profileError?.message || profileError);
+                    }
+                }
+
+                if (isMounted) {
+                    setResolvedWorkerId(workerId);
+                }
+            } catch (error) {
+                logger.error('Failed to hydrate JobDetails context', error);
+            }
+        };
+
+        hydrateContext();
+        return () => { isMounted = false; };
+    }, [isMatchUiEnabled, workerIdForMatch]);
+
+    useEffect(() => {
+        if (!isMatchUiEnabled || isEmployer) {
+            return;
+        }
+
+        const jobId = String(safeJob?._id || safeJob?.id || '');
+        if (!jobId || !resolvedWorkerId) {
+            return;
+        }
+
+        let isMounted = true;
+        const fetchProbability = async () => {
+            setLoadingMatchInsights(true);
+
+            try {
+                const { data } = await client.get('/api/matches/probability', {
+                    params: {
+                        workerId: resolvedWorkerId,
+                        jobId,
+                    },
+                });
+
+                if (!isMounted) return;
+
+                const probability = Number(data?.matchProbability);
+                const normalizedProbability = Number.isFinite(probability)
+                    ? clamp01(probability)
+                    : fallbackProbability;
+                const resolvedTier = tierFromProbability(normalizedProbability);
+
+                setMatchProbability(normalizedProbability);
+                setMatchTier(resolvedTier);
+                setProbabilityExplainability(data?.explainability || {});
+                setMatchModelVersionUsed(data?.matchModelVersionUsed || null);
+
+                trackEvent('MATCH_DETAIL_VIEWED', {
+                    workerId: resolvedWorkerId,
+                    jobId,
+                    finalScore: Number(normalizedProbability.toFixed(4)),
+                    tier: resolvedTier,
+                });
+            } catch (error) {
+                logger.error('Failed to fetch match probability for JobDetails', error);
+                if (!isMounted) return;
+
+                const resolvedTier = tierFromProbability(fallbackProbability);
+                setMatchProbability(fallbackProbability);
+                setMatchTier(resolvedTier);
+                setProbabilityExplainability(routeExplainability || {});
+
+                trackEvent('MATCH_DETAIL_VIEWED', {
+                    workerId: resolvedWorkerId,
+                    jobId,
+                    finalScore: Number(fallbackProbability.toFixed(4)),
+                    tier: resolvedTier,
+                });
+            } finally {
+                if (isMounted) {
+                    setLoadingMatchInsights(false);
+                }
+            }
+        };
+
+        fetchProbability();
+        return () => { isMounted = false; };
+    }, [fallbackProbability, isEmployer, isMatchUiEnabled, resolvedWorkerId, routeExplainability, safeJob?._id, safeJob?.id]);
 
     const handleApply = async () => {
         setApplying(true);
@@ -85,6 +234,13 @@ export default function JobDetailsScreen({ navigation, route }) {
             });
 
             triggerHaptic.success();
+            const jobAppliedPayload = {
+                jobId: String(safeJob._id || safeJob.id || ''),
+                title: safeJob.title || '',
+                companyName: safeJob.companyName || '',
+                source: 'job_details',
+            };
+            trackEvent('JOB_APPLIED', jobAppliedPayload);
             setApplying(false);
             setApplied(true);
             Alert.alert(
@@ -138,6 +294,25 @@ export default function JobDetailsScreen({ navigation, route }) {
         }
     };
 
+    const displayProbability = isMatchUiEnabled
+        ? clamp01(matchProbability ?? fallbackProbability)
+        : clamp01(safeMatchScore / 100);
+    const displayMatchPercent = Math.round(displayProbability * 100);
+    const effectiveTier = isMatchUiEnabled
+        ? (matchTier || tierFromProbability(displayProbability))
+        : (String(routeTier || '').toUpperCase() || tierFromProbability(displayProbability));
+
+    const resolvedExplainability = isMatchUiEnabled
+        ? (probabilityExplainability || {})
+        : (routeExplainability || {});
+    const skillFitPercent = Math.round(normalizeImpactToScore(resolvedExplainability?.skillImpact ?? resolvedExplainability?.skillScore) * 100);
+    const experienceFitPercent = Math.round(normalizeImpactToScore(resolvedExplainability?.experienceImpact ?? resolvedExplainability?.experienceScore) * 100);
+    const salaryFitPercent = Math.round(normalizeImpactToScore(resolvedExplainability?.salaryImpact ?? resolvedExplainability?.salaryScore) * 100);
+    const distanceFitPercent = Math.round(normalizeImpactToScore(resolvedExplainability?.distanceImpact ?? resolvedExplainability?.distanceScore) * 100);
+
+    const showLowMatchNudge = isMatchUiEnabled && displayProbability < 0.62;
+    const showStrongMatchEncouragement = isMatchUiEnabled && effectiveTier === 'STRONG';
+
     return (
         <View style={styles.container}>
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
@@ -168,9 +343,9 @@ export default function JobDetailsScreen({ navigation, route }) {
                             <Text style={styles.jobTitle}>{safeJob.title}</Text>
                             <Text style={styles.companyName}>{safeJob.companyName}</Text>
                         </View>
-                        {MOCK_ROLE === 'employee' && (
+                        {!isEmployer && (
                             <View style={styles.matchScoreBadge}>
-                                <Text style={styles.matchScoreText}>{safeMatchScore}%</Text>
+                                <Text style={styles.matchScoreText}>{displayMatchPercent}%</Text>
                             </View>
                         )}
                     </View>
@@ -216,24 +391,36 @@ export default function JobDetailsScreen({ navigation, route }) {
                     )}
 
                     {/* Mode Specific Sections */}
-                    {MOCK_ROLE === 'employer' ? (
+                    {isEmployer ? (
                         <View style={styles.funnelSection}>
                             <Text style={styles.sectionTitle}>Hiring Funnel Analytics</Text>
-                            <View style={styles.funnelChartBox}>
-                                {/* Vertical Bar Chart */}
-                                {FUNNEL_DATA.map((item, idx) => (
-                                    <View key={idx} style={styles.funnelBarCol}>
-                                        <Text style={styles.funnelBarValue}>{item.value}</Text>
-                                        <View style={styles.funnelBarTrack}>
-                                            <View style={[styles.funnelBarFill, { height: `${(item.value / 45) * 100}%`, backgroundColor: item.color }]} />
+                            <View style={styles.funnelChartWrapNative}>
+                                {FUNNEL_DATA.map((item) => (
+                                    <View key={item.name} style={styles.funnelCol}>
+                                        <Text style={styles.funnelValue}>{item.value}</Text>
+                                        <View style={styles.funnelTrack}>
+                                            <View
+                                                style={[
+                                                    styles.funnelBar,
+                                                    {
+                                                        backgroundColor: item.color,
+                                                        height: `${Math.max((item.value / MAX_FUNNEL_VALUE) * 100, 6)}%`,
+                                                    },
+                                                ]}
+                                            />
                                         </View>
-                                        <Text style={styles.funnelBarLabel}>{item.name}</Text>
+                                        <Text style={styles.funnelLabel}>{item.name}</Text>
                                     </View>
                                 ))}
                             </View>
                         </View>
                     ) : (
-                        <View style={styles.smartMatchCard}>
+                        <LinearGradient
+                            colors={['#eef2ff', '#f5f3ff']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.smartMatchCard}
+                        >
                             <View style={styles.smartMatchHeader}>
                                 <View style={styles.smartMatchTitleRow}>
                                     <IconSparkles size={16} color="#6366f1" />
@@ -249,6 +436,41 @@ export default function JobDetailsScreen({ navigation, route }) {
                                     </TouchableOpacity>
                                 )}
                             </View>
+                            {isMatchUiEnabled && (
+                                <View style={styles.probabilityCard}>
+                                    <View style={styles.probabilityHeaderRow}>
+                                        <Text style={styles.probabilityValue}>{displayMatchPercent}% match</Text>
+                                        <Text style={styles.probabilityTier}>{effectiveTier}</Text>
+                                    </View>
+                                    {loadingMatchInsights ? (
+                                        <ActivityIndicator size="small" color="#4f46e5" style={styles.probabilityLoader} />
+                                    ) : null}
+
+                                    <Text style={styles.explainabilityHeading}>Match breakdown</Text>
+                                    <View style={styles.explainabilityGrid}>
+                                        <Text style={styles.explainabilityMetric}>Skill match: {skillFitPercent}%</Text>
+                                        <Text style={styles.explainabilityMetric}>Experience fit: {experienceFitPercent}%</Text>
+                                        <Text style={styles.explainabilityMetric}>Salary fit: {salaryFitPercent}%</Text>
+                                        <Text style={styles.explainabilityMetric}>Distance fit: {distanceFitPercent}%</Text>
+                                    </View>
+
+                                    {showLowMatchNudge ? (
+                                        <Text style={styles.lowMatchNudge}>
+                                            This job is below your realistic match threshold — apply only if confident.
+                                        </Text>
+                                    ) : null}
+
+                                    {showStrongMatchEncouragement ? (
+                                        <Text style={styles.strongMatchNudge}>
+                                            High likelihood of success — this role aligns strongly with your profile.
+                                        </Text>
+                                    ) : null}
+
+                                    {matchModelVersionUsed ? (
+                                        <Text style={styles.modelVersionText}>Model: {matchModelVersionUsed}</Text>
+                                    ) : null}
+                                </View>
+                            )}
                             <View style={styles.smartMatchTextContainer}>
                                 {explanation && Array.isArray(explanation) ? (
                                     explanation.map((bullet, idx) => (
@@ -258,11 +480,11 @@ export default function JobDetailsScreen({ navigation, route }) {
                                     <Text style={styles.smartMatchText}>{safeFitReason}</Text>
                                 )}
                             </View>
-                        </View>
+                        </LinearGradient>
                     )}
 
                     {/* Company Info Section */}
-                    {MOCK_ROLE === 'employee' && safeJob?.companyName && (
+                    {!isEmployer && safeJob?.companyName && (
                         <View style={styles.companySection}>
                             <View style={styles.sectionHeaderRow}>
                                 <Text style={styles.sectionTitle}>About {safeJob.companyName}</Text>
@@ -284,7 +506,7 @@ export default function JobDetailsScreen({ navigation, route }) {
                     )}
 
                     {/* Similar Jobs Carousel */}
-                    {MOCK_ROLE === 'employee' && (
+                    {!isEmployer && (
                         <View style={styles.similarSection}>
                             <Text style={styles.sectionTitle}>Similar Jobs</Text>
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.similarScroll}>
@@ -308,7 +530,7 @@ export default function JobDetailsScreen({ navigation, route }) {
 
             {/* Sticky Apply Button */}
             <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-                {MOCK_ROLE === 'employee' ? (
+                {!isEmployer ? (
                     <TouchableOpacity
                         style={[styles.applyBtn, applied && styles.applyBtnApplied]}
                         onPress={handleApply}
@@ -336,7 +558,7 @@ const styles = StyleSheet.create({
     scrollContent: { flexGrow: 1 },
 
     // Banner
-    bannerContainer: { height: 220, position: 'relative' },
+    bannerContainer: { height: 160, position: 'relative' },
     bannerImage: { width: '100%', height: '100%', position: 'absolute' },
     bannerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15, 23, 42, 0.4)' },
     bannerHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, position: 'absolute', top: 0, left: 0, right: 0 },
@@ -346,7 +568,7 @@ const styles = StyleSheet.create({
     iconBtnSmallIcon: { color: '#fff', fontSize: 20, fontWeight: '600' },
 
     // Content
-    contentCard: { backgroundColor: '#fff', borderTopLeftRadius: 32, borderTopRightRadius: 32, marginTop: -32, paddingHorizontal: 20, paddingTop: 28, flex: 1 },
+    contentCard: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24, paddingHorizontal: 20, paddingTop: 24, flex: 1 },
     heroHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 },
     heroFlex: { flex: 1, paddingRight: 16 },
     jobTitle: { fontSize: 26, fontWeight: '900', color: '#0f172a', marginBottom: 4, lineHeight: 32 },
@@ -372,20 +594,98 @@ const styles = StyleSheet.create({
 
     // Employer
     funnelSection: { backgroundColor: '#f8fafc', padding: 16, borderRadius: 16, borderWidth: 1, borderColor: '#f1f5f9', marginBottom: 24 },
-    funnelChartBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 160, paddingTop: 20 },
-    funnelBarCol: { alignItems: 'center', width: '22%' },
-    funnelBarValue: { fontSize: 12, fontWeight: '900', color: '#0f172a', marginBottom: 4 },
-    funnelBarTrack: { width: '100%', flex: 1, backgroundColor: '#e2e8f0', borderRadius: 4, justifyContent: 'flex-end' },
-    funnelBarFill: { width: '100%', borderRadius: 4 },
-    funnelBarLabel: { fontSize: 10, fontWeight: '700', color: '#64748b', marginTop: 8, textAlign: 'center' },
+    funnelChartWrapNative: { height: 220, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', paddingTop: 10 },
+    funnelCol: { flex: 1, alignItems: 'center' },
+    funnelValue: { fontSize: 11, fontWeight: '800', color: '#0f172a', marginBottom: 4 },
+    funnelTrack: { height: 140, width: 32, borderRadius: 8, backgroundColor: '#e2e8f0', justifyContent: 'flex-end', overflow: 'hidden' },
+    funnelBar: { width: '100%', borderRadius: 8 },
+    funnelLabel: { fontSize: 10, fontWeight: '700', color: '#64748b', marginTop: 8, textAlign: 'center' },
 
     // Employee 
-    smartMatchCard: { backgroundColor: '#eef2ff', padding: 16, borderRadius: 16, borderWidth: 1, borderColor: '#e0e7ff', marginBottom: 24 },
+    smartMatchCard: { padding: 16, borderRadius: 16, borderWidth: 1, borderColor: '#c7d2fe', marginBottom: 24 },
     smartMatchHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
     smartMatchTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     smartMatchTitle: { fontSize: 14, fontWeight: '900', color: '#3730a3' },
     explainBtn: { backgroundColor: '#9333ea', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
     explainBtnText: { fontSize: 10, fontWeight: 'bold', color: '#fff' },
+    probabilityCard: {
+        backgroundColor: '#ffffff',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#c7d2fe',
+        padding: 12,
+        marginBottom: 10,
+    },
+    probabilityHeaderRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    probabilityValue: {
+        fontSize: 22,
+        fontWeight: '900',
+        color: '#312e81',
+    },
+    probabilityTier: {
+        fontSize: 11,
+        fontWeight: '900',
+        color: '#4338ca',
+        backgroundColor: '#e0e7ff',
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+    },
+    probabilityLoader: {
+        marginTop: 6,
+        marginBottom: 2,
+        alignSelf: 'flex-start',
+    },
+    explainabilityHeading: {
+        marginTop: 8,
+        marginBottom: 6,
+        color: '#312e81',
+        fontSize: 12,
+        fontWeight: '800',
+    },
+    explainabilityGrid: {
+        gap: 4,
+    },
+    explainabilityMetric: {
+        color: '#3730a3',
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    lowMatchNudge: {
+        marginTop: 10,
+        color: '#b91c1c',
+        fontSize: 12,
+        fontWeight: '700',
+        backgroundColor: '#fee2e2',
+        borderWidth: 1,
+        borderColor: '#fecaca',
+        borderRadius: 10,
+        padding: 8,
+    },
+    strongMatchNudge: {
+        marginTop: 10,
+        color: '#166534',
+        fontSize: 12,
+        fontWeight: '700',
+        backgroundColor: '#dcfce7',
+        borderWidth: 1,
+        borderColor: '#bbf7d0',
+        borderRadius: 10,
+        padding: 8,
+    },
+    modelVersionText: {
+        marginTop: 8,
+        fontSize: 10,
+        color: '#6366f1',
+        fontWeight: '700',
+    },
+    smartMatchTextContainer: {
+        marginTop: 4,
+    },
     smartMatchText: { fontSize: 13, lineHeight: 20, color: '#3730a3' },
 
     companySection: { marginBottom: 24 },

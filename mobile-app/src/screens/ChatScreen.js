@@ -10,9 +10,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { saveLimitedCache } from '../utils/cacheManager';
 import { triggerHaptic } from '../utils/haptics';
 import client from '../api/client';
-import { BASE_URL } from '../config';
 import { AuthContext } from '../context/AuthContext';
 import SkeletonLoader from '../components/SkeletonLoader';
+import EmptyState from '../components/EmptyState';
 import SocketService from '../services/socket';
 import * as DocumentPicker from 'expo-document-picker';
 import { initiateCall } from '../services/WebRTCService';
@@ -22,6 +22,13 @@ const AI_SUGGESTIONS = [
     "Can we do tomorrow?",
     "What's the salary range?"
 ];
+
+const normalizeStatus = (value) => {
+    const normalized = String(value || '').toLowerCase();
+    if (normalized === 'interview') return 'accepted';
+    if (normalized === 'applied') return 'pending';
+    return normalized;
+};
 
 // Typing Indicator Component
 const TypingIndicator = () => {
@@ -55,7 +62,7 @@ const TypingIndicator = () => {
 
 export default function ChatScreen({ route, navigation }) {
     const insets = useSafeAreaInsets();
-    const { applicationId, otherPartyName = 'Logitech', jobTitle = 'Moving the world, one delivery at a time.', status = 'Applied' } = route.params || {};
+    const { applicationId, otherPartyName = 'Logitech', jobTitle = 'Moving the world, one delivery at a time.', status = 'Applied', companyId = null } = route.params || {};
 
     const { userInfo } = React.useContext(AuthContext);
     const [messages, setMessages] = useState([]);
@@ -68,9 +75,14 @@ export default function ChatScreen({ route, navigation }) {
     const [isLoading, setIsLoading] = useState(true);
     const [isScreenReady, setIsScreenReady] = useState(false);
     const [uploadingFile, setUploadingFile] = useState(false);
+    const [connectionStatus, setConnectionStatus] = useState('connected');
+    const [historyError, setHistoryError] = useState('');
+    const [applicationStatus, setApplicationStatus] = useState(normalizeStatus(status));
+    const [reloadKey, setReloadKey] = useState(0);
 
     const flatListRef = useRef(null);
     const typingTimeout = useRef(null);
+    const canChat = applicationStatus === 'accepted';
 
     useEffect(() => {
         const timeout = setTimeout(() => setIsScreenReady(true), 50);
@@ -79,13 +91,23 @@ export default function ChatScreen({ route, navigation }) {
 
     useEffect(() => {
         if (!applicationId) return;
+        let isActive = true;
 
-        // Fetch history
+        const getReadableError = (error, fallback) => {
+            if (error?.response?.data?.message) return error.response.data.message;
+            if (error?.message === 'No internet connection') return 'No internet connection. Please check your network and try again.';
+            if (error?.message === 'Network Error') return 'Unable to reach the server. Please try again.';
+            if (error?.code === 'ECONNABORTED') return 'Request timed out. Please retry.';
+            return fallback;
+        };
+
         const fetchHistory = async () => {
+            setHistoryError('');
+            setIsLoading(true);
             try {
                 // 1. Try cache
                 const cached = await AsyncStorage.getItem(`@chat_history_${applicationId}`);
-                if (cached) {
+                if (cached && isActive) {
                     setMessages(JSON.parse(cached));
                     setIsLoading(false);
                 }
@@ -94,17 +116,31 @@ export default function ChatScreen({ route, navigation }) {
             }
 
             try {
-                // 2. Fetch fresh
+                // 2. Fetch fresh history
                 const { data } = await client.get(`/api/chat/${applicationId}`);
-                if (data && Array.isArray(data)) {
-                    setMessages(data);
+                if (isActive && data && Array.isArray(data)) {
+                    const chronological = [...data].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                    setMessages(chronological);
                     // 3. Update cache (max 100 messages to prevent unbounded bloat)
-                    saveLimitedCache(`@chat_history_${applicationId}`, data, 100);
+                    saveLimitedCache(`@chat_history_${applicationId}`, chronological, 100);
                 }
             } catch (err) {
                 logger.error('Failed to fetch chat history', err);
+                if (isActive) {
+                    setHistoryError(getReadableError(err, 'Could not load chat history.'));
+                }
+            }
+
+            try {
+                // Keep chat lock state synced with latest application status
+                const { data: applicationData } = await client.get(`/api/applications/${applicationId}`);
+                if (isActive) {
+                    setApplicationStatus(normalizeStatus(applicationData?.status || status));
+                }
+            } catch (err) {
+                logger.warn('Could not load application status for chat:', err?.message || err);
             } finally {
-                setIsLoading(false);
+                if (isActive) setIsLoading(false);
             }
         };
         fetchHistory();
@@ -113,6 +149,13 @@ export default function ChatScreen({ route, navigation }) {
         const handleNewMessage = (msg) => {
             setMessages((prev) => [...prev, msg]);
             setIsTyping(false);
+        };
+        const handleSocketDisconnect = () => {
+            setConnectionStatus('reconnecting');
+        };
+        const handleSocketConnect = () => {
+            setConnectionStatus('connected');
+            SocketService.emit('joinRoom', { applicationId });
         };
 
         SocketService.on('receiveMessage', handleNewMessage);
@@ -129,24 +172,29 @@ export default function ChatScreen({ route, navigation }) {
         SocketService.on('messages_read_ack', ({ userId, readAt }) => {
             if (userId !== userInfo?._id) setLastReadByOther(readAt);
         });
+        SocketService.on('disconnect', handleSocketDisconnect);
+        SocketService.on('connect', handleSocketConnect);
 
         // Ensure we join the room if connected
         SocketService.emit('joinRoom', { applicationId });
 
         return () => {
+            isActive = false;
             SocketService.off('receiveMessage');
             SocketService.off('user_typing');
             SocketService.off('user_stop_typing');
             SocketService.off('messages_read_ack');
+            SocketService.off('disconnect');
+            SocketService.off('connect');
             if (typingTimeout.current) clearTimeout(typingTimeout.current);
         };
-    }, [applicationId]);
+    }, [applicationId, status, userInfo?._id, reloadKey]);
 
     // Emit read receipts when messages load or change — Feature 5
     useEffect(() => {
         if (!applicationId || !userInfo) return;
         SocketService.emit('messages_read', { roomId: applicationId, userId: userInfo._id });
-    }, [messages.length]);
+    }, [applicationId, userInfo, messages.length]);
 
     const getMessageStatus = (message) => {
         if (!userInfo) return null;
@@ -158,6 +206,10 @@ export default function ChatScreen({ route, navigation }) {
 
     const sendMessage = async (payload = input) => {
         if (!userInfo) return;
+        if (!canChat) {
+            Alert.alert('Waiting for Response', 'Chat will unlock once this application is accepted.');
+            return;
+        }
         const isTextPayload = typeof payload === 'string';
         const trimmedText = isTextPayload ? payload.trim() : '';
         if (isTextPayload && !trimmedText) return;
@@ -178,6 +230,7 @@ export default function ChatScreen({ route, navigation }) {
     };
 
     const handleInputChange = (text) => {
+        if (!canChat) return;
         setInput(text);
         if (!userInfo || !applicationId) return;
         // Emit typing
@@ -253,6 +306,10 @@ export default function ChatScreen({ route, navigation }) {
     };
 
     const handleAttachmentPress = () => {
+        if (!canChat) {
+            Alert.alert('Waiting for Response', 'Attachments become available once chat is unlocked.');
+            return;
+        }
         setShowAttachments(true);
         Alert.alert(
             'Share',
@@ -302,6 +359,14 @@ export default function ChatScreen({ route, navigation }) {
         }
         return null;
     }, [messages, userInfo]);
+
+    const headerStatusText = isOtherTyping
+        ? 'typing...'
+        : connectionStatus === 'reconnecting'
+            ? 'Reconnecting...'
+            : canChat
+                ? 'Chat available'
+                : 'Waiting for response';
 
     const renderMessage = ({ item, index }) => {
         const isSystem = item.type === 'system';
@@ -364,17 +429,23 @@ export default function ChatScreen({ route, navigation }) {
                 <Text style={styles.backArrow}>‹</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-                style={styles.headerInfoContainer}
-                activeOpacity={0.7}
-                onPress={() => setShowProfileModal(true)}
-                onLongPress={handleReportUser}
-            >
+                <TouchableOpacity
+                    style={styles.headerInfoContainer}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                        if (companyId) {
+                            navigation.navigate('CompanyDetails', { companyId, companyName: otherPartyName, applicationId });
+                            return;
+                        }
+                        setShowProfileModal(true);
+                    }}
+                    onLongPress={handleReportUser}
+                >
                 <Image source={{ uri: `https://ui-avatars.com/api/?name=${otherPartyName}&background=7c3aed&color=fff` }} style={styles.headerAvatar} />
                 <View style={styles.headerInfoText}>
                     <Text style={styles.headerName} numberOfLines={1}>{otherPartyName}</Text>
                     <Text style={styles.headerSub} numberOfLines={1}>
-                        {isOtherTyping ? 'typing...' : status}
+                        {headerStatusText}
                     </Text>
                 </View>
             </TouchableOpacity>
@@ -410,6 +481,16 @@ export default function ChatScreen({ route, navigation }) {
     return (
         <View style={styles.container}>
             {renderHeader()}
+            {connectionStatus === 'reconnecting' && (
+                <View style={styles.connectionBanner}>
+                    <Text style={styles.connectionBannerText}>Reconnecting...</Text>
+                </View>
+            )}
+            {!canChat && (
+                <View style={styles.lockedBanner}>
+                    <Text style={styles.lockedBannerText}>Waiting for acceptance. Chat will unlock once approved.</Text>
+                </View>
+            )}
 
             {isLoading ? (
                 <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
@@ -417,6 +498,14 @@ export default function ChatScreen({ route, navigation }) {
                     <SkeletonLoader height={60} style={{ borderRadius: 16, marginBottom: 12, width: '60%', alignSelf: 'flex-end', backgroundColor: '#e9d5ff' }} />
                     <SkeletonLoader height={60} style={{ borderRadius: 16, marginBottom: 12, width: '75%', alignSelf: 'flex-start' }} />
                 </View>
+            ) : historyError && messages.length === 0 ? (
+                <EmptyState
+                    icon={<Text style={{ fontSize: 40 }}>⚠️</Text>}
+                    title="Could Not Load Chat"
+                    message={historyError}
+                    actionLabel="Retry"
+                    onAction={() => setReloadKey((prev) => prev + 1)}
+                />
             ) : (
                 <FlatList
                     ref={flatListRef}
@@ -464,7 +553,7 @@ export default function ChatScreen({ route, navigation }) {
                     <TouchableOpacity
                         style={[styles.attachBtn, showAttachments && styles.attachBtnActive]}
                         onPress={handleAttachmentPress}
-                        disabled={uploadingFile}
+                        disabled={uploadingFile || !canChat}
                     >
                         <View style={{ transform: [{ rotate: showAttachments ? '45deg' : '0deg' }] }}>
                             <IconPlus size={24} color={showAttachments ? '#1e293b' : '#64748b'} />
@@ -479,7 +568,7 @@ export default function ChatScreen({ route, navigation }) {
                             value={input}
                             onChangeText={handleInputChange}
                             multiline
-                            editable={!uploadingFile}
+                            editable={!uploadingFile && canChat}
                         />
                     </View>
 
@@ -488,11 +577,11 @@ export default function ChatScreen({ route, navigation }) {
                             <ActivityIndicator size="small" color="#9333ea" />
                         </View>
                     ) : input.trim() ? (
-                        <TouchableOpacity style={styles.sendBtn} onPress={() => sendMessage()}>
+                        <TouchableOpacity style={[styles.sendBtn, !canChat && styles.actionBtnDisabled]} onPress={() => sendMessage()} disabled={!canChat}>
                             <IconSend size={18} color="#fff" />
                         </TouchableOpacity>
                     ) : (
-                        <TouchableOpacity style={styles.micBtn}>
+                        <TouchableOpacity style={[styles.micBtn, !canChat && styles.actionBtnDisabled]} disabled={!canChat}>
                             <IconMic size={24} color="#64748b" />
                         </TouchableOpacity>
                     )}
@@ -637,6 +726,32 @@ export default function ChatScreen({ route, navigation }) {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f3e8ff' }, // matching ref
+    connectionBanner: {
+        backgroundColor: '#fff7ed',
+        borderBottomWidth: 1,
+        borderBottomColor: '#fed7aa',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+    },
+    connectionBannerText: {
+        color: '#9a3412',
+        fontSize: 12,
+        fontWeight: '700',
+        textAlign: 'center',
+    },
+    lockedBanner: {
+        backgroundColor: '#eff6ff',
+        borderBottomWidth: 1,
+        borderBottomColor: '#bfdbfe',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+    },
+    lockedBannerText: {
+        color: '#1d4ed8',
+        fontSize: 12,
+        fontWeight: '700',
+        textAlign: 'center',
+    },
 
     // Header
     header: { backgroundColor: '#9333ea', paddingHorizontal: 16, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 4, zIndex: 10 },
@@ -687,6 +802,7 @@ const styles = StyleSheet.create({
     inputField: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: '#0f172a' },
     sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#9333ea', justifyContent: 'center', alignItems: 'center', marginLeft: 8, shadowColor: '#9333ea', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
     micBtn: { padding: 10, marginLeft: 2 },
+    actionBtnDisabled: { opacity: 0.45 },
     uploadingIndicator: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8, backgroundColor: '#f3e8ff' },
 
     // File message

@@ -10,10 +10,33 @@ import SkeletonLoader from '../components/SkeletonLoader';
 import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
 import { getPrimaryRoleFromUser } from '../utils/roleMode';
+import { useFocusEffect } from '@react-navigation/native';
 
 const { width } = Dimensions.get('window');
 
-const FILTERS = ['All', 'Applied', 'Shortlisted', 'Interview', 'Archived'];
+const FILTERS = ['All', 'Applied', 'Shortlisted', 'Accepted', 'Rejected', 'Hired', 'Archived'];
+const STATUS_MAP = {
+    requested: 'Applied',
+    pending: 'Applied',
+    shortlisted: 'Shortlisted',
+    accepted: 'Accepted',
+    rejected: 'Rejected',
+    hired: 'Hired',
+    offer_proposed: 'Offer Received',
+    offer_accepted: 'Offer Accepted',
+    interview: 'Interview',
+    applied: 'Applied',
+};
+const STATUS_COLOR_MAP = {
+    Applied: '#94a3b8',
+    Shortlisted: '#f59e0b',
+    Accepted: '#9333ea',
+    Rejected: '#ef4444',
+    Hired: '#10b981',
+    Interview: '#9333ea',
+    'Offer Received': '#0ea5e9',
+    'Offer Accepted': '#10b981',
+};
 
 const PRODUCTS = [
     { name: 'Express Last-Mile', icon: '🚚', desc: 'Tech-enabled delivery for e-commerce and retail.' },
@@ -61,20 +84,54 @@ export default function ApplicationsScreen({ navigation }) {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    const mapStatus = (status) => {
-        const value = String(status || '').toLowerCase();
-        if (value === 'pending') return 'Applied';
-        if (value === 'accepted') return 'Interview';
-        if (value === 'shortlisted') return 'Shortlisted';
-        if (value === 'interview') return 'Interview';
-        if (value === 'applied') return 'Applied';
-        return status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Applied';
-    };
+    const mapStatus = (status) => STATUS_MAP[String(status || '').toLowerCase()] || 'Applied';
 
     const fetchApplications = useCallback(async () => {
         try {
             setError(null);
             setIsLoading(true);
+            if (isEmployer) {
+                const [jobsRes, applicationsRes] = await Promise.all([
+                    client.get('/api/jobs/my-jobs'),
+                    client.get('/api/applications'),
+                ]);
+                const jobsData = jobsRes?.data;
+                const jobs = Array.isArray(jobsData) ? jobsData : (jobsData?.data || []);
+                const appsData = applicationsRes?.data;
+                const appList = Array.isArray(appsData) ? appsData : (appsData?.data || []);
+
+                const applicantsByJobId = appList.reduce((acc, application) => {
+                    const jobId = String(application?.job?._id || application?.job || '');
+                    if (!jobId) return acc;
+                    acc[jobId] = (acc[jobId] || 0) + 1;
+                    return acc;
+                }, {});
+
+                const formattedJobs = jobs.map((job) => {
+                    const jobId = String(job._id);
+                    const applicantCount = applicantsByJobId[jobId] || 0;
+                    return {
+                        _id: jobId,
+                        itemType: 'job',
+                        jobId,
+                        companyId: null,
+                        companyName: job.companyName || 'Your Company',
+                        applicantName: '',
+                        rawStatus: 'pending',
+                        jobTitle: job.title || 'Untitled Role',
+                        status: 'Applied',
+                        badgeText: `${applicantCount} Applicants`,
+                        lastMessage: applicantCount > 0 ? 'Tap to review candidates in Talent.' : 'No applicants yet.',
+                        time: job.updatedAt ? new Date(job.updatedAt).toLocaleDateString() : 'Now',
+                        logo: `https://ui-avatars.com/api/?name=${encodeURIComponent(job.companyName || 'Company')}&background=7c3aed&color=fff`,
+                        applicantCount,
+                        matchScore: 0,
+                    };
+                });
+                setApplications(formattedJobs);
+                return;
+            }
+
             const { data } = await client.get('/api/applications');
             const list = Array.isArray(data) ? data : (data?.data || []);
             const formatted = list.map((item) => {
@@ -85,10 +142,15 @@ export default function ApplicationsScreen({ navigation }) {
                     : 'Applicant';
                 return {
                     _id: item._id,
+                    itemType: 'application',
+                    jobId: job?._id || null,
+                    companyId: item.employer?._id || null,
                     companyName,
                     applicantName,
+                    rawStatus: String(item.status || '').toLowerCase(),
                     jobTitle: job.title || item.jobTitle || 'Untitled Role',
                     status: mapStatus(item.status),
+                    badgeText: null,
                     lastMessage: item.lastMessage || 'Application updated.',
                     time: item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : 'Now',
                     logo: `https://ui-avatars.com/api/?name=${encodeURIComponent(companyName)}&background=7c3aed&color=fff`,
@@ -101,15 +163,23 @@ export default function ApplicationsScreen({ navigation }) {
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [isEmployer]);
 
     useEffect(() => {
         fetchApplications();
     }, [fetchApplications]);
 
+    useFocusEffect(
+        useCallback(() => {
+            fetchApplications();
+        }, [fetchApplications])
+    );
+
     const filteredApps = selectedFilter === 'Archived'
         ? archivedApplications
-        : applications.filter(app => selectedFilter === 'All' || app.status === selectedFilter);
+        : isEmployer
+            ? applications
+            : applications.filter(app => selectedFilter === 'All' || app.status === selectedFilter);
 
     const openContactInfo = (contact) => setSelectedContact(contact);
 
@@ -139,16 +209,28 @@ export default function ApplicationsScreen({ navigation }) {
 
     const handleOpenApplication = (item) => {
         if (isEmployer) {
-            navigation.navigate('ApplicantTimeline', {
-                applicationId: item._id,
-                applicantName: item.applicantName || item.companyName || 'Applicant',
+            navigation.navigate('Talent', {
+                jobId: item.jobId || item._id,
                 jobTitle: item.jobTitle,
-                status: item.status,
-                matchScore: item.matchScore || 0
             });
             return;
         }
-        navigation.navigate('Chat', { applicationId: item._id, otherPartyName: item.companyName, jobTitle: item.jobTitle, status: item.status });
+        if (item.rawStatus !== 'accepted') {
+            Alert.alert('Waiting for Response', 'Chat unlocks once this application is accepted.');
+            return;
+        }
+        navigation.navigate('Chat', { applicationId: item._id, otherPartyName: item.companyName, jobTitle: item.jobTitle, status: item.rawStatus });
+    };
+
+    const handleOpenChat = (item) => {
+        const otherPartyName = isEmployer ? (item.applicantName || 'Applicant') : (item.companyName || 'Employer');
+        navigation.navigate('Chat', {
+            applicationId: item._id,
+            otherPartyName,
+            jobTitle: item.jobTitle,
+            status: item.rawStatus || item.status,
+            companyId: item.companyId || null,
+        });
     };
 
     const renderItem = ({ item }) => (
@@ -161,18 +243,34 @@ export default function ApplicationsScreen({ navigation }) {
 
                 <TouchableOpacity style={styles.rowContent} activeOpacity={0.7} onPress={() => handleOpenApplication(item)}>
                     <View style={styles.rowTop}>
-                        <TouchableOpacity onPress={() => openContactInfo(item)} activeOpacity={0.7}>
+                        {isEmployer ? (
                             <Text style={styles.companyName} numberOfLines={1}>{item.companyName}</Text>
-                        </TouchableOpacity>
+                        ) : (
+                            <TouchableOpacity
+                                onPress={() => navigation.navigate('CompanyDetails', {
+                                    applicationId: item._id,
+                                    companyId: item.companyId,
+                                    companyName: item.companyName,
+                                })}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={styles.companyName} numberOfLines={1}>{item.companyName}</Text>
+                            </TouchableOpacity>
+                        )}
                         <Text style={styles.timeText}>{item.time}</Text>
                     </View>
                     <View style={styles.titleRow}>
                         <Text style={styles.jobTitle} numberOfLines={1}>{item.jobTitle}</Text>
-                        <View style={styles.statusBadge}>
-                            <Text style={styles.statusBadgeText}>{item.status}</Text>
+                        <View style={[styles.statusBadge, { backgroundColor: `${STATUS_COLOR_MAP[item.status] || '#f1f5f9'}22` }]}>
+                            <Text style={[styles.statusBadgeText, { color: STATUS_COLOR_MAP[item.status] || '#64748b' }]}>{item.badgeText || item.status}</Text>
                         </View>
                     </View>
                     <Text style={styles.lastMessage} numberOfLines={1}>{item.lastMessage}</Text>
+                    {item.itemType === 'application' && item.rawStatus === 'accepted' && (
+                        <TouchableOpacity style={styles.openChatBtn} onPress={() => handleOpenChat(item)}>
+                            <Text style={styles.openChatBtnText}>Open Chat</Text>
+                        </TouchableOpacity>
+                    )}
                 </TouchableOpacity>
             </View>
         </SwipeableRow>
@@ -230,7 +328,7 @@ export default function ApplicationsScreen({ navigation }) {
                                 if (selectedFilter !== 'All') {
                                     setSelectedFilter('All');
                                 } else {
-                                    navigation.navigate('Jobs'); // Route to global Jobs Screen
+                                    navigation.navigate(isEmployer ? 'My Jobs' : 'Jobs');
                                 }
                             }}
                         />
@@ -357,6 +455,21 @@ const styles = StyleSheet.create({
     statusBadge: { backgroundColor: '#f1f5f9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
     statusBadgeText: { fontSize: 9, fontWeight: '900', color: '#64748b', textTransform: 'uppercase' },
     lastMessage: { fontSize: 13, color: '#64748b', fontWeight: '500' },
+    openChatBtn: {
+        alignSelf: 'flex-start',
+        marginTop: 8,
+        backgroundColor: '#faf5ff',
+        borderWidth: 1,
+        borderColor: '#e9d5ff',
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+    },
+    openChatBtnText: {
+        fontSize: 11,
+        fontWeight: '800',
+        color: '#7c3aed',
+    },
 
     emptyState: { alignItems: 'center', paddingTop: 80, paddingHorizontal: 32 },
     emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center', marginBottom: 20 },

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useCallback, useRef } from 'react';
 import {
     View, Text, FlatList, StyleSheet, TouchableOpacity,
-    ScrollView, Share, Modal, TextInput, Alert, ActivityIndicator
+    ScrollView, Share, Modal, TextInput, Alert, ActivityIndicator, Platform
 } from 'react-native';
 import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -371,9 +371,9 @@ export default function JobsScreen() {
                     offset: 160 * index,
                     index,
                 })}
-                maxToRenderPerBatch={5}
-                windowSize={5}
-                removeClippedSubviews={true}
+                maxToRenderPerBatch={10}
+                windowSize={10}
+                removeClippedSubviews={Platform.OS === 'android'}
                 initialNumToRender={10}
                 ListEmptyComponent={
                     <EmptyState

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, ActivityIndicator, FlatList } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, ActivityIndicator, FlatList, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -293,9 +293,9 @@ export default function TalentScreen() {
                                     offset: 100 * index,
                                     index,
                                 })}
-                                maxToRenderPerBatch={5}
-                                windowSize={5}
-                                removeClippedSubviews={true}
+                                maxToRenderPerBatch={10}
+                                windowSize={10}
+                                removeClippedSubviews={Platform.OS === 'android'}
                                 initialNumToRender={10}
                                 showsVerticalScrollIndicator={false}
                             />
@@ -349,9 +349,9 @@ export default function TalentScreen() {
                                 offset: 140 * index,
                                 index,
                             })}
-                            maxToRenderPerBatch={5}
-                            windowSize={5}
-                            removeClippedSubviews={true}
+                            maxToRenderPerBatch={10}
+                            windowSize={10}
+                            removeClippedSubviews={Platform.OS === 'android'}
                             initialNumToRender={10}
                             showsVerticalScrollIndicator={false}
                         />

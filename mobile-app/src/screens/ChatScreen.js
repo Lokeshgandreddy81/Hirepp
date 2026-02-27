@@ -432,8 +432,8 @@ export default function ChatScreen({ route, navigation }) {
                         index,
                     })}
                     maxToRenderPerBatch={10}
-                    windowSize={5}
-                    removeClippedSubviews={false}
+                    windowSize={10}
+                    removeClippedSubviews={Platform.OS === 'android'}
                     initialNumToRender={15}
                     onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
                     onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}

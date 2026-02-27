@@ -1,22 +1,18 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useContext, useEffect, useCallback } from 'react';
 import {
     View, Text, FlatList, StyleSheet, TouchableOpacity, Modal, ScrollView, Image,
-    Animated, PanResponder, Dimensions, Alert
+    Animated, PanResponder, Dimensions, Alert, Platform
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import EmptyState from '../components/EmptyState';
 import SkeletonLoader from '../components/SkeletonLoader';
+import { AuthContext } from '../context/AuthContext';
+import client from '../api/client';
 
 const { width } = Dimensions.get('window');
 
-const MOCK_APPLICATIONS = [
-    { _id: '65f02bc0fe1234a56bcc7891', companyName: 'TechCorp India', jobTitle: 'Senior React Native Developer', status: 'Shortlisted', lastMessage: "We'd love to schedule a call. Are you available Friday?", time: '10:32 AM', logo: 'https://ui-avatars.com/api/?name=TechCorp&background=7c3aed&color=fff' },
-    { _id: '65f02bc0fe1234a56bcc7892', companyName: 'StartupX', jobTitle: 'Full Stack Engineer', status: 'Interview', lastMessage: 'Your interview is confirmed for Tuesday at 3 PM IST.', time: 'Yesterday', logo: 'https://ui-avatars.com/api/?name=StartupX&background=0f172a&color=fff' },
-    { _id: '65f02bc0fe1234a56bcc7893', companyName: 'DesignHub', jobTitle: 'UI/UX Designer', status: 'Applied', lastMessage: 'Thank you for applying! We will review your profile.', time: 'Mon', logo: 'https://ui-avatars.com/api/?name=DesignHub&background=f43f5e&color=fff' },
-];
-
-const FILTERS = ['All', 'Applied', 'Shortlisted', 'Interview'];
+const FILTERS = ['All', 'Applied', 'Shortlisted', 'Interview', 'Archived'];
 
 const PRODUCTS = [
     { name: 'Express Last-Mile', icon: '🚚', desc: 'Tech-enabled delivery for e-commerce and retail.' },
@@ -55,22 +51,74 @@ const SwipeableRow = ({ children, onArchive }) => {
 
 export default function ApplicationsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
-    const [applications, setApplications] = useState(MOCK_APPLICATIONS);
+    const { userInfo } = useContext(AuthContext);
+    const isEmployer = ['employer', 'recruiter', 'admin'].includes((userInfo?.role || '').toLowerCase());
+    const [applications, setApplications] = useState([]);
+    const [archivedApplications, setArchivedApplications] = useState([]);
     const [selectedFilter, setSelectedFilter] = useState('All');
     const [selectedContact, setSelectedContact] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
 
-    React.useEffect(() => {
-        const timer = setTimeout(() => {
+    const mapStatus = (status) => {
+        const value = String(status || '').toLowerCase();
+        if (value === 'pending') return 'Applied';
+        if (value === 'accepted') return 'Interview';
+        if (value === 'shortlisted') return 'Shortlisted';
+        if (value === 'interview') return 'Interview';
+        if (value === 'applied') return 'Applied';
+        return status ? `${status.charAt(0).toUpperCase()}${status.slice(1)}` : 'Applied';
+    };
+
+    const fetchApplications = useCallback(async () => {
+        try {
+            setError(null);
+            setIsLoading(true);
+            const { data } = await client.get('/api/applications');
+            const list = Array.isArray(data) ? data : (data?.data || []);
+            const formatted = list.map((item) => {
+                const job = item.job || {};
+                const companyName = job.companyName || item.employer?.name || item.companyName || 'Employer';
+                const applicantName = item.worker?.firstName
+                    ? `${item.worker.firstName} ${item.worker.lastName || ''}`.trim()
+                    : 'Applicant';
+                return {
+                    _id: item._id,
+                    companyName,
+                    applicantName,
+                    jobTitle: job.title || item.jobTitle || 'Untitled Role',
+                    status: mapStatus(item.status),
+                    lastMessage: item.lastMessage || 'Application updated.',
+                    time: item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : 'Now',
+                    logo: `https://ui-avatars.com/api/?name=${encodeURIComponent(companyName)}&background=7c3aed&color=fff`,
+                    matchScore: item.matchScore || 0,
+                };
+            });
+            setApplications(formatted);
+        } catch (e) {
+            setError('Could not load applications');
+        } finally {
             setIsLoading(false);
-        }, 1000);
-        return () => clearTimeout(timer);
+        }
     }, []);
 
-    const filteredApps = applications.filter(app => selectedFilter === 'All' || app.status === selectedFilter);
+    useEffect(() => {
+        fetchApplications();
+    }, [fetchApplications]);
+
+    const filteredApps = selectedFilter === 'Archived'
+        ? archivedApplications
+        : applications.filter(app => selectedFilter === 'All' || app.status === selectedFilter);
 
     const openContactInfo = (contact) => setSelectedContact(contact);
-    const handleArchive = (id) => setApplications(prev => prev.filter(a => a._id !== id));
+
+    const handleArchive = (id) => {
+        const item = applications.find(a => a._id === id);
+        if (item) {
+            setArchivedApplications(prev => [...prev, { ...item, archived: true }]);
+        }
+        setApplications(prev => prev.filter(a => a._id !== id));
+    };
 
     const handleWithdraw = () => {
         Alert.alert(
@@ -88,6 +136,20 @@ export default function ApplicationsScreen({ navigation }) {
         );
     };
 
+    const handleOpenApplication = (item) => {
+        if (isEmployer) {
+            navigation.navigate('ApplicantTimeline', {
+                applicationId: item._id,
+                applicantName: item.applicantName || item.companyName || 'Applicant',
+                jobTitle: item.jobTitle,
+                status: item.status,
+                matchScore: item.matchScore || 0
+            });
+            return;
+        }
+        navigation.navigate('Chat', { applicationId: item._id, otherPartyName: item.companyName, jobTitle: item.jobTitle, status: item.status });
+    };
+
     const renderItem = ({ item }) => (
         <SwipeableRow onArchive={() => handleArchive(item._id)}>
             <View style={styles.row}>
@@ -96,7 +158,7 @@ export default function ApplicationsScreen({ navigation }) {
                     <View style={styles.purpleDot} />
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.rowContent} activeOpacity={0.7} onPress={() => navigation.navigate('Chat', { applicationId: item._id, otherPartyName: item.companyName, jobTitle: item.jobTitle, status: item.status })}>
+                <TouchableOpacity style={styles.rowContent} activeOpacity={0.7} onPress={() => handleOpenApplication(item)}>
                     <View style={styles.rowTop}>
                         <TouchableOpacity onPress={() => openContactInfo(item)} activeOpacity={0.7}>
                             <Text style={styles.companyName} numberOfLines={1}>{item.companyName}</Text>
@@ -139,6 +201,14 @@ export default function ApplicationsScreen({ navigation }) {
                     <SkeletonLoader height={72} style={{ borderRadius: 12, marginBottom: 12 }} />
                     <SkeletonLoader height={72} style={{ borderRadius: 12, marginBottom: 12 }} />
                 </View>
+            ) : error ? (
+                <EmptyState
+                    icon={<View style={styles.emptyIconCircle}><Text style={styles.emptyEmoji}>⚠️</Text></View>}
+                    title="Could Not Load Applications"
+                    message={error}
+                    actionLabel="Retry"
+                    onAction={fetchApplications}
+                />
             ) : (
                 <FlatList
                     data={filteredApps}
@@ -146,6 +216,9 @@ export default function ApplicationsScreen({ navigation }) {
                     renderItem={renderItem}
                     contentContainerStyle={styles.listContent}
                     showsVerticalScrollIndicator={false}
+                    removeClippedSubviews={Platform.OS === 'android'}
+                    maxToRenderPerBatch={10}
+                    windowSize={10}
                     ListEmptyComponent={
                         <EmptyState
                             icon={<View style={styles.emptyIconCircle}><Text style={styles.emptyEmoji}>📬</Text></View>}

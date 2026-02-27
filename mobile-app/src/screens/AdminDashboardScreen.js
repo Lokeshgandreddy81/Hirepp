@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, FlatList, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, FlatList, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
@@ -185,6 +185,9 @@ export default function AdminDashboardScreen({ navigation }) {
             data={users}
             keyExtractor={item => item._id}
             contentContainerStyle={styles.scrollContent}
+            removeClippedSubviews={Platform.OS === 'android'}
+            maxToRenderPerBatch={10}
+            windowSize={10}
             renderItem={({ item }) => (
                 <View style={styles.listCard}>
                     <View>
@@ -204,6 +207,9 @@ export default function AdminDashboardScreen({ navigation }) {
             data={jobs}
             keyExtractor={item => item._id}
             contentContainerStyle={styles.scrollContent}
+            removeClippedSubviews={Platform.OS === 'android'}
+            maxToRenderPerBatch={10}
+            windowSize={10}
             renderItem={({ item }) => (
                 <View style={styles.listCard}>
                     <View>
@@ -221,6 +227,9 @@ export default function AdminDashboardScreen({ navigation }) {
             data={reports}
             keyExtractor={item => item._id}
             contentContainerStyle={styles.scrollContent}
+            removeClippedSubviews={Platform.OS === 'android'}
+            maxToRenderPerBatch={10}
+            windowSize={10}
             renderItem={({ item }) => (
                 <View style={styles.reportCard}>
                     <View style={{ flex: 1 }}>

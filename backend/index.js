@@ -187,6 +187,39 @@ io.on('connection', (socket) => {
       // Emit to Room
       io.to(applicationId).emit('receiveMessage', populatedMessage);
 
+      // Push notification to the other party in this application chat
+      try {
+        const Application = require('./models/Application');
+        const User = require('./models/userModel');
+        const { sendPushNotification } = require('./services/pushService');
+
+        const application = await Application.findById(applicationId).populate('worker', 'user').select('worker employer');
+        if (application) {
+          const senderIdStr = String(senderId);
+          const employerIdStr = String(application.employer);
+          const workerUserId = application.worker?.user ? String(application.worker.user) : null;
+
+          let receiverUserId = null;
+          if (senderIdStr === employerIdStr) {
+            receiverUserId = workerUserId;
+          } else {
+            receiverUserId = employerIdStr;
+          }
+
+          if (receiverUserId && receiverUserId !== senderIdStr) {
+            const receiver = await User.findById(receiverUserId).select('pushTokens');
+            await sendPushNotification(
+              receiver?.pushTokens || [],
+              'New Message',
+              text || 'You have a new message',
+              { type: 'message', applicationId: String(applicationId) }
+            );
+          }
+        }
+      } catch (pushError) {
+        console.error('Chat push error:', pushError.message);
+      }
+
     } catch (err) {
       console.error("Socket Message Error:", err);
       socket.emit('messageFailed', { error: err.message });

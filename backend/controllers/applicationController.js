@@ -1,6 +1,9 @@
 const Application = require('../models/Application');
 const Job = require('../models/Job');
 const WorkerProfile = require('../models/WorkerProfile');
+const User = require('../models/userModel');
+const { createNotification } = require('./notificationController');
+const { sendPushNotification } = require('../services/pushService');
 
 // @desc    Send Connection Request (Worker applies OR Employer invites)
 // @route   POST /api/applications
@@ -32,6 +35,15 @@ const sendRequest = async (req, res) => {
             initiatedBy,
             status: 'pending',
             lastMessage: initiatedBy === 'worker' ? 'Applied for this job' : 'Invited you to apply'
+        });
+
+        // Notify the Employer
+        await createNotification({
+            user: job.employerId,
+            type: 'application_received',
+            title: 'New Applicant',
+            message: `A new candidate applied to: ${job.title}`,
+            relatedData: { jobId: job._id, candidateId: workerId }
         });
 
         res.status(201).json(application);
@@ -71,6 +83,23 @@ const updateStatus = async (req, res) => {
         }
 
         await application.save();
+
+        // Push notification to the candidate side when status changes
+        try {
+            const workerProfile = await WorkerProfile.findById(application.worker).select('user');
+            if (workerProfile?.user) {
+                const candidateUser = await User.findById(workerProfile.user).select('pushTokens');
+                await sendPushNotification(
+                    candidateUser?.pushTokens || [],
+                    'Application Update',
+                    `Your application status is now ${status}.`,
+                    { type: 'status', applicationId: application._id.toString() }
+                );
+            }
+        } catch (pushError) {
+            console.error('Application status push error:', pushError.message);
+        }
+
         res.json(application);
 
     } catch (error) {
@@ -88,19 +117,31 @@ const getApplications = async (req, res) => {
         if (req.user.role === 'recruiter' || req.user.role === 'employer') {
             query = { employer: req.user._id };
         } else {
-            // Assuming Application.worker now stores User._id directly, or this is a simplification
-            // If Application.worker still expects WorkerProfile._id, this would need adjustment.
-            // Following the instruction to use req.user._id directly for worker.
             query = { worker: req.user._id };
         }
+
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
 
         const applications = await Application.find(query)
             .populate('job', 'title companyName location')
             .populate('worker', 'firstName city totalExperience roleProfiles')
             .populate('employer', 'name') // Populate employer User name
-            .sort({ updatedAt: -1 });
+            .sort({ updatedAt: -1 })
+            .skip(skip)
+            .limit(limit);
 
-        res.json(applications);
+        const total = await Application.countDocuments(query);
+
+        res.json({
+            success: true,
+            count: applications.length,
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            data: applications
+        });
     } catch (error) {
         console.error("Get Apps Error:", error);
         res.status(500).json({ message: 'Fetch failed' });

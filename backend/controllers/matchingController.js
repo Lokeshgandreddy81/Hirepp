@@ -1,7 +1,10 @@
 const Job = require('../models/Job');
 const WorkerProfile = require('../models/WorkerProfile');
 const User = require('../models/userModel');
-const { getBatchMatchScores } = require('../services/geminiService');
+const MatchFeedback = require('../models/MatchFeedback');
+const { createNotification } = require('./notificationController');
+const { sendPushNotification } = require('../services/pushService');
+const { getBatchMatchScores, explainMatch } = require('../services/geminiService');
 const redisClient = require('../config/redis');
 const algo = require('../utils/matchingAlgorithm'); // v7.0 Logic
 
@@ -232,8 +235,9 @@ const getMatchesForCandidate = async (req, res) => {
         }
 
         const worker = await WorkerProfile.findOne({ user: req.user._id });
-        if (!worker || !worker.isAvailable || !worker.roleProfiles?.length) {
-            return res.status(400).json({ message: 'Please add a role to start matching' });
+        if (!worker || !worker.isAvailable || !worker.roleProfiles || worker.roleProfiles.length === 0) {
+            console.log(`⚠️ [v7.0] Candidate lacks a valid roleProfile. Returning empty matches gracefully.`);
+            return res.status(200).json([]); // Safely return empty list to UI instead of crashing/erroring
         }
 
         // Fetch Open Jobs not posted by this user
@@ -313,6 +317,21 @@ const getMatchesForCandidate = async (req, res) => {
         results.sort((a, b) => b.matchScore - a.matchScore);
         const topResults = results.slice(0, 20);
 
+        // Push when new matches are found for this candidate
+        try {
+            if (topResults.length > 0) {
+                const topJob = topResults[0]?.job;
+                await sendPushNotification(
+                    user.pushTokens || [],
+                    'New job match found!',
+                    topJob?.title ? `${topJob.title} could be a fit for you.` : 'A new role matches your profile.',
+                    { type: 'match', jobId: topJob?._id ? String(topJob._id) : undefined }
+                );
+            }
+        } catch (pushError) {
+            console.error('Match push error:', pushError.message);
+        }
+
         console.log(`🎯 [v7.0] Returned ${topResults.length} matches for candidate`);
         res.json(topResults);
 
@@ -322,4 +341,97 @@ const getMatchesForCandidate = async (req, res) => {
     }
 };
 
-module.exports = { getMatchesForEmployer, getMatchesForCandidate, matchCache };
+// @desc Generate AI Explanation for a match
+const explainMatchController = async (req, res) => {
+    try {
+        const { jobId, candidateId, matchScore, matchBreakdown } = req.body;
+        console.log(`🤖 Generating Explanation for Job ${jobId} and Candidate ${candidateId}`);
+
+        // Need to fetch Job and Candidate info to feed Gemini
+        const job = await Job.findById(jobId);
+        let worker;
+
+        // candidateId might be userId or workerId. Let's try both
+        worker = await WorkerProfile.findById(candidateId).populate('user', 'name');
+        if (!worker) {
+            worker = await WorkerProfile.findOne({ user: candidateId }).populate('user', 'name');
+        }
+
+        if (!job || !worker) {
+            return res.status(404).json({ message: "Job or Candidate not found" });
+        }
+
+        const jobData = {
+            title: job.title,
+            requirements: job.requirements || []
+        };
+
+        // Determine best role to use for explanation based on job title
+        let bestRole = worker.roleProfiles && worker.roleProfiles.length > 0 ? worker.roleProfiles[0] : null;
+        if (worker.roleProfiles) {
+            const jobTokens = job.title.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+            for (let r of worker.roleProfiles) {
+                const roleTokens = r.roleName.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+                if (jobTokens.some(jt => roleTokens.includes(jt))) {
+                    bestRole = r;
+                    break;
+                }
+            }
+        }
+
+        const candidateData = {
+            skills: bestRole ? bestRole.skills : (worker.skills || []),
+            experience: bestRole ? bestRole.experienceInRole : 0,
+            location: worker.city || 'Remote'
+        };
+
+        const explanationLines = await explainMatch(jobData, candidateData, matchScore);
+
+        res.json({ explanation: explanationLines });
+    } catch (error) {
+        console.error("Match Explanation Error:", error);
+        res.status(500).json({ explanation: ["A strong overall candidate for this position.", "Relevant skillsets align with requirements.", "Solid experience profile."] });
+    }
+};
+
+// @desc Submit match feedback
+const submitMatchFeedback = async (req, res) => {
+    try {
+        const { jobId, candidateId, matchScoreAtTime, userAction } = req.body;
+        const employerId = req.user._id;
+
+        if (!jobId || !candidateId || !userAction) {
+            return res.status(400).json({ message: "Missing required feedback fields" });
+        }
+
+        const feedback = await MatchFeedback.create({
+            jobId,
+            candidateId,
+            employerId,
+            matchScoreAtTime: matchScoreAtTime || 0,
+            userAction
+        });
+
+        if (userAction === 'shortlisted') {
+            const job = await Job.findById(jobId);
+            const worker = await WorkerProfile.findById(candidateId);
+            if (worker && job) {
+                await createNotification({
+                    user: worker.user, // Notify the candidate's User doc
+                    type: 'status_update',
+                    title: 'You were Shortlisted!',
+                    message: `${job.companyName || 'An employer'} shortlisted you for: ${job.title}`,
+                    relatedData: { jobId: job._id }
+                });
+            }
+        }
+
+        console.log(`📈 [FEEDBACK REC'D] Employer ${employerId} -> ${userAction} -> Candidate ${candidateId}`);
+        res.status(201).json(feedback);
+    } catch (error) {
+        console.error("Match Feedback Error:", error);
+        res.status(500).json({ message: "Failed to record feedback" });
+    }
+};
+
+module.exports = { getMatchesForEmployer, getMatchesForCandidate, explainMatchController, submitMatchFeedback, matchCache };

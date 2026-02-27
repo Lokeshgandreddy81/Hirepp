@@ -294,7 +294,7 @@ export default function EmployerDashboardScreen({ navigation }) {
                     <TouchableOpacity
                         key={job.id}
                         style={styles.jobCard}
-                        onPress={() => setSelectedJob(job)}
+                        onPress={() => navigation.navigate('Talent', { jobId: job.id, jobTitle: job.title })}
                         activeOpacity={0.9}
                     >
                         <View style={styles.jobCardHeaderRow}>

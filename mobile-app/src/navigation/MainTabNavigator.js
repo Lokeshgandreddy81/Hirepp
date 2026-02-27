@@ -36,7 +36,7 @@ export default function MainTabNavigator({ navigation }) {
     const isDemandMode = primaryRole === 'employer';
 
     const handleRecordClick = () => {
-        navigation.navigate('VideoRecord');
+        navigation.navigate('SmartInterview');
     };
 
     const openModeSwitcher = () => {

@@ -6,24 +6,75 @@ import client from '../api/client';
 import { logger } from '../utils/logger';
 
 export default function CompanyDetailsScreen({ navigation, route }) {
-    const { applicationId } = route.params;
+    const { applicationId, companyId, companyName: companyNameParam } = route.params || {};
     const [details, setDetails] = useState(null);
+    const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [errorText, setErrorText] = useState('');
 
     useEffect(() => {
         const fetchDetails = async () => {
             try {
-                const res = await client.get(`/api/applications/${applicationId}`);
-                setDetails(res.data);
+                setErrorText('');
+                if (companyId) {
+                    const [orgResult, jobsResult] = await Promise.allSettled([
+                        client.get(`/api/organizations/${companyId}`),
+                        client.get('/api/jobs', { params: { companyId } }),
+                    ]);
+
+                    let orgPayload = null;
+                    if (orgResult.status === 'fulfilled') {
+                        orgPayload = orgResult.value?.data?.organization || null;
+                    }
+
+                    if (jobsResult.status === 'fulfilled') {
+                        const jobList = Array.isArray(jobsResult.value?.data?.data) ? jobsResult.value.data.data : [];
+                        setJobs(jobList);
+                    }
+
+                    if (orgPayload) {
+                        setDetails({
+                            organization: orgPayload,
+                            companyName: orgPayload.name || companyNameParam || 'Company Name',
+                            location: orgPayload.location || 'Location N/A',
+                            industry: orgPayload.industry || 'Industry N/A',
+                            employer: {
+                                email: '',
+                                phone: '',
+                                website: orgPayload.website || '',
+                            },
+                        });
+                        return;
+                    }
+                }
+
+                if (applicationId) {
+                    const res = await client.get(`/api/applications/${applicationId}`);
+                    const appData = res.data || {};
+                    const fallbackCompanyName = appData?.job?.companyName || appData?.employer?.name || companyNameParam || 'Company Name';
+                    setDetails({
+                        ...appData,
+                        companyName: fallbackCompanyName,
+                        location: appData?.job?.location || appData?.employer?.location || 'Location N/A',
+                        industry: appData?.employer?.industry || 'Industry N/A',
+                    });
+                    if (appData?.job) {
+                        setJobs([appData.job]);
+                    }
+                    return;
+                }
+
+                throw new Error('Missing company context');
             } catch (error) {
                 logger.error("Fetch Application Details Error:", error);
+                setErrorText('Could not load company details.');
             } finally {
                 setLoading(false);
             }
         };
 
-        if (applicationId) fetchDetails();
-    }, [applicationId]);
+        fetchDetails();
+    }, [applicationId, companyId, companyNameParam]);
 
     if (loading) {
         return (
@@ -36,17 +87,20 @@ export default function CompanyDetailsScreen({ navigation, route }) {
     if (!details) {
         return (
             <SafeAreaView style={styles.loadingContainer}>
-                <Text style={styles.errorText}>Could not load company details.</Text>
+                <Text style={styles.errorText}>{errorText || 'Could not load company details.'}</Text>
             </SafeAreaView>
         );
     }
 
-    const { job, employer } = details;
-    const companyName = job?.companyName || employer?.name || "Company Name";
-    const location = job?.location || employer?.location || "Location N/A";
-    const industry = employer?.industry || "Industry N/A";
+    const job = details?.job || {};
+    const employer = details?.employer || {};
+    const companyName = details?.companyName || job?.companyName || employer?.name || companyNameParam || "Company Name";
+    const location = details?.location || job?.location || employer?.location || "Location N/A";
+    const industry = details?.industry || employer?.industry || "Industry N/A";
 
-    const products = job?.requirements || [];
+    const products = jobs.length > 0
+        ? jobs.map((item) => item.title).filter(Boolean)
+        : (job?.requirements || []);
 
     return (
         <View style={styles.container}>
@@ -82,22 +136,25 @@ export default function CompanyDetailsScreen({ navigation, route }) {
                     <View style={styles.card}>
                         <View style={styles.cardHeader}>
                             <Ionicons name="briefcase" size={18} color="#7C3AED" />
-                            <Text style={styles.cardTitle}>PRODUCTS & SERVICES</Text>
+                            <Text style={styles.cardTitle}>OPEN POSITIONS</Text>
                         </View>
 
-                        {products.map((prod, index) => (
-                            <View key={index} style={styles.serviceItem}>
+                        {products.map((prod, index) => {
+                            const jobDetails = jobs[index];
+                            return (
+                                <View key={`${prod}-${index}`} style={styles.serviceItem}>
                                 <View style={styles.serviceIconBox}>
                                     <Ionicons name="cube" size={20} color="#F59E0B" />
                                 </View>
                                 <View style={{ flex: 1 }}>
                                     <Text style={styles.serviceTitle}>{prod}</Text>
                                     <Text style={styles.serviceDesc}>
-                                        Requirement/Service for this role.
+                                        {jobDetails?.salaryRange ? `${jobDetails.salaryRange} • ` : ''}{jobDetails?.location || location}
                                     </Text>
                                 </View>
                             </View>
-                        ))}
+                            );
+                        })}
                     </View>
                 )}
 

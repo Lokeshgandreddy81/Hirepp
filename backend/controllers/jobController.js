@@ -1,4 +1,5 @@
 const Job = require('../models/Job');
+const mongoose = require('mongoose');
 const { suggestJobRequirements } = require('../services/geminiService');
 const redisClient = require('../config/redis');
 const { matchCache } = require('./matchingController');
@@ -7,7 +8,7 @@ const { matchCache } = require('./matchingController');
 // @route   POST /api/jobs/
 // @access  Protected
 const createJob = async (req, res) => {
-    const { title, companyName, salaryRange, location, requirements, screeningQuestions, minSalary, maxSalary, shift, mandatoryLicenses } = req.body;
+    const { title, companyName, salaryRange, location, requirements, screeningQuestions, minSalary, maxSalary, shift, mandatoryLicenses, isPulse } = req.body;
 
     try {
         const job = await Job.create({
@@ -21,7 +22,8 @@ const createJob = async (req, res) => {
             minSalary,
             maxSalary,
             shift: shift || 'Flexible',
-            mandatoryLicenses: mandatoryLicenses || []
+            mandatoryLicenses: mandatoryLicenses || [],
+            isPulse: Boolean(isPulse),
         });
 
         res.status(201).json({
@@ -41,8 +43,53 @@ const createJob = async (req, res) => {
 // @access  Protected
 const getEmployerJobs = async (req, res) => {
     try {
-        const jobs = await Job.find({ employerId: req.user._id }).sort({ createdAt: -1 });
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
 
+        const jobs = await Job.find({ employerId: req.user._id })
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        const total = await Job.countDocuments({ employerId: req.user._id });
+
+        res.status(200).json({
+            success: true,
+            count: jobs.length,
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            data: jobs,
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+// @desc    Get jobs with optional filters (companyId)
+// @route   GET /api/jobs
+// @access  Protected
+const getJobs = async (req, res) => {
+    try {
+        const { companyId } = req.query;
+        const query = {};
+
+        if (companyId) {
+            const companyFilters = [];
+            if (mongoose.Types.ObjectId.isValid(companyId)) {
+                companyFilters.push({ employerId: companyId });
+            }
+            companyFilters.push({ companyName: companyId });
+            query.$or = companyFilters;
+        } else {
+            query.isOpen = true;
+        }
+
+        const jobs = await Job.find(query).sort({ createdAt: -1 }).limit(100);
         res.status(200).json({
             success: true,
             count: jobs.length,
@@ -51,7 +98,7 @@ const getEmployerJobs = async (req, res) => {
     } catch (error) {
         res.status(500).json({
             success: false,
-            message: error.message
+            message: error.message,
         });
     }
 };
@@ -207,6 +254,7 @@ const updateJob = async (req, res) => {
 
 module.exports = {
     createJob,
+    getJobs,
     getEmployerJobs,
     suggestRequirements,
     deleteJob,

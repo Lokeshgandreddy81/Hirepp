@@ -79,7 +79,7 @@ export default function ApplicationsScreen({ navigation }) {
             const list = Array.isArray(data) ? data : (data?.data || []);
             const formatted = list.map((item) => {
                 const job = item.job || {};
-                const companyName = job.companyName || item.employer?.name || item.companyName || 'Employer';
+                const companyName = job.companyName || item.employer?.name || item.companyName || 'Looking for Someone';
                 const applicantName = item.worker?.firstName
                     ? `${item.worker.firstName} ${item.worker.lastName || ''}`.trim()
                     : 'Applicant';

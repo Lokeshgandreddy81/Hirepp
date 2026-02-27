@@ -12,14 +12,14 @@ const ROLES = [
     {
         key: 'candidate',
         icon: '👥', // Roughly matching IconUsers
-        label: 'I\'m a Job Seeker',
+        label: 'I\'m Available to Help',
         description: 'Find jobs and get matched by AI.',
         theme: 'purple',
     },
     {
         key: 'recruiter',
         icon: '💼', // Roughly matching IconBriefcase
-        label: 'I\'m an Employer',
+        label: 'I\'m Looking for Someone',
         description: 'Post jobs and find top talent fast.',
         theme: 'fuchsia',
     },

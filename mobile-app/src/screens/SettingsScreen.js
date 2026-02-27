@@ -1,6 +1,11 @@
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, ScrollView, TouchableOpacity, Switch, Alert, Modal, TextInput, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
+import client from '../api/client';
+import { logger } from '../utils/logger';
 
 export default function SettingsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
@@ -11,21 +16,73 @@ export default function SettingsScreen({ navigation }) {
     const [dataSaverOn, setDataSaverOn] = useState(false);
     const [isAdmin, setIsAdmin] = useState(false);
 
+    // Notification preferences
+    const [notifNewMatches, setNotifNewMatches] = useState(true);
+    const [notifMessages, setNotifMessages] = useState(true);
+    const [notifJobAlerts, setNotifJobAlerts] = useState(true);
+    const [notifAppUpdates, setNotifAppUpdates] = useState(false);
+
     // Delete Account State
     const [isDeleteModalVisible, setDeleteModalVisible] = useState(false);
     const [deleteInput, setDeleteInput] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
+    const [profileHeader, setProfileHeader] = useState({
+        name: 'User',
+        role: 'candidate',
+        email: '',
+        avatar: null,
+    });
 
-    React.useEffect(() => {
-        const checkAdmin = async () => {
+    useEffect(() => {
+        const loadUserHeader = async () => {
+            let user = {};
             const userInfoStr = await SecureStore.getItemAsync('userInfo');
             if (userInfoStr) {
-                const user = JSON.parse(userInfoStr);
-                setIsAdmin(user.isAdmin === true);
+                user = JSON.parse(userInfoStr);
+            }
+
+            setIsAdmin(String(user.role || '').toLowerCase() === 'admin');
+
+            try {
+                const { data } = await client.get('/api/users/profile');
+                const profile = data?.profile || {};
+                const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim();
+                setProfileHeader({
+                    name: fullName || user.name || 'User',
+                    role: String(user.role || 'candidate'),
+                    email: user.email || '',
+                    avatar: profile.avatar || profile.logoUrl || null,
+                });
+            } catch (e) {
+                setProfileHeader({
+                    name: user.name || 'User',
+                    role: String(user.role || 'candidate'),
+                    email: user.email || '',
+                    avatar: null,
+                });
             }
         };
-        checkAdmin();
+        loadUserHeader();
+
+        // Load notification preferences
+        AsyncStorage.multiGet([
+            '@notif_new_matches',
+            '@notif_messages',
+            '@notif_job_alerts',
+            '@notif_app_updates'
+        ]).then(pairs => {
+            const vals = Object.fromEntries(pairs.map(([k, v]) => [k, v === 'true']));
+            setNotifNewMatches(vals['@notif_new_matches'] ?? true);
+            setNotifMessages(vals['@notif_messages'] ?? true);
+            setNotifJobAlerts(vals['@notif_job_alerts'] ?? true);
+            setNotifAppUpdates(vals['@notif_app_updates'] ?? false);
+        });
     }, []);
+
+    const handleToggle = async (key, setter, value) => {
+        setter(value);
+        await AsyncStorage.setItem(key, String(value));
+    };
 
     const handleSignOut = () => {
         Alert.alert(
@@ -39,7 +96,7 @@ export default function SettingsScreen({ navigation }) {
                             await SecureStore.deleteItemAsync('selectedRole');
                             await logout();
                         } catch (error) {
-                            console.error('Sign out error:', error);
+                            logger.error('Sign out error:', error);
                         }
                     }
                 }
@@ -66,7 +123,7 @@ export default function SettingsScreen({ navigation }) {
             setDeleteModalVisible(false);
             await handleSignOut(); // Sign out and clear everything on success
         } catch (error) {
-            console.error('Delete account error:', error);
+            logger.error('Delete account error:', error);
             Alert.alert('Error', 'Could not delete your account. Please try again or contact support.');
             setIsDeleting(false);
         }
@@ -75,12 +132,15 @@ export default function SettingsScreen({ navigation }) {
     const renderHeader = () => (
         <View style={[styles.profileHeader, { paddingTop: insets.top + 16 }]}>
             <Image
-                source={{ uri: 'https://i.pravatar.cc/150?img=11' }}
+                source={{
+                    uri: profileHeader.avatar ||
+                        `https://ui-avatars.com/api/?name=${encodeURIComponent(profileHeader.name || 'User')}&background=7c3aed&color=fff`
+                }}
                 style={styles.avatar}
             />
             <View>
-                <Text style={styles.userName}>Lokesh G</Text>
-                <Text style={styles.userRole}>Senior Software Engineer</Text>
+                <Text style={styles.userName}>{profileHeader.name}</Text>
+                <Text style={styles.userRole}>{profileHeader.role}{profileHeader.email ? ` • ${profileHeader.email}` : ''}</Text>
             </View>
         </View>
     );
@@ -126,14 +186,23 @@ export default function SettingsScreen({ navigation }) {
                         {renderSectionTextHeader('Account')}
                         {renderRow('Phone Number', '+91 98765 43210')}
                         {renderRow('Change Password', null, true, false, null, null, false, () => navigation.navigate('ForgotPassword'))}
+                        {renderRow('Go Pro', 'Upgrade', true, false, null, null, false, () => navigation.navigate('Subscription'))}
                         {renderRow('Language', 'English (India)', false, false, null, null, !isAdmin)}
                         {isAdmin && renderRow('Admin Dashboard', null, true, false, null, null, true, () => navigation.navigate('AdminDashboard'))}
+                    </View>
+
+                    {/* Notification Preferences Section */}
+                    <View style={styles.sectionCard}>
+                        {renderSectionTextHeader('Notifications')}
+                        {renderRow('New Job Matches', null, false, true, notifNewMatches, (v) => handleToggle('@notif_new_matches', setNotifNewMatches, v))}
+                        {renderRow('Messages & Replies', null, false, true, notifMessages, (v) => handleToggle('@notif_messages', setNotifMessages, v))}
+                        {renderRow('Job Alerts & Deadlines', null, false, true, notifJobAlerts, (v) => handleToggle('@notif_job_alerts', setNotifJobAlerts, v))}
+                        {renderRow('App Updates', null, false, true, notifAppUpdates, (v) => handleToggle('@notif_app_updates', setNotifAppUpdates, v), true)}
                     </View>
 
                     {/* Preferences Section */}
                     <View style={styles.sectionCard}>
                         {renderSectionTextHeader('Preferences')}
-                        {renderRow('Notifications', null, false, true, notificationsOn, setNotificationsOn)}
                         {renderRow('Dark Mode', null, false, true, darkModeOn, setDarkModeOn)}
                         {renderRow('Data Saver', null, false, true, dataSaverOn, setDataSaverOn, true)}
                     </View>

@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import client from '../api/client';
 import { IconCheck } from '../components/Icons';
+import { logger } from '../utils/logger';
 
 export default function ForgotPasswordScreen() {
     const insets = useSafeAreaInsets();
@@ -26,7 +27,7 @@ export default function ForgotPasswordScreen() {
             await client.post('/api/auth/forgot-password', { email });
             setIsSuccess(true);
         } catch (error) {
-            console.error('Forgot password error:', error);
+            logger.error('Forgot password error:', error);
             Alert.alert('Error', 'Could not send reset link. Please try again.');
         } finally {
             setIsLoading(false);

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Linking, Activity
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
+import { logger } from '../utils/logger';
 
 export default function CompanyDetailsScreen({ navigation, route }) {
     const { applicationId } = route.params;
@@ -15,7 +16,7 @@ export default function CompanyDetailsScreen({ navigation, route }) {
                 const res = await client.get(`/api/applications/${applicationId}`);
                 setDetails(res.data);
             } catch (error) {
-                console.error("Fetch Application Details Error:", error);
+                logger.error("Fetch Application Details Error:", error);
             } finally {
                 setLoading(false);
             }

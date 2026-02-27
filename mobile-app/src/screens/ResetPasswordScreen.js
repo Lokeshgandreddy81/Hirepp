@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
+import { logger } from '../utils/logger';
 
 export default function ResetPasswordScreen({ route, navigation }) {
     // In a real app with deep linking, you'd extract the token from the route params
@@ -36,7 +37,7 @@ export default function ResetPasswordScreen({ route, navigation }) {
                 { text: 'Login', onPress: () => navigation.navigate('Login') }
             ]);
         } catch (error) {
-            console.error('Reset password error:', error);
+            logger.error('Reset password error:', error);
             Alert.alert('Error', error.response?.data?.message || 'Failed to reset password');
         } finally {
             setLoading(false);

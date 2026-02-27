@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useContext, useCallback } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
-    Modal, TextInput, KeyboardAvoidingView, Platform, Alert, Image
+    Modal, TextInput, KeyboardAvoidingView, Platform, Alert, Image, Animated
 } from 'react-native';
+import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     IconMic, IconUsers, IconMapPin, IconBriefcase, IconCheck, IconVideo, IconGlobe, IconFile, IconX, IconMessageSquare, IconPlus
@@ -10,48 +11,72 @@ import {
 import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
 import client from '../api/client';
+import { AuthContext } from '../context/AuthContext';
 
-// ─── MOCK DATA ───────────────────────────────────────────────────────────────
-const MOCK_ROLE = 'employee'; // toggle to 'employer' to see employer view
+// ─── COMPLETION CALCULATOR ────────────────────────────────────────────────────
+const calcCompletion = (prof) => {
+    const fields = [
+        !!prof?.name?.trim(),
+        !!prof?.roleTitle?.trim(),
+        !!prof?.location?.trim(),
+        !!prof?.summary?.trim(),
+        prof?.skills?.length > 0,
+        prof?.qualifications?.length > 0,
+    ];
+    const filled = fields.filter(Boolean).length;
+    const pct = Math.round((filled / fields.length) * 100);
+    const fieldNames = ['name', 'role title', 'location', 'summary', 'skills', 'qualifications'];
+    const missingIdx = fields.findIndex(f => !f);
+    const nextField = missingIdx >= 0 ? fieldNames[missingIdx] : null;
+    return { pct, nextField };
+};
 
-const MOCK_PROFILES = [
-    {
-        _id: '1',
-        roleTitle: 'Heavy Truck Driver',
-        experienceYears: 8,
-        summary: 'Experienced long-haul driver with a spotless record over 500,000 km. Specialized in hazardous materials and refrigerated transport across multi-state routes. Adept at vehicle maintenance and logbook management.',
-        skills: ['HAZMAT', 'Refrigerated', 'Logbook Logging', 'Basic Mechanics'],
-        location: 'Hyderabad, TS',
-        isDefault: true,
-    },
-    {
-        _id: '2',
-        roleTitle: 'Forklift Operator',
-        experienceYears: 3,
-        summary: 'Certified forklift operator with experience in high-volume warehouse environments. Efficient in loading/unloading, inventory management, and strict adherence to safety protocols.',
-        skills: ['OSHA Certified', 'Inventory Mapping', 'Pallet Jack', 'Safety Prot.'],
-        location: 'Secunderabad, TS',
-        isDefault: false,
-    },
-];
+// ─── PROFILE COMPLETION CARD ──────────────────────────────────────────────────
+const CompletionCard = ({ profile, onEditPress }) => {
+    const { pct, nextField } = calcCompletion(profile);
+    const progressAnim = useRef(new Animated.Value(0)).current;
 
-const MOCK_POOLS = [
-    { id: '1', name: 'Logistics Drivers - Hyderabad', count: 142 },
-    { id: '2', name: 'Warehouse Staff - Night Shift', count: 56 },
-    { id: '3', name: 'Certified Electricians', count: 28 },
-];
+    useEffect(() => {
+        Animated.timing(progressAnim, {
+            toValue: pct / 100,
+            duration: 900,
+            useNativeDriver: false,
+        }).start();
+    }, [pct]);
 
-const MOCK_POOL_PROFILES = [
-    { id: 'p1', roleTitle: 'Heavy Truck', experienceYears: 5, location: 'Hyderabad, TS', summary: 'Diligent driver for 5 years.' },
-    { id: 'p2', roleTitle: 'Delivery Partner', experienceYears: 2, location: 'Secunderabad, TS', summary: 'Local delivery expert.' },
-    { id: 'p3', roleTitle: 'Forklift Operator', experienceYears: 4, location: 'Remote', summary: 'Warehouse specialist.' },
-];
+    const barWidth = progressAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['0%', '100%'],
+    });
+
+    const barColor = pct < 50 ? '#ef4444' : pct < 80 ? '#f59e0b' : '#9333ea';
+
+    return (
+        <TouchableOpacity style={styles.completionCard} onPress={onEditPress} activeOpacity={0.85}>
+            <View style={styles.completionTopRow}>
+                <Text style={styles.completionTitle}>Profile Strength</Text>
+                <Text style={[styles.completionPct, { color: barColor }]}>{pct}%</Text>
+            </View>
+            <View style={styles.progressTrack}>
+                <Animated.View style={[styles.progressFill, { width: barWidth, backgroundColor: barColor }]} />
+            </View>
+            {nextField ? (
+                <Text style={styles.completionHint}>Add <Text style={styles.completionHintBold}>{nextField}</Text> to reach {Math.min(pct + 17, 100)}% →</Text>
+            ) : (
+                <Text style={styles.completionHint}>🎉 Profile complete! Great job.</Text>
+            )}
+        </TouchableOpacity>
+    );
+};
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 export default function ProfilesScreen({ navigation }) {
     const insets = useSafeAreaInsets();
-    const [role] = useState(MOCK_ROLE);
-    const [profiles, setProfiles] = useState(MOCK_PROFILES);
+    const { userInfo } = useContext(AuthContext);
+    const role = ['employer', 'recruiter', 'admin'].includes((userInfo?.role || '').toLowerCase()) ? 'employer' : 'employee';
+    const [profiles, setProfiles] = useState([]);
+    const [pools, setPools] = useState([]);
+    const [poolProfiles, setPoolProfiles] = useState([]);
     const [isModalVisible, setIsModalVisible] = useState(false);
 
     // Employer State
@@ -60,19 +85,133 @@ export default function ProfilesScreen({ navigation }) {
 
     // Employee State
     const [editingProfile, setEditingProfile] = useState(null);
+    const [skillInput, setSkillInput] = useState('');
 
     const [isLoading, setIsLoading] = useState(true);
+    const [errorMsg, setErrorMsg] = useState('');
 
-    React.useEffect(() => {
-        const timer = setTimeout(() => {
-            setIsLoading(false);
-        }, 800);
-        return () => clearTimeout(timer);
+    const mapProfilesFromApi = useCallback((profile) => {
+        if (!profile) return [];
+        const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim() || userInfo?.name || 'Profile';
+        const roleProfiles = Array.isArray(profile.roleProfiles) ? profile.roleProfiles : [];
+        if (roleProfiles.length === 0) {
+            return [
+                {
+                    _id: profile._id || 'profile-default',
+                    name: fullName,
+                    roleTitle: 'General Profile',
+                    experienceYears: profile.totalExperience || 0,
+                    summary: 'Add your role summary to improve profile matching.',
+                    skills: [],
+                    location: profile.city || 'Remote',
+                    qualifications: [],
+                    avatar: null,
+                    isDefault: true,
+                }
+            ];
+        }
+        return roleProfiles.map((rp, index) => ({
+            _id: `${profile._id || 'profile'}-${index}`,
+            name: fullName,
+            roleTitle: rp.roleName || 'Role Profile',
+            experienceYears: rp.experienceInRole || 0,
+            summary: 'AI-ready profile extracted from your role data.',
+            skills: rp.skills || [],
+            location: profile.city || 'Remote',
+            qualifications: [],
+            avatar: null,
+            isDefault: index === 0,
+        }));
+    }, [userInfo?.name]);
+
+    const fetchProfileData = useCallback(async () => {
+        try {
+            setErrorMsg('');
+            const { data } = await client.get('/api/users/profile');
+            const mappedProfiles = mapProfilesFromApi(data?.profile);
+            setProfiles(mappedProfiles);
+        } catch (e) {
+            setErrorMsg('Could not load profile');
+        }
+    }, [mapProfilesFromApi]);
+
+    const fetchPools = useCallback(async () => {
+        try {
+            setErrorMsg('');
+            const { data } = await client.get('/api/jobs/my-jobs');
+            const jobs = Array.isArray(data) ? data : (data?.data || []);
+            const mappedPools = jobs.map((job) => ({
+                id: job._id,
+                name: job.title || 'Job Pool',
+                count: job.applicantCount || 0,
+            }));
+            setPools(mappedPools);
+        } catch (e) {
+            setErrorMsg('Could not load talent pools');
+        }
     }, []);
+
+    const fetchPoolCandidates = useCallback(async (jobId) => {
+        try {
+            setErrorMsg('');
+            const { data } = await client.get(`/api/matches/employer/${jobId}`);
+            const mappedCandidates = (Array.isArray(data) ? data : []).map((item, idx) => {
+                const worker = item.worker || {};
+                const firstRole = worker.roleProfiles && worker.roleProfiles[0] ? worker.roleProfiles[0] : {};
+                return {
+                    id: worker._id || `${jobId}-${idx}`,
+                    roleTitle: firstRole.roleName || 'Candidate',
+                    experienceYears: firstRole.experienceInRole || worker.totalExperience || 0,
+                    location: worker.city || 'Remote',
+                    summary: `Match score ${item.matchScore || 0}%`,
+                };
+            });
+            setPoolProfiles(mappedCandidates);
+            setSelectedCandidate(null);
+        } catch (e) {
+            setErrorMsg('Could not load candidates');
+            setPoolProfiles([]);
+        }
+    }, []);
+
+    useEffect(() => {
+        const loadData = async () => {
+            setIsLoading(true);
+            if (role === 'employee') {
+                await fetchProfileData();
+            } else {
+                await fetchPools();
+            }
+            setIsLoading(false);
+        };
+        loadData();
+    }, [role, fetchProfileData, fetchPools]);
+
+    useEffect(() => {
+        const loadCandidates = async () => {
+            if (!selectedPool?.id || role !== 'employer') return;
+            setIsLoading(true);
+            await fetchPoolCandidates(selectedPool.id);
+            setIsLoading(false);
+        };
+        loadCandidates();
+    }, [selectedPool, role, fetchPoolCandidates]);
 
     const openEdit = (prof) => {
         setEditingProfile({ ...prof });
+        setSkillInput('');
         setIsModalVisible(true);
+    };
+
+    const handleAddSkill = () => {
+        const s = skillInput.trim();
+        if (!s) return;
+        setEditingProfile(prev => ({ ...prev, skills: [...(prev.skills || []), s] }));
+        setSkillInput('');
+    };
+
+    const handleRemoveSkill = (idx) => {
+        setEditingProfile(prev => ({ ...prev, skills: prev.skills.filter((_, i) => i !== idx) }));
     };
 
     const handleSave = async () => {
@@ -87,29 +226,37 @@ export default function ProfilesScreen({ navigation }) {
             return;
         }
 
+        // If avatarUri exists and it's a local file uri, upload it (placeholder — expo-image-picker not installed)
+        // TODO: wire up avatar upload when expo-image-picker is available
+
+        const updatedProfiles = profiles.map(p => p._id === editingProfile._id ? editingProfile : p);
+        const nameParts = String(editingProfile.name || '').trim().split(' ').filter(Boolean);
+        const firstName = nameParts[0] || 'User';
+        const lastName = nameParts.slice(1).join(' ');
+
         try {
             await client.put('/api/users/profile', {
-                name: editingProfile.name || '',
-                roleTitle: editingProfile.roleTitle,
-                location: editingProfile.location,
-                summary: editingProfile.summary,
-                skills: editingProfile.skills || []
-                // avatar handle if it existed
+                firstName,
+                lastName,
+                city: editingProfile.location,
+                totalExperience: editingProfile.experienceYears || 0,
+                roleProfiles: updatedProfiles.map((profile) => ({
+                    roleName: profile.roleTitle,
+                    experienceInRole: profile.experienceYears || 0,
+                    skills: profile.skills || [],
+                    lastUpdated: new Date(),
+                })),
             });
-            Alert.alert('Saved', 'Profile updated successfully');
-            setProfiles(prev => prev.map(p => p._id === editingProfile._id ? editingProfile : p));
-            setEditingProfile(null);
-            setIsModalVisible(false);
-        } catch (error) {
-            console.error('Save profile error:', error);
-            Alert.alert('Error', 'Could not save profile. Please try again.');
+            await fetchProfileData();
+        } catch (e) {
+            // Non-blocking — save locally anyway
+            logger.error('API save error', e);
         }
-    };
 
-    const calculateCompletion = (prof) => {
-        const fields = [prof.name, prof.roleTitle, prof.location, prof.summary, prof.skills && prof.skills.length > 0, prof.avatar];
-        const filled = fields.filter(Boolean).length;
-        return Math.round((filled / fields.length) * 100);
+        setProfiles(updatedProfiles);
+        setEditingProfile(null);
+        setIsModalVisible(false);
+        Alert.alert('Saved', 'Profile updated successfully');
     };
 
     const goBackFromPool = () => setSelectedPool(null);
@@ -173,9 +320,23 @@ export default function ProfilesScreen({ navigation }) {
                             <SkeletonLoader height={82} style={{ borderRadius: 16, marginBottom: 16 }} />
                             <SkeletonLoader height={82} style={{ borderRadius: 16, marginBottom: 16 }} />
                         </View>
+                    ) : errorMsg ? (
+                        <EmptyState
+                            title="Could Not Load Candidates"
+                            message={errorMsg}
+                            icon={<IconUsers size={56} color="#94a3b8" />}
+                            actionLabel="Retry"
+                            onAction={() => selectedPool?.id && fetchPoolCandidates(selectedPool.id)}
+                        />
+                    ) : poolProfiles.length === 0 ? (
+                        <EmptyState
+                            title="No Candidates Yet"
+                            message="Candidates will appear here when matching is available for this job."
+                            icon={<IconUsers size={56} color="#94a3b8" />}
+                        />
                     ) : (
                         <ScrollView style={styles.flex1} contentContainerStyle={styles.pad16}>
-                            {MOCK_POOL_PROFILES && MOCK_POOL_PROFILES.map((prof, i) => (
+                            {poolProfiles && poolProfiles.map((prof, i) => (
                                 <TouchableOpacity
                                     key={prof.id}
                                     style={styles.poolCandCard}
@@ -201,31 +362,54 @@ export default function ProfilesScreen({ navigation }) {
                     <Text style={styles.employerTitle}>Talent Pools</Text>
                     <Text style={styles.employerSub}>Organize and track your candidate pipelines</Text>
                 </View>
-                <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-                    {MOCK_POOLS.map(pool => (
-                        <View key={pool.id} style={styles.poolCardBox}>
-                            <View style={styles.poolBoxTop}>
-                                <Text style={styles.poolBoxTitle}>{pool.name}</Text>
-                                <View style={styles.poolBoxBadge}>
-                                    <Text style={styles.poolBoxBadgeText}>{pool.count} Candidates</Text>
+                {isLoading ? (
+                    <View style={styles.pad16}>
+                        <SkeletonLoader height={120} style={{ borderRadius: 16, marginBottom: 16 }} />
+                        <SkeletonLoader height={120} style={{ borderRadius: 16, marginBottom: 16 }} />
+                    </View>
+                ) : errorMsg ? (
+                    <EmptyState
+                        title="Could Not Load Talent Pools"
+                        message={errorMsg}
+                        icon={<IconUsers size={56} color="#94a3b8" />}
+                        actionLabel="Retry"
+                        onAction={fetchPools}
+                    />
+                ) : pools.length === 0 ? (
+                    <EmptyState
+                        title="No Talent Pools Yet"
+                        message="Create your first job to see matching talent pools."
+                        icon={<IconBriefcase size={56} color="#94a3b8" />}
+                    />
+                ) : (
+                    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                        {pools.map(pool => (
+                            <View key={pool.id} style={styles.poolCardBox}>
+                                <View style={styles.poolBoxTop}>
+                                    <Text style={styles.poolBoxTitle}>{pool.name}</Text>
+                                    <View style={styles.poolBoxBadge}>
+                                        <Text style={styles.poolBoxBadgeText}>{pool.count} Candidates</Text>
+                                    </View>
                                 </View>
+                                <TouchableOpacity
+                                    style={styles.poolBoxBtn}
+                                    activeOpacity={0.8}
+                                    onPress={() => setSelectedPool(pool)}
+                                >
+                                    <Text style={styles.poolBoxBtnText}>View Candidates</Text>
+                                </TouchableOpacity>
                             </View>
-                            <TouchableOpacity
-                                style={styles.poolBoxBtn}
-                                activeOpacity={0.8}
-                                onPress={() => setSelectedPool(pool)}
-                            >
-                                <Text style={styles.poolBoxBtnText}>View Candidates</Text>
-                            </TouchableOpacity>
-                        </View>
-                    ))}
-                    <View style={{ height: 40 }} />
-                </ScrollView>
+                        ))}
+                        <View style={{ height: 40 }} />
+                    </ScrollView>
+                )}
             </View>
         );
     };
 
     // ── EMPLOYEE VIEW ──────────────────────────────────────────────────────
+    const defaultProfile = profiles[0];
+
     const renderEmployeeView = () => (
         <View style={styles.flex1}>
             <View style={[styles.employeeHeader, { paddingTop: insets.top + 16 }]}>
@@ -241,10 +425,18 @@ export default function ProfilesScreen({ navigation }) {
 
             {isLoading ? (
                 <View style={styles.scrollContent}>
-                    <SkeletonLoader height={160} style={{ borderRadius: 24, marginBottom: 16 }} />
+                    <SkeletonLoader height={84} style={{ borderRadius: 12, marginBottom: 12 }} />
                     <SkeletonLoader height={160} style={{ borderRadius: 24, marginBottom: 16 }} />
                     <SkeletonLoader height={160} style={{ borderRadius: 24, marginBottom: 16 }} />
                 </View>
+            ) : errorMsg ? (
+                <EmptyState
+                    title="Could Not Load Profile"
+                    message={errorMsg}
+                    icon={<IconUsers size={64} color="#94a3b8" />}
+                    actionLabel="Retry"
+                    onAction={fetchProfileData}
+                />
             ) : profiles.length === 0 ? (
                 <EmptyState
                     title="No Profiles Yet"
@@ -255,6 +447,14 @@ export default function ProfilesScreen({ navigation }) {
                 />
             ) : (
                 <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                    {/* Profile Completion Card */}
+                    {defaultProfile && (
+                        <CompletionCard
+                            profile={defaultProfile}
+                            onEditPress={() => openEdit(defaultProfile)}
+                        />
+                    )}
+
                     {profiles.map((prof) => (
                         <View key={prof._id} style={[styles.empProfileCard, prof.isDefault && styles.empProfileCardDefault]}>
                             <View style={styles.empProfTopRow}>
@@ -284,16 +484,6 @@ export default function ProfilesScreen({ navigation }) {
                                     <Text style={styles.empProfEditText}>EDIT</Text>
                                 </TouchableOpacity>
                             </View>
-
-                            {/* Completion Bar */}
-                            <View style={styles.completionContainer}>
-                                <View style={styles.completionHeaderRow}>
-                                    <Text style={styles.completionText}>Profile {calculateCompletion(prof)}% complete</Text>
-                                </View>
-                                <View style={styles.progressBarTrack}>
-                                    <View style={[styles.progressBarFill, { width: `${calculateCompletion(prof)}%` }]} />
-                                </View>
-                            </View>
                         </View>
                     ))}
                     <View style={{ height: 40 }} />
@@ -319,14 +509,30 @@ export default function ProfilesScreen({ navigation }) {
 
                         {editingProfile && (
                             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalScroll}>
-                                <View style={styles.modalAvatarContainer}>
+                                {/* Avatar Section */}
+                                <View style={styles.avatarSection}>
                                     <Image
-                                        source={{ uri: editingProfile.avatar || `https://ui-avatars.com/api/?name=${editingProfile.roleTitle || 'User'}&background=7c3aed&color=fff&size=200` }}
-                                        style={styles.modalAvatar}
+                                        source={{ uri: editingProfile.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(editingProfile.name || editingProfile.roleTitle)}&background=9333ea&color=fff&size=128` }}
+                                        style={styles.avatarPreview}
                                     />
-                                    <TouchableOpacity style={styles.changePhotoBtn} onPress={() => Alert.alert('Coming Soon', 'Photo upload coming soon')}>
+                                    <TouchableOpacity
+                                        style={styles.changePhotoBtn}
+                                        onPress={() => Alert.alert('Photo Upload', 'Photo upload coming soon (expo-image-picker not installed)')}
+                                    >
                                         <Text style={styles.changePhotoText}>Change Photo</Text>
+                                        {/* TODO: wire up when expo-image-picker available */}
                                     </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.inputGroup}>
+                                    <Text style={styles.inputLabel}>FULL NAME</Text>
+                                    <TextInput
+                                        style={styles.inputField}
+                                        value={editingProfile.name || ''}
+                                        onChangeText={t => setEditingProfile({ ...editingProfile, name: t })}
+                                        placeholder="Your full name"
+                                        placeholderTextColor="#94a3b8"
+                                    />
                                 </View>
 
                                 <View style={styles.inputGroup}>
@@ -369,6 +575,33 @@ export default function ProfilesScreen({ navigation }) {
                                             onChangeText={t => setEditingProfile({ ...editingProfile, location: t })}
                                             placeholderTextColor="#94a3b8"
                                         />
+                                    </View>
+                                </View>
+
+                                {/* Skills */}
+                                <View style={styles.inputGroup}>
+                                    <Text style={styles.inputLabel}>SKILLS</Text>
+                                    <View style={styles.skillsRow}>
+                                        {(editingProfile.skills || []).map((s, idx) => (
+                                            <TouchableOpacity key={idx} style={styles.skillChip} onPress={() => handleRemoveSkill(idx)}>
+                                                <Text style={styles.skillChipText}>{s}</Text>
+                                                <Text style={styles.skillChipX}> ✕</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+                                    <View style={styles.skillInputRow}>
+                                        <TextInput
+                                            style={[styles.inputField, { flex: 1 }]}
+                                            value={skillInput}
+                                            onChangeText={setSkillInput}
+                                            placeholder="Add a skill..."
+                                            placeholderTextColor="#94a3b8"
+                                            onSubmitEditing={handleAddSkill}
+                                            returnKeyType="done"
+                                        />
+                                        <TouchableOpacity style={styles.addSkillBtn} onPress={handleAddSkill}>
+                                            <Text style={styles.addSkillBtnText}>+</Text>
+                                        </TouchableOpacity>
                                     </View>
                                 </View>
 
@@ -433,6 +666,16 @@ const styles = StyleSheet.create({
     poolBoxBtn: { width: '100%', paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: '#e9d5ff', alignItems: 'center', backgroundColor: '#fff' },
     poolBoxBtnText: { fontSize: 14, fontWeight: 'bold', color: '#9333ea' },
 
+    // Profile Completion Card
+    completionCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: '#f3e8ff', shadowColor: '#9333ea', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.07, shadowRadius: 8, elevation: 3 },
+    completionTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+    completionTitle: { fontSize: 14, fontWeight: '900', color: '#0f172a' },
+    completionPct: { fontSize: 18, fontWeight: '900' },
+    progressTrack: { height: 6, backgroundColor: '#f1f5f9', borderRadius: 3, overflow: 'hidden', marginBottom: 8 },
+    progressFill: { height: '100%', borderRadius: 3 },
+    completionHint: { fontSize: 12, color: '#64748b', fontWeight: '500' },
+    completionHintBold: { fontWeight: '900', color: '#9333ea' },
+
     // Employee Views
     employeeHeader: { backgroundColor: '#fff', paddingHorizontal: 24, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', zIndex: 10 },
     employeeHeaderTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -459,30 +702,34 @@ const styles = StyleSheet.create({
     empProfEditBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: 'transparent' },
     empProfEditText: { fontSize: 12, fontWeight: 'bold', color: '#9333ea' },
 
-    completionContainer: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
-    completionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-    completionText: { fontSize: 11, fontWeight: '700', color: '#64748b' },
-    progressBarTrack: { height: 6, backgroundColor: '#f1f5f9', borderRadius: 3, overflow: 'hidden' },
-    progressBarFill: { height: '100%', backgroundColor: '#9333ea', borderRadius: 3 },
-
     // Edit Modal
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-    modalSheet: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingTop: 24, maxHeight: '90%' },
-    modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+    modalSheet: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingTop: 24, maxHeight: '92%' },
+    modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
     modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#0f172a' },
     modalCloseBtn: { padding: 8 },
     modalScroll: { paddingBottom: 40 },
 
-    modalAvatarContainer: { alignItems: 'center', marginBottom: 24, marginTop: 8 },
-    modalAvatar: { width: 80, height: 80, borderRadius: 40, marginBottom: 16, borderWidth: 2, borderColor: '#f1f5f9' },
-    changePhotoBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#f3e8ff' },
-    changePhotoText: { color: '#9333ea', fontSize: 12, fontWeight: 'bold' },
+    // Avatar
+    avatarSection: { alignItems: 'center', marginBottom: 20 },
+    avatarPreview: { width: 80, height: 80, borderRadius: 40, borderWidth: 3, borderColor: '#f3e8ff', marginBottom: 10 },
+    changePhotoBtn: { backgroundColor: '#faf5ff', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#e9d5ff' },
+    changePhotoText: { color: '#9333ea', fontSize: 13, fontWeight: '700' },
 
     inputGroup: { marginBottom: 16 },
     inputLabel: { fontSize: 10, fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
     inputField: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, fontWeight: '500', color: '#0f172a' },
     textArea: { height: 100, textAlignVertical: 'top' },
     rowInputs: { flexDirection: 'row', alignItems: 'center' },
+
+    // Skills editor
+    skillsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+    skillChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e8ff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#e9d5ff' },
+    skillChipText: { fontSize: 12, fontWeight: '700', color: '#7c3aed' },
+    skillChipX: { fontSize: 10, color: '#a855f7' },
+    skillInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+    addSkillBtn: { backgroundColor: '#9333ea', width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+    addSkillBtnText: { color: '#fff', fontSize: 22, fontWeight: '300' },
 
     modalActions: { flexDirection: 'row', gap: 12, marginTop: 8 },
     cancelBtn: { flex: 1, paddingVertical: 16, backgroundColor: '#f1f5f9', borderRadius: 12, alignItems: 'center' },

@@ -148,7 +148,7 @@ export default function ProfilesScreen({ navigation }) {
             }));
             setPools(mappedPools);
         } catch (e) {
-            setErrorMsg('Could not load talent pools');
+            setErrorMsg('Could not load people nearby');
         }
     }, []);
 
@@ -360,7 +360,7 @@ export default function ProfilesScreen({ navigation }) {
         return (
             <View style={[styles.containerLight]}>
                 <View style={[styles.headerPurple, { paddingTop: insets.top + 16, paddingBottom: 24, paddingHorizontal: 24 }]}>
-                    <Text style={styles.employerTitle}>Talent Pools</Text>
+                    <Text style={styles.employerTitle}>People Nearby</Text>
                     <Text style={styles.employerSub}>Organize and track your candidate pipelines</Text>
                 </View>
                 {isLoading ? (
@@ -370,7 +370,7 @@ export default function ProfilesScreen({ navigation }) {
                     </View>
                 ) : errorMsg ? (
                     <EmptyState
-                        title="Could Not Load Talent Pools"
+                        title="Could Not Load People Nearby"
                         message={errorMsg}
                         icon={<IconUsers size={56} color="#94a3b8" />}
                         actionLabel="Retry"
@@ -378,8 +378,8 @@ export default function ProfilesScreen({ navigation }) {
                     />
                 ) : pools.length === 0 ? (
                     <EmptyState
-                        title="No Talent Pools Yet"
-                        message="Create your first job to see matching talent pools."
+                        title="No People Nearby Yet"
+                        message="Create your first post to see matching people nearby."
                         icon={<IconBriefcase size={56} color="#94a3b8" />}
                     />
                 ) : (

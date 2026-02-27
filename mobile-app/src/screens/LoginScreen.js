@@ -1,287 +1,367 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
-    View,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    StyleSheet,
-    Alert,
-    ActivityIndicator
+    View, Text, TextInput, TouchableOpacity, StyleSheet,
+    ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Alert
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import client from '../api/client';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { AuthContext } from '../context/AuthContext';
 
 export default function LoginScreen({ navigation }) {
-    const [activeTab, setActiveTab] = useState('email'); // 'email' or 'phone'
+    const insets = useSafeAreaInsets();
+    const { login } = React.useContext(AuthContext);
+    const [inputMode, setInputMode] = useState('phone'); // 'phone' | 'email'
     const [email, setEmail] = useState('');
     const [phone, setPhone] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
+    const [selectedRole, setSelectedRole] = useState('Available to Help');
+    const [isEmployer, setIsEmployer] = useState(false);
 
-    // Auto-login check
-    // Auto-login check removed to allow account switching.
-    // This check is now handled in RoleSelectionScreen (or should be).
+    React.useEffect(() => {
+        const getRole = async () => {
+            const role = await SecureStore.getItemAsync('selectedRole');
+            if (role === 'recruiter') {
+                setSelectedRole('Looking for Someone');
+                setIsEmployer(true);
+            } else {
+                setSelectedRole('Available to Help');
+                setIsEmployer(false);
+            }
+        };
+        getRole();
+    }, []);
 
     const handleLogin = async () => {
-        if (activeTab === 'phone') {
-            Alert.alert('Notice', 'Phone login is not yet connected to the backend. Please use Email.');
+        if (inputMode === 'email' && !email) {
+            Alert.alert('Missing Info', 'Please enter your email address.');
             return;
         }
-
-        if (!email || !password) {
-            Alert.alert('Error', 'Please fill in all fields');
+        if (inputMode === 'phone' && !phone) {
+            Alert.alert('Missing Info', 'Please enter your phone number.');
+            return;
+        }
+        if (!password) {
+            Alert.alert('Missing Info', 'Please enter your password.');
             return;
         }
 
         setLoading(true);
         try {
-            const { data } = await client.post('/api/users/login', { email, password });
+            const loginEmail = inputMode === 'phone' ? `${phone}@example.com` : email;
+            const { data } = await client.post('/api/users/login', {
+                email: loginEmail,
+                password
+            });
 
-            // Check if user is verified
-            // Verification check removed temporarily as requested.
-            // if (data.isVerified === false) { ... }
+            await SecureStore.setItemAsync('selectedRole', data.role);
+            await login(data); // This updates AuthContext and triggers stack switch
 
-            // Store complete user info securely
-            await SecureStore.setItemAsync('userInfo', JSON.stringify(data));
-
-            navigation.replace('MainTab');
-        } catch (error) {
-            const msg = error.response?.data?.message || 'Login failed';
-            Alert.alert('Login Error', msg);
-        } finally {
             setLoading(false);
+            // navigation.replace('MainTab') is now managed by App.js conditional stack
+        } catch (error) {
+            setLoading(false);
+            const errorMsg = error.response?.data?.message || 'Login failed. Please check your credentials.';
+            Alert.alert('Login Error', errorMsg);
         }
     };
 
+    const themeColor = isEmployer ? styles.bgFuchsia : styles.bgPurple;
+    const themeText = isEmployer ? styles.textFuchsia : styles.textPurple;
+
     return (
-        <SafeAreaView style={styles.container}>
-            <View style={styles.content}>
-                {/* Back Button */}
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-                    <Ionicons name="arrow-back" size={24} color="#374151" />
-                    <Text style={styles.backText}>Back</Text>
+        <KeyboardAvoidingView
+            style={styles.container}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+            <ScrollView
+                contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 32 }]}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+            >
+                {/* Back Link */}
+                <TouchableOpacity
+                    style={styles.backBtn}
+                    onPress={() => navigation.goBack()}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back to previous screen"
+                >
+                    <Text style={styles.backArrow}>← Back</Text>
                 </TouchableOpacity>
 
-                <View style={styles.header}>
-                    <Text style={styles.title}>Welcome!</Text>
-                    <Text style={styles.subtitle}>Sign in to your Job Seeker account</Text>
+                {/* Title */}
+                <Text style={styles.title}>Welcome!</Text>
+                <Text style={styles.subtitle}>Sign in to your {selectedRole} account</Text>
+
+                {/* Phone / Email Toggle */}
+                <View style={styles.toggle}>
+                    {['phone', 'email'].map(mode => (
+                        <TouchableOpacity
+                            key={mode}
+                            style={[styles.toggleTab, inputMode === mode && styles.toggleTabActive]}
+                            onPress={() => setInputMode(mode)}
+                            activeOpacity={0.8}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: inputMode === mode }}
+                            accessibilityLabel={`Login via ${mode}`}
+                        >
+                            <Text style={[styles.toggleTabText, inputMode === mode && styles.toggleTabTextActive]}>
+                                {mode.toUpperCase()}
+                            </Text>
+                        </TouchableOpacity>
+                    ))}
                 </View>
 
-                {/* Custom Tab Switcher */}
-                <View style={styles.tabContainer}>
-                    <TouchableOpacity
-                        style={[styles.tab, activeTab === 'phone' && styles.activeTab]}
-                        onPress={() => setActiveTab('phone')}
-                    >
-                        <Text style={[styles.tabText, activeTab === 'phone' && styles.activeTabText]}>Phone</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.tab, activeTab === 'email' && styles.activeTab]}
-                        onPress={() => setActiveTab('email')}
-                    >
-                        <Text style={[styles.tabText, activeTab === 'email' && styles.activeTabText]}>Email</Text>
-                    </TouchableOpacity>
-                </View>
-
+                {/* Inputs */}
                 <View style={styles.form}>
-                    {activeTab === 'email' ? (
-                        <>
-                            <Text style={styles.label}>Email Address</Text>
-                            <TextInput
-                                style={styles.input}
-                                placeholder="user@example.com"
-                                value={email}
-                                onChangeText={setEmail}
-                                autoCapitalize="none"
-                                keyboardType="email-address"
-                            />
-                        </>
-                    ) : (
-                        <>
-                            <Text style={styles.label}>Phone Number</Text>
+                    {inputMode === 'phone' ? (
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.inputLabel}>PHONE NUMBER</Text>
                             <View style={styles.phoneRow}>
+                                <View style={styles.countryPrefix}>
+                                    <Text style={styles.countryPrefixText}>+91</Text>
+                                </View>
                                 <TextInput
-                                    style={[styles.input, styles.countryCode]}
-                                    value="+91"
-                                    editable={false}
-                                />
-                                <TextInput
-                                    style={[styles.input, styles.phoneInput]}
+                                    style={[styles.inputField, { flex: 1, marginLeft: 8 }]}
                                     placeholder="98765 43210"
+                                    placeholderTextColor="#94a3b8"
                                     value={phone}
                                     onChangeText={setPhone}
                                     keyboardType="phone-pad"
                                 />
                             </View>
-                        </>
+                        </View>
+                    ) : (
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
+                            <TextInput
+                                style={styles.inputField}
+                                placeholder="user@example.com"
+                                placeholderTextColor="#94a3b8"
+                                value={email}
+                                onChangeText={setEmail}
+                                autoCapitalize="none"
+                                keyboardType="email-address"
+                            />
+                        </View>
                     )}
 
-                    <Text style={styles.label}>Password</Text>
-                    <TextInput
-                        style={styles.input}
-                        placeholder="••••••••"
-                        value={password}
-                        onChangeText={setPassword}
-                        secureTextEntry
-                    />
-
-                    <View style={styles.forgotPasswordContainer}>
-                        <TouchableOpacity onPress={() => navigation.navigate('ForgotPassword')}>
-                            <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
-                        </TouchableOpacity>
+                    {/* Password */}
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.inputLabel}>PASSWORD</Text>
+                        <TextInput
+                            style={styles.inputField}
+                            placeholder="••••••••"
+                            placeholderTextColor="#94a3b8"
+                            value={password}
+                            onChangeText={setPassword}
+                            secureTextEntry={true}
+                        />
                     </View>
 
+                    {/* Forgot Password */}
                     <TouchableOpacity
-                        style={styles.button}
+                        style={styles.forgotRow}
+                        onPress={() => navigation.navigate('ForgotPassword')}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel="Forgot your password? Click to reset"
+                    >
+                        <Text style={[styles.forgotText, themeText]}>Forgot password?</Text>
+                    </TouchableOpacity>
+
+                    {/* Sign In Button */}
+                    <TouchableOpacity
+                        style={[styles.signInBtn, themeColor]}
                         onPress={handleLogin}
                         disabled={loading}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                        accessibilityLabel="Sign in securely to your account"
+                        accessibilityState={{ disabled: loading }}
                     >
                         {loading ? (
-                            <ActivityIndicator color="#FFF" />
+                            <ActivityIndicator color="#fff" />
                         ) : (
-                            <Text style={styles.buttonText}>Sign In</Text>
+                            <Text style={styles.signInBtnText}>Sign In</Text>
                         )}
                     </TouchableOpacity>
 
-                    <View style={styles.footer}>
-                        <Text style={styles.footerText}>Don't have an account? </Text>
-                        <TouchableOpacity onPress={() => navigation.navigate('Register')}>
-                            <Text style={styles.link}>Sign Up</Text>
+                    {/* Join Free */}
+                    <View style={styles.footerRow}>
+                        <Text style={styles.joinFreeBtnText}>Don't have an account? </Text>
+                        <TouchableOpacity
+                            onPress={() => navigation.navigate('Register')}
+                            activeOpacity={0.8}
+                        >
+                            <Text style={[styles.joinFreeHighlight, themeText]}>Sign Up</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
-            </View>
-        </SafeAreaView>
+            </ScrollView>
+        </KeyboardAvoidingView>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#fff',
+        backgroundColor: '#ffffff',
+    },
+    scrollContent: {
+        paddingHorizontal: 32,
+        flexGrow: 1, // Push footer to bottom
+    },
+
+    // Back
+    backBtn: {
+        marginBottom: 32,
+        alignSelf: 'flex-start',
+        minHeight: 44,
+        minWidth: 44,
         justifyContent: 'center',
     },
-    content: {
-        padding: 24,
-    },
-    backButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 20
-    },
-    backText: {
-        marginLeft: 4,
-        fontSize: 16,
-        color: '#374151'
-    },
-    header: {
-        marginBottom: 32
-    },
-    title: {
-        fontSize: 32,
+    backArrow: {
+        color: '#94a3b8',
+        fontSize: 14,
         fontWeight: 'bold',
-        color: '#111827',
+    },
+
+    // Title
+    title: {
+        color: '#0f172a',
+        fontSize: 30,
+        fontWeight: 'bold',
         marginBottom: 8,
     },
     subtitle: {
-        fontSize: 16,
-        color: '#6B7280',
+        color: '#64748b',
+        fontSize: 14,
+        fontWeight: '500',
+        marginBottom: 32,
     },
-    tabContainer: {
+
+    // Toggle
+    toggle: {
         flexDirection: 'row',
-        backgroundColor: '#F3F4F6',
-        borderRadius: 25,
+        backgroundColor: '#f1f5f9', // bg-slate-100
+        borderRadius: 12,
         padding: 4,
-        marginBottom: 24
+        marginBottom: 24,
     },
-    tab: {
+    toggleTab: {
         flex: 1,
-        paddingVertical: 12,
+        paddingVertical: 8,
         alignItems: 'center',
-        borderRadius: 20,
+        borderRadius: 8,
     },
-    activeTab: {
-        backgroundColor: '#fff',
+    toggleTabActive: {
+        backgroundColor: '#ffffff',
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.1,
+        shadowOpacity: 0.05,
         shadowRadius: 2,
-        elevation: 2,
+        elevation: 1,
     },
-    tabText: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#6B7280'
+    toggleTabText: {
+        fontSize: 12,
+        fontWeight: 'bold',
+        color: '#64748b', // text-slate-500
     },
-    activeTabText: {
-        color: '#111827'
+    toggleTabTextActive: {
+        color: '#0f172a', // text-slate-900
     },
+
+    // Form
     form: {
         gap: 16,
+        flex: 1,
     },
-    label: {
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#374151',
-        marginBottom: 8,
+    inputGroup: {
+        gap: 6,
     },
-    input: {
+    inputLabel: {
+        fontSize: 10,
+        fontWeight: 'bold',
+        color: '#94a3b8',
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+    },
+    inputField: {
+        backgroundColor: '#f8fafc', // bg-slate-50
         borderWidth: 1,
-        borderColor: '#D1D5DB',
+        borderColor: '#e2e8f0', // border-slate-200
         borderRadius: 12,
-        padding: 16,
-        fontSize: 16,
-        backgroundColor: '#F9FAFB',
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        fontSize: 14,
+        color: '#0f172a',
+        fontWeight: '500',
     },
     phoneRow: {
         flexDirection: 'row',
-        gap: 12
     },
-    countryCode: {
-        width: 80,
-        textAlign: 'center',
-        backgroundColor: '#E5E7EB'
-    },
-    phoneInput: {
-        flex: 1
-    },
-    forgotPasswordContainer: {
-        alignItems: 'flex-end',
-        marginBottom: 8
-    },
-    forgotPasswordText: {
-        color: '#6B7280',
-        fontSize: 14,
-        fontWeight: '500'
-    },
-    button: {
-        backgroundColor: '#4F46E5',
-        padding: 16,
+    countryPrefix: {
+        backgroundColor: '#f8fafc',
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
         borderRadius: 12,
+        paddingHorizontal: 12,
+        justifyContent: 'center',
         alignItems: 'center',
-        shadowColor: '#4F46E5',
+    },
+    countryPrefixText: {
+        color: '#64748b',
+        fontSize: 14,
+        fontWeight: 'bold',
+    },
+    forgotRow: {
+        alignItems: 'flex-end',
+        minHeight: 44,
+        justifyContent: 'center',
+    },
+    forgotText: {
+        fontSize: 12,
+        fontWeight: 'bold',
+    },
+    signInBtn: {
+        borderRadius: 12,
+        paddingVertical: 16,
+        alignItems: 'center',
+        marginTop: 16,
+        shadowColor: '#000',
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
+        shadowOpacity: 0.1,
         shadowRadius: 8,
         elevation: 4,
     },
-    buttonText: {
-        color: '#fff',
-        fontSize: 16,
+    signInBtnText: {
+        color: '#ffffff',
+        fontSize: 14,
         fontWeight: 'bold',
     },
-    footer: {
+    footerRow: {
         flexDirection: 'row',
+        alignItems: 'center',
         justifyContent: 'center',
-        marginTop: 20
+        marginTop: 'auto',
+        paddingTop: 32,
     },
-    footerText: {
-        color: '#6B7280'
+    joinFreeBtnText: {
+        color: '#94a3b8',
+        fontSize: 12,
+        fontWeight: '500',
     },
-    link: {
-        color: '#4F46E5',
-        fontWeight: 'bold'
-    }
+    joinFreeHighlight: {
+        fontWeight: 'bold',
+        fontSize: 12,
+    },
+
+    // Themes
+    bgPurple: { backgroundColor: '#7c3aed' },
+    bgFuchsia: { backgroundColor: '#d946ef' },
+    textPurple: { color: '#7c3aed' },
+    textFuchsia: { color: '#d946ef' },
 });

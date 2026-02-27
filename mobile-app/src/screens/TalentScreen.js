@@ -32,11 +32,11 @@ export default function TalentScreen() {
         } catch (e) { logger.error('Cache read err', e); }
 
         try {
-            logger.log('🔍 Fetching jobs for Talent Pool...');
+            logger.log('🔍 Fetching jobs for People Nearby...');
             const { data } = await client.get('/api/jobs/my-jobs');
 
             const jobsArray = Array.isArray(data) ? data : (data.data || []);
-            logger.log('✅ Talent Pool Jobs mapped:', jobsArray.length);
+            logger.log('✅ People Nearby jobs mapped:', jobsArray.length);
 
             const newPools = jobsArray.map(j => ({
                 id: j._id,
@@ -309,7 +309,7 @@ export default function TalentScreen() {
     return (
         <View style={[styles.container, { backgroundColor: '#F8FAFC' }]}>
             <View style={[styles.headerPurpleLarge, { paddingTop: insets.top + 24 }]}>
-                <Text style={styles.largeHeaderTitle}>Talent Pools</Text>
+                <Text style={styles.largeHeaderTitle}>People Nearby</Text>
                 <Text style={styles.largeHeaderSubtitle}>Organize and track your candidate pipelines</Text>
             </View>
 

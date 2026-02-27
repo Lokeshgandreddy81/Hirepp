@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import {
     View,
     Text,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import client from '../api/client';
+import { AuthContext } from '../context/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -22,6 +23,7 @@ export default function RegisterScreen({ navigation }) {
     const [phone, setPhone] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
+    const { login } = useContext(AuthContext);
 
     useEffect(() => {
         const getRole = async () => {
@@ -51,10 +53,8 @@ export default function RegisterScreen({ navigation }) {
                 role
             });
 
-            await SecureStore.setItemAsync('userInfo', JSON.stringify(data));
-
-            // Navigate to Main Stack (Dashboard)
-            navigation.replace('MainTab');
+            // Let AuthContext handle the storage and state changes, which automatically navigates
+            await login(data);
         } catch (error) {
             const msg = error.response?.data?.message || 'Registration failed';
             Alert.alert('Error', msg);
@@ -73,7 +73,7 @@ export default function RegisterScreen({ navigation }) {
                 <View style={styles.header}>
                     <Text style={styles.title}>Create Account</Text>
                     <Text style={styles.subtitle}>
-                        Signing up as a <Text style={{ fontWeight: 'bold', color: '#4F46E5' }}>{role === 'candidate' ? 'Job Seeker' : 'Employer'}</Text>
+                        Signing up as a <Text style={{ fontWeight: 'bold', color: '#4F46E5' }}>{role === 'candidate' ? 'Available to Help' : 'Looking for Someone'}</Text>
                     </Text>
                 </View>
 

@@ -103,7 +103,7 @@ export default function JobsScreen() {
                 return {
                     _id: job._id || Math.random().toString(),
                     title: job.title || 'Untitled Job',
-                    companyName: job.companyName || 'Employer',
+                    companyName: job.companyName || 'Looking for Someone',
                     location: job.location || 'Remote',
                     salaryRange: job.salaryRange || 'Unspecified',
                     matchScore: item.matchScore || Math.floor(Math.random() * 20) + 60,

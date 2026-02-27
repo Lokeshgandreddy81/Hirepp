@@ -12,6 +12,7 @@ import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
 import client from '../api/client';
 import { AuthContext } from '../context/AuthContext';
+import { getPrimaryRoleFromUser } from '../utils/roleMode';
 
 // ─── COMPLETION CALCULATOR ────────────────────────────────────────────────────
 const calcCompletion = (prof) => {
@@ -73,7 +74,7 @@ const CompletionCard = ({ profile, onEditPress }) => {
 export default function ProfilesScreen({ navigation }) {
     const insets = useSafeAreaInsets();
     const { userInfo } = useContext(AuthContext);
-    const role = ['employer', 'recruiter', 'admin'].includes((userInfo?.role || '').toLowerCase()) ? 'employer' : 'employee';
+    const role = getPrimaryRoleFromUser(userInfo) === 'employer' ? 'employer' : 'employee';
     const [profiles, setProfiles] = useState([]);
     const [pools, setPools] = useState([]);
     const [poolProfiles, setPoolProfiles] = useState([]);

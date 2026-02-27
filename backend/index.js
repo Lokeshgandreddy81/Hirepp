@@ -54,6 +54,10 @@ const insightRoutes = require('./routes/insightRoutes'); // NEW: AI Insights
 const growthRoutes = require('./routes/growthRoutes'); // NEW: Viral loops
 const orgRoutes = require('./routes/orgRoutes'); // NEW: Enterprise Features
 const publicApiRoutes = require('./routes/publicApiRoutes'); // NEW: Developer API
+const feedRoutes = require('./routes/feedRoutes');
+const pulseRoutes = require('./routes/pulseRoutes');
+const academyRoutes = require('./routes/academyRoutes');
+const circlesRoutes = require('./routes/circlesRoutes');
 
 console.log('4. Connecting to DB...');
 logger.info('4. Connecting to DB...');
@@ -123,6 +127,9 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: Date.now() });
 });
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', uptime: process.uptime(), timestamp: Date.now() });
+});
 
 app.get('/', (req, res) => {
   res.send('API is running...');
@@ -144,6 +151,10 @@ app.use('/api/insights', insightRoutes); // Attach AI insights
 app.use('/api/growth', growthRoutes); // Attach Viral loops
 app.use('/api/organizations', orgRoutes); // Attach Enterprise orgs
 app.use('/api/public', publicApiRoutes); // Attach Developer Partner API
+app.use('/api/feed', feedRoutes);
+app.use('/api/pulse', pulseRoutes);
+app.use('/api/academy', academyRoutes);
+app.use('/api/circles', circlesRoutes);
 
 // SENTRY: The error handler must be before any other error middleware and after all controllers
 // app.use(Sentry.Handlers.errorHandler());
@@ -170,14 +181,46 @@ io.on('connection', (socket) => {
   console.log('User Connected:', socket.id);
 
   socket.on('joinRoom', ({ applicationId }) => {
+    if (!applicationId) return;
     socket.join(applicationId);
     console.log(`User ${socket.id} joined room: ${applicationId}`);
   });
 
-  socket.on('sendMessage', async (data) => {
+  socket.on('sendMessage', async (data = {}) => {
     // data = { applicationId, senderId, receiverId, text }
     try {
-      const { applicationId, senderId, receiverId, text } = data;
+      const { applicationId, senderId, text } = data;
+      const trimmedText = String(text || '').trim();
+
+      if (!applicationId || !senderId || !trimmedText) {
+        socket.emit('messageFailed', { error: 'Missing required message fields' });
+        return;
+      }
+
+      const Application = require('./models/Application');
+      const application = await Application.findById(applicationId)
+        .populate('worker', 'user')
+        .select('worker employer status');
+
+      if (!application) {
+        socket.emit('messageFailed', { error: 'Application not found' });
+        return;
+      }
+
+      const senderIdStr = String(senderId);
+      const employerIdStr = String(application.employer);
+      const workerUserId = application.worker?.user ? String(application.worker.user) : null;
+
+      const isParticipant = senderIdStr === employerIdStr || senderIdStr === workerUserId;
+      if (!isParticipant) {
+        socket.emit('messageFailed', { error: 'Not authorized for this chat' });
+        return;
+      }
+
+      if (String(application.status || '').toLowerCase() !== 'accepted') {
+        socket.emit('messageFailed', { error: 'Chat is available after acceptance' });
+        return;
+      }
 
       // Save to DB
       const Message = require('./models/Message');
@@ -185,7 +228,7 @@ io.on('connection', (socket) => {
         applicationId: applicationId, // Match schema (was application)
         sender: senderId,
         // receiver: receiverId, // Schema doesn't have receiver, it's inferred from Application
-        text
+        text: trimmedText
       });
 
       // Populate sender for frontend display
@@ -196,32 +239,24 @@ io.on('connection', (socket) => {
 
       // Push notification to the other party in this application chat
       try {
-        const Application = require('./models/Application');
         const User = require('./models/userModel');
         const { sendPushNotification } = require('./services/pushService');
 
-        const application = await Application.findById(applicationId).populate('worker', 'user').select('worker employer');
-        if (application) {
-          const senderIdStr = String(senderId);
-          const employerIdStr = String(application.employer);
-          const workerUserId = application.worker?.user ? String(application.worker.user) : null;
+        let receiverUserId = null;
+        if (senderIdStr === employerIdStr) {
+          receiverUserId = workerUserId;
+        } else {
+          receiverUserId = employerIdStr;
+        }
 
-          let receiverUserId = null;
-          if (senderIdStr === employerIdStr) {
-            receiverUserId = workerUserId;
-          } else {
-            receiverUserId = employerIdStr;
-          }
-
-          if (receiverUserId && receiverUserId !== senderIdStr) {
-            const receiver = await User.findById(receiverUserId).select('pushTokens');
-            await sendPushNotification(
-              receiver?.pushTokens || [],
-              'New Message',
-              text || 'You have a new message',
-              { type: 'message', applicationId: String(applicationId) }
-            );
-          }
+        if (receiverUserId && receiverUserId !== senderIdStr) {
+          const receiver = await User.findById(receiverUserId).select('pushTokens');
+          await sendPushNotification(
+            receiver?.pushTokens || [],
+            'New Message',
+            trimmedText || 'You have a new message',
+            { type: 'message', applicationId: String(applicationId) }
+          );
         }
       } catch (pushError) {
         console.error('Chat push error:', pushError.message);

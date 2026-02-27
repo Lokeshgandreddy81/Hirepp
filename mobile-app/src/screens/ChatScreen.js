@@ -1,45 +1,21 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
     View, Text, TextInput, TouchableOpacity, FlatList,
-    StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated, Image, Modal
+    StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated, Image, Modal, Alert, ActivityIndicator, Linking
 } from 'react-native';
+import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconVideo, IconPhone, IconPlus, IconSend, IconMic, IconGlobe, IconSparkles, IconBriefcase, IconCheck } from '../components/Icons';
-
-const MOCK_ME_ID = 'me';
-
-const generateMockMessages = (companyName) => [
-    {
-        _id: 'sys1',
-        sender: 'system',
-        text: 'Application received. Reviewing your profile.',
-        type: 'system',
-        createdAt: new Date(Date.now() - 10000000).toISOString(),
-    },
-    {
-        _id: 'm1',
-        sender: 'them',
-        name: companyName,
-        text: 'Hi! We reviewed your profile and are very impressed. Would you be available for a quick call this week?',
-        type: 'text',
-        createdAt: new Date(Date.now() - 3600000 * 3).toISOString(),
-    },
-    {
-        _id: 'm2',
-        sender: MOCK_ME_ID,
-        text: 'Thank you! Yes, I would love to connect. I\'m available Thursday or Friday afternoon.',
-        type: 'text',
-        createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-    },
-    {
-        _id: 'm3',
-        sender: 'them',
-        name: companyName,
-        text: 'Perfect! Let\'s schedule Friday at 3 PM IST. I\'ll send a calendar invite shortly.',
-        type: 'text',
-        createdAt: new Date(Date.now() - 3600000).toISOString(),
-    },
-];
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { saveLimitedCache } from '../utils/cacheManager';
+import { triggerHaptic } from '../utils/haptics';
+import client from '../api/client';
+import { BASE_URL } from '../config';
+import { AuthContext } from '../context/AuthContext';
+import SkeletonLoader from '../components/SkeletonLoader';
+import SocketService from '../services/socket';
+import * as DocumentPicker from 'expo-document-picker';
+import { initiateCall } from '../services/WebRTCService';
 
 const AI_SUGGESTIONS = [
     "Sounds great, thanks!",
@@ -81,33 +57,232 @@ export default function ChatScreen({ route, navigation }) {
     const insets = useSafeAreaInsets();
     const { applicationId, otherPartyName = 'Logitech', jobTitle = 'Moving the world, one delivery at a time.', status = 'Applied' } = route.params || {};
 
-    const [messages, setMessages] = useState(generateMockMessages(otherPartyName));
+    const { userInfo } = React.useContext(AuthContext);
+    const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [showAttachments, setShowAttachments] = useState(false);
-    const [isTyping, setIsTyping] = useState(true);
-    const [showProfileModal, setShowProfileModal] = useState(false); // New State for Profile Modal
+    const [isTyping, setIsTyping] = useState(false); // legacy — used for incoming socket typing
+    const [isOtherTyping, setIsOtherTyping] = useState(false);
+    const [lastReadByOther, setLastReadByOther] = useState(null);
+    const [showProfileModal, setShowProfileModal] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isScreenReady, setIsScreenReady] = useState(false);
+    const [uploadingFile, setUploadingFile] = useState(false);
 
     const flatListRef = useRef(null);
+    const typingTimeout = useRef(null);
 
     useEffect(() => {
-        const t = setTimeout(() => setIsTyping(false), 5000);
-        return () => clearTimeout(t);
+        const timeout = setTimeout(() => setIsScreenReady(true), 50);
+        return () => clearTimeout(timeout);
     }, []);
 
-    const sendMessage = (text = input) => {
-        if (!text.trim()) return;
-        const newMsg = {
-            _id: `m${Date.now()}`,
-            sender: MOCK_ME_ID,
-            text: text.trim(),
-            type: 'text',
-            createdAt: new Date().toISOString(),
-        };
-        setMessages(prev => [...prev, newMsg]);
-        setInput('');
+    useEffect(() => {
+        if (!applicationId) return;
 
-        setIsTyping(true);
-        setTimeout(() => setIsTyping(false), 3000);
+        // Fetch history
+        const fetchHistory = async () => {
+            try {
+                // 1. Try cache
+                const cached = await AsyncStorage.getItem(`@chat_history_${applicationId}`);
+                if (cached) {
+                    setMessages(JSON.parse(cached));
+                    setIsLoading(false);
+                }
+            } catch (e) {
+                logger.error("Chat cache error", e);
+            }
+
+            try {
+                // 2. Fetch fresh
+                const { data } = await client.get(`/api/chat/${applicationId}`);
+                if (data && Array.isArray(data)) {
+                    setMessages(data);
+                    // 3. Update cache (max 100 messages to prevent unbounded bloat)
+                    saveLimitedCache(`@chat_history_${applicationId}`, data, 100);
+                }
+            } catch (err) {
+                logger.error('Failed to fetch chat history', err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        fetchHistory();
+
+        // Setup Socket
+        const handleNewMessage = (msg) => {
+            setMessages((prev) => [...prev, msg]);
+            setIsTyping(false);
+        };
+
+        SocketService.on('receiveMessage', handleNewMessage);
+
+        // Typing indicators — Feature 4
+        SocketService.on('user_typing', ({ userId }) => {
+            if (userId !== userInfo?._id) setIsOtherTyping(true);
+        });
+        SocketService.on('user_stop_typing', ({ userId }) => {
+            if (userId !== userInfo?._id) setIsOtherTyping(false);
+        });
+
+        // Read receipts — Feature 5
+        SocketService.on('messages_read_ack', ({ userId, readAt }) => {
+            if (userId !== userInfo?._id) setLastReadByOther(readAt);
+        });
+
+        // Ensure we join the room if connected
+        SocketService.emit('joinRoom', { applicationId });
+
+        return () => {
+            SocketService.off('receiveMessage');
+            SocketService.off('user_typing');
+            SocketService.off('user_stop_typing');
+            SocketService.off('messages_read_ack');
+            if (typingTimeout.current) clearTimeout(typingTimeout.current);
+        };
+    }, [applicationId]);
+
+    // Emit read receipts when messages load or change — Feature 5
+    useEffect(() => {
+        if (!applicationId || !userInfo) return;
+        SocketService.emit('messages_read', { roomId: applicationId, userId: userInfo._id });
+    }, [messages.length]);
+
+    const getMessageStatus = (message) => {
+        if (!userInfo) return null;
+        const senderId = typeof message.sender === 'object' ? message.sender?._id : message.sender;
+        if (senderId !== userInfo._id) return null;
+        if (lastReadByOther && new Date(lastReadByOther) >= new Date(message.createdAt || message.timestamp)) return 'seen';
+        return 'sent';
+    };
+
+    const sendMessage = async (payload = input) => {
+        if (!userInfo) return;
+        const isTextPayload = typeof payload === 'string';
+        const trimmedText = isTextPayload ? payload.trim() : '';
+        if (isTextPayload && !trimmedText) return;
+
+        // Stop typing on send
+        if (typingTimeout.current) clearTimeout(typingTimeout.current);
+        SocketService.emit('stop_typing', { roomId: applicationId, userId: userInfo._id });
+
+        // Send via socket
+        SocketService.emit('sendMessage', {
+            applicationId,
+            senderId: userInfo._id,
+            ...(isTextPayload ? { text: trimmedText } : payload)
+        });
+
+        triggerHaptic.light();
+        if (isTextPayload) setInput('');
+    };
+
+    const handleInputChange = (text) => {
+        setInput(text);
+        if (!userInfo || !applicationId) return;
+        // Emit typing
+        SocketService.emit('typing', { roomId: applicationId, userId: userInfo._id });
+        // Debounce stop_typing
+        if (typingTimeout.current) clearTimeout(typingTimeout.current);
+        typingTimeout.current = setTimeout(() => {
+            SocketService.emit('stop_typing', { roomId: applicationId, userId: userInfo._id });
+        }, 1500);
+    };
+
+    const handleStartVideoCall = () => {
+        if (!applicationId) return;
+        initiateCall(SocketService, applicationId, userInfo?._id);
+        navigation.navigate('VideoCall', { roomId: applicationId, applicationId, otherPartyName });
+    };
+
+    const uploadAttachment = async (file) => {
+        if (!file || !applicationId) return;
+        setUploadingFile(true);
+        try {
+            const formData = new FormData();
+            formData.append('file', {
+                uri: file.uri,
+                name: file.name || 'attachment',
+                type: file.mimeType || 'application/octet-stream',
+            });
+            formData.append('applicationId', applicationId);
+
+            const { data } = await client.post('/api/chat/upload', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+
+            sendMessage({
+                type: 'file',
+                fileUrl: data?.url,
+                fileName: file.name || 'Attachment',
+                fileSize: file.size
+            });
+        } catch (e) {
+            Alert.alert('Upload Failed', 'Could not upload file. Please try again.');
+        } finally {
+            setUploadingFile(false);
+        }
+    };
+
+    const handlePickDocument = async () => {
+        setShowAttachments(false);
+        const result = await DocumentPicker.getDocumentAsync({
+            type: [
+                'application/pdf',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            ],
+            copyToCacheDirectory: true,
+        });
+
+        if (result.canceled) return;
+        const file = result.assets?.[0];
+        if (file) await uploadAttachment(file);
+    };
+
+    const handlePickImage = async () => {
+        setShowAttachments(false);
+        const result = await DocumentPicker.getDocumentAsync({
+            type: ['image/*'],
+            copyToCacheDirectory: true,
+        });
+
+        if (result.canceled) return;
+        const file = result.assets?.[0];
+        if (file) await uploadAttachment(file);
+    };
+
+    const handleAttachmentPress = () => {
+        setShowAttachments(true);
+        Alert.alert(
+            'Share',
+            'What would you like to share?',
+            [
+                { text: '📄 Resume / Document', onPress: handlePickDocument },
+                { text: '📷 Photo', onPress: handlePickImage },
+                { text: 'Cancel', style: 'cancel', onPress: () => setShowAttachments(false) },
+            ],
+            { cancelable: true, onDismiss: () => setShowAttachments(false) }
+        );
+    };
+
+    const submitUserReport = async (userId) => {
+        try {
+            await client.post('/api/reports', { targetId: userId, targetType: 'user', reason: 'reported_from_chat' });
+        } catch (e) { /* ignore */ }
+        Alert.alert('User Reported', 'User reported. You can block them too.', [
+            { text: 'Block User', style: 'destructive', onPress: () => { navigation.goBack(); } },
+            { text: 'OK', style: 'cancel' }
+        ]);
+    };
+
+    const handleReportUser = () => {
+        Alert.alert('Report User', 'Why are you reporting this user?', [
+            { text: 'Spam', onPress: () => submitUserReport(applicationId) },
+            { text: 'Harassment', onPress: () => submitUserReport(applicationId) },
+            { text: 'Fake Profile', onPress: () => submitUserReport(applicationId) },
+            { text: 'Cancel', style: 'cancel' }
+        ]);
     };
 
     const formatTime = (iso) => {
@@ -118,14 +293,51 @@ export default function ChatScreen({ route, navigation }) {
         }
     };
 
-    const renderMessage = ({ item }) => {
+    const lastMyMessageId = useMemo(() => {
+        if (!userInfo || messages.length === 0) return null;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const msg = messages[i];
+            const sid = typeof msg.sender === 'object' ? msg.sender?._id : msg.sender;
+            if (sid === userInfo._id) return msg._id;
+        }
+        return null;
+    }, [messages, userInfo]);
+
+    const renderMessage = ({ item, index }) => {
         const isSystem = item.type === 'system';
-        const isMe = item.sender === MOCK_ME_ID;
+        const senderId = typeof item.sender === 'object' ? item.sender?._id : item.sender;
+        const isMe = userInfo && senderId === userInfo._id;
+
+        // Determine if this is the last message sent by me
+        const isLastMyMsg = lastMyMessageId && lastMyMessageId === item._id;
+        const status = isLastMyMsg ? getMessageStatus(item) : null;
 
         if (isSystem) {
             return (
                 <View style={styles.sysMsgWrapper}>
                     <Text style={styles.sysMsgText}>{item.text}</Text>
+                </View>
+            );
+        }
+
+        if (item.type === 'file') {
+            return (
+                <View style={[styles.msgWrapper, isMe ? styles.msgWrapperMe : styles.msgWrapperThem]}>
+                    <TouchableOpacity
+                        style={[styles.bubble, styles.fileBubble, isMe ? styles.fileBubbleMe : styles.fileBubbleThem]}
+                        onPress={() => item.fileUrl && Linking.openURL(item.fileUrl)}
+                        activeOpacity={0.7}
+                    >
+                        <Text style={styles.fileEmoji}>📄</Text>
+                        <View style={{ flex: 1 }}>
+                            <Text style={styles.fileName} numberOfLines={1}>{item.fileName || 'Document'}</Text>
+                            <Text style={styles.fileMeta}>
+                                {item.fileSize ? `${Math.round(item.fileSize / 1024)} KB · Tap to open` : 'Tap to open'}
+                            </Text>
+                        </View>
+                    </TouchableOpacity>
+                    {status === 'seen' && <Text style={styles.readReceiptText}>✓✓ Seen</Text>}
+                    {status === 'sent' && <Text style={styles.readReceiptText}>✓ Sent</Text>}
                 </View>
             );
         }
@@ -140,6 +352,8 @@ export default function ChatScreen({ route, navigation }) {
                         {formatTime(item.createdAt)}
                     </Text>
                 </View>
+                {status === 'seen' && <Text style={styles.readReceiptText}>✓✓ Seen</Text>}
+                {status === 'sent' && <Text style={styles.readReceiptText}>✓ Sent</Text>}
             </View>
         );
     };
@@ -153,17 +367,20 @@ export default function ChatScreen({ route, navigation }) {
             <TouchableOpacity
                 style={styles.headerInfoContainer}
                 activeOpacity={0.7}
-                onPress={() => setShowProfileModal(true)} // NOW OPENS MODAL
+                onPress={() => setShowProfileModal(true)}
+                onLongPress={handleReportUser}
             >
                 <Image source={{ uri: `https://ui-avatars.com/api/?name=${otherPartyName}&background=7c3aed&color=fff` }} style={styles.headerAvatar} />
                 <View style={styles.headerInfoText}>
                     <Text style={styles.headerName} numberOfLines={1}>{otherPartyName}</Text>
-                    <Text style={styles.headerSub} numberOfLines={1}>{status}</Text>
+                    <Text style={styles.headerSub} numberOfLines={1}>
+                        {isOtherTyping ? 'typing...' : status}
+                    </Text>
                 </View>
             </TouchableOpacity>
 
             <View style={styles.headerActions}>
-                <TouchableOpacity style={styles.headerActionBtn}>
+                <TouchableOpacity style={styles.headerActionBtn} onPress={handleStartVideoCall}>
                     <IconVideo size={20} color="#fff" />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.headerActionBtn}>
@@ -186,28 +403,49 @@ export default function ChatScreen({ route, navigation }) {
         { year: '2015', event: 'Founded in Hyderabad as a small bike-fleet' }
     ];
 
+    if (!isScreenReady) {
+        return <View style={styles.container} />;
+    }
+
     return (
         <View style={styles.container}>
             {renderHeader()}
 
-            <FlatList
-                ref={flatListRef}
-                data={messages}
-                keyExtractor={item => item._id}
-                renderItem={renderMessage}
-                style={{ flex: 1 }}
-                contentContainerStyle={styles.messagesList}
-                showsVerticalScrollIndicator={false}
-                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-                onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
-                ListFooterComponent={() => isTyping ? (
-                    <View style={styles.typingWrapper}>
-                        <View style={styles.typingBubble}>
-                            <TypingIndicator />
+            {isLoading ? (
+                <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
+                    <SkeletonLoader height={60} style={{ borderRadius: 16, marginBottom: 12, width: '70%', alignSelf: 'flex-start' }} />
+                    <SkeletonLoader height={60} style={{ borderRadius: 16, marginBottom: 12, width: '60%', alignSelf: 'flex-end', backgroundColor: '#e9d5ff' }} />
+                    <SkeletonLoader height={60} style={{ borderRadius: 16, marginBottom: 12, width: '75%', alignSelf: 'flex-start' }} />
+                </View>
+            ) : (
+                <FlatList
+                    ref={flatListRef}
+                    data={messages}
+                    keyExtractor={item => item._id}
+                    renderItem={renderMessage}
+                    style={{ flex: 1 }}
+                    contentContainerStyle={styles.messagesList}
+                    showsVerticalScrollIndicator={false}
+                    getItemLayout={(data, index) => ({
+                        length: 80,
+                        offset: 80 * index,
+                        index,
+                    })}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={false}
+                    initialNumToRender={15}
+                    onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                    onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                    ListFooterComponent={() => isOtherTyping ? (
+                        <View style={styles.typingWrapper}>
+                            <View style={styles.typingBubble}>
+                                <TypingIndicator />
+                            </View>
                         </View>
-                    </View>
-                ) : null}
-            />
+                    ) : null}
+                />
+            )}
 
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
                 {/* Suggestions */}
@@ -225,7 +463,8 @@ export default function ChatScreen({ route, navigation }) {
                 <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
                     <TouchableOpacity
                         style={[styles.attachBtn, showAttachments && styles.attachBtnActive]}
-                        onPress={() => setShowAttachments(!showAttachments)}
+                        onPress={handleAttachmentPress}
+                        disabled={uploadingFile}
                     >
                         <View style={{ transform: [{ rotate: showAttachments ? '45deg' : '0deg' }] }}>
                             <IconPlus size={24} color={showAttachments ? '#1e293b' : '#64748b'} />
@@ -238,12 +477,17 @@ export default function ChatScreen({ route, navigation }) {
                             placeholder="Type a message..."
                             placeholderTextColor="#94a3b8"
                             value={input}
-                            onChangeText={setInput}
+                            onChangeText={handleInputChange}
                             multiline
+                            editable={!uploadingFile}
                         />
                     </View>
 
-                    {input.trim() ? (
+                    {uploadingFile ? (
+                        <View style={styles.uploadingIndicator}>
+                            <ActivityIndicator size="small" color="#9333ea" />
+                        </View>
+                    ) : input.trim() ? (
                         <TouchableOpacity style={styles.sendBtn} onPress={() => sendMessage()}>
                             <IconSend size={18} color="#fff" />
                         </TouchableOpacity>
@@ -421,6 +665,7 @@ const styles = StyleSheet.create({
     bubbleTextMe: { color: '#0f172a' },
     bubbleTextThem: { color: '#0f172a' },
     timeText: { fontSize: 10, color: '#94a3b8', marginTop: 4, alignSelf: 'flex-end' },
+    readReceiptText: { fontSize: 10, color: '#94a3b8', alignSelf: 'flex-end', marginTop: 2, marginRight: 4, fontWeight: '600' },
 
     // Typing
     typingWrapper: { alignSelf: 'flex-start', marginBottom: 12, marginLeft: 4 },
@@ -442,6 +687,15 @@ const styles = StyleSheet.create({
     inputField: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: '#0f172a' },
     sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#9333ea', justifyContent: 'center', alignItems: 'center', marginLeft: 8, shadowColor: '#9333ea', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
     micBtn: { padding: 10, marginLeft: 2 },
+    uploadingIndicator: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8, backgroundColor: '#f3e8ff' },
+
+    // File message
+    fileBubble: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    fileBubbleMe: { backgroundColor: '#ede9fe', borderWidth: 1, borderColor: '#ddd6fe' },
+    fileBubbleThem: { backgroundColor: '#ffffff', borderWidth: 1, borderColor: '#e2e8f0' },
+    fileEmoji: { fontSize: 18 },
+    fileName: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+    fileMeta: { fontSize: 11, color: '#64748b', marginTop: 2 },
 
     // Profile Modal Styles mapped from ContactInfoView
     modalContainer: { flex: 1, backgroundColor: '#f8fafc' },

@@ -3,18 +3,26 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
+import { logger } from '../utils/logger';
 
 export default function EmployerProfileCreateScreen({ navigation }) {
     const [companyName, setCompanyName] = useState('');
     const [tagline, setTagline] = useState('');
     const [location, setLocation] = useState('');
     const [loading, setLoading] = useState(false);
+    const [errors, setErrors] = useState({});
 
     const handleSave = async () => {
-        if (!companyName || !location) {
-            Alert.alert('Error', 'Please fill in required fields');
+        let newErrors = {};
+        if (!companyName.trim()) newErrors.companyName = 'Company Name is required.';
+        if (!location.trim()) newErrors.location = 'Location is required.';
+
+        if (Object.keys(newErrors).length > 0) {
+            setErrors(newErrors);
             return;
         }
+
+        setErrors({});
 
         setLoading(true);
         try {
@@ -40,7 +48,7 @@ export default function EmployerProfileCreateScreen({ navigation }) {
             ]);
 
         } catch (error) {
-            console.error("Profile Save Error:", error);
+            logger.error("Profile Save Error:", error);
             Alert.alert('Error', 'Failed to save profile. Make sure you are logged in.');
         } finally {
             setLoading(false);
@@ -65,11 +73,15 @@ export default function EmployerProfileCreateScreen({ navigation }) {
                 <View style={styles.form}>
                     <Text style={styles.label}>Company Name *</Text>
                     <TextInput
-                        style={styles.input}
+                        style={[styles.input, errors.companyName && styles.inputError]}
                         placeholder="e.g. Acme Logistics"
                         value={companyName}
-                        onChangeText={setCompanyName}
+                        onChangeText={(t) => {
+                            setCompanyName(t);
+                            if (errors.companyName) setErrors(prev => ({ ...prev, companyName: null }));
+                        }}
                     />
+                    {errors.companyName && <Text style={styles.errorText}>{errors.companyName}</Text>}
 
                     <Text style={styles.label}>Industry / Tagline</Text>
                     <TextInput
@@ -81,11 +93,15 @@ export default function EmployerProfileCreateScreen({ navigation }) {
 
                     <Text style={styles.label}>Location *</Text>
                     <TextInput
-                        style={styles.input}
+                        style={[styles.input, errors.location && styles.inputError]}
                         placeholder="e.g. Mumbai, Maharashtra"
                         value={location}
-                        onChangeText={setLocation}
+                        onChangeText={(t) => {
+                            setLocation(t);
+                            if (errors.location) setErrors(prev => ({ ...prev, location: null }));
+                        }}
                     />
+                    {errors.location && <Text style={styles.errorText}>{errors.location}</Text>}
                 </View>
 
                 <TouchableOpacity
@@ -116,6 +132,8 @@ const styles = StyleSheet.create({
     form: { gap: 20, marginBottom: 32 },
     label: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 8 },
     input: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, padding: 16, fontSize: 16, backgroundColor: '#F9FAFB' },
+    inputError: { borderColor: '#ef4444', backgroundColor: '#fef2f2' },
+    errorText: { color: '#ef4444', fontSize: 12, marginTop: -16, marginBottom: 12 },
     saveButton: { backgroundColor: '#7C3AED', padding: 16, borderRadius: 12, alignItems: 'center' },
     saveButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
 });

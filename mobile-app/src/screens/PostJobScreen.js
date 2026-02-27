@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
+import { logger } from '../utils/logger';
 
 export default function PostJobScreen({ navigation, route }) {
     const [title, setTitle] = useState('');
@@ -15,7 +16,7 @@ export default function PostJobScreen({ navigation, route }) {
     const [videoUrl, setVideoUrl] = useState(null);
 
     useEffect(() => {
-        console.log('PostJob params received:', route.params);
+        logger.log('PostJob params received:', route.params);
         if (route.params?.videoUrl) {
             setVideoUrl(route.params.videoUrl);
         }
@@ -39,7 +40,7 @@ export default function PostJobScreen({ navigation, route }) {
                     setLocation(data.profile.location || '');
                 }
             } catch (error) {
-                console.log('Error fetching profile', error);
+                logger.log('Error fetching profile', error);
             }
         };
         fetchProfile();
@@ -106,7 +107,7 @@ export default function PostJobScreen({ navigation, route }) {
                 { text: 'OK', onPress: () => navigation.navigate('MainTab', { screen: 'My Jobs' }) }
             ]);
         } catch (error) {
-            console.error(error);
+            logger.error(error);
             Alert.alert('Error', 'Failed to post job');
         } finally {
             setSaving(false);

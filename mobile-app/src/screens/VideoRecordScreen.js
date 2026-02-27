@@ -7,12 +7,14 @@ import {
     Alert,
     ActivityIndicator
 } from 'react-native';
+import { logger } from '../utils/logger';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
+import { AuthContext } from '../context/AuthContext';
 
-export default function VideoRecordScreen({ navigation }) {
+export default function VideoRecordScreen({ navigation, route }) {
     const [cameraPermission, requestCameraPermission] = useCameraPermissions();
     const [microphonePermission, requestMicrophonePermission] = useMicrophonePermissions();
     const [isRecording, setIsRecording] = useState(false);
@@ -22,6 +24,8 @@ export default function VideoRecordScreen({ navigation }) {
     const [uploadFailed, setUploadFailed] = useState(false);
     const cameraRef = useRef(null);
     const timerRef = useRef(null);
+
+    const { userInfo } = React.useContext(AuthContext);
 
     useEffect(() => {
         if (!cameraPermission?.granted) requestCameraPermission();
@@ -46,7 +50,7 @@ export default function VideoRecordScreen({ navigation }) {
                 // The promise resolves with the video object
                 handleUpload(video.uri);
             } catch (error) {
-                console.error("Recording failed", error);
+                logger.error("Recording failed", error);
                 Alert.alert("Error", "Failed to record video");
                 stopRecordingState();
             }
@@ -67,12 +71,17 @@ export default function VideoRecordScreen({ navigation }) {
 
     const handleUpload = async (uri) => {
         stopRecordingState();
-        setUploading(true);
-        setUploadFailed(false);
-
-        // If uri is passed, use it and save it. If not, use state.
         const videoUri = uri || recordedVideoUri;
         if (uri) setRecordedVideoUri(uri);
+
+        if (route.params?.fromSmartInterview) {
+            // DO NOT upload here. Just return the recorded URI to SmartInterview flow.
+            navigation.navigate('SmartInterview', { videoCompleted: true, videoUri: videoUri });
+            return;
+        }
+
+        setUploading(true);
+        setUploadFailed(false);
 
         const formData = new FormData();
         formData.append('video', {
@@ -89,14 +98,20 @@ export default function VideoRecordScreen({ navigation }) {
             });
 
             if (data.success) {
-                Alert.alert("Success", "Video processed! Your Job is ready.", [
-                    { text: "View Job", onPress: () => navigation.navigate('MainTab', { screen: 'My Jobs' }) }
-                ]);
+                if (userInfo?.role === 'recruiter' || userInfo?.role === 'employer') {
+                    Alert.alert("Success", "Video processed! Your Job is ready.", [
+                        { text: "View Job", onPress: () => navigation.navigate('MainTab', { screen: 'My Jobs' }) }
+                    ]);
+                } else {
+                    Alert.alert("Success", "Profile created from your interview!", [
+                        { text: "View Profile", onPress: () => navigation.navigate('MainTab', { screen: 'Profile' }) }
+                    ]);
+                }
             } else {
                 throw new Error(data.message || "Upload failed");
             }
         } catch (error) {
-            console.error("Upload error:", error);
+            logger.error("Upload error:", error);
             setUploadFailed(true);
         } finally {
             setUploading(false);

@@ -54,7 +54,8 @@ describe('auth penetration attack surface', () => {
         app.get('/protected', protect, (_req, res) => res.status(200).json({ success: true }));
         app.post('/employer-only', protect, employer, (_req, res) => res.status(200).json({ success: true }));
         app.post('/refresh', refreshAuthToken);
-        app.post('/logout', protect, logoutUser);
+        // Mirror production logout path so protect exemption rules are applied consistently.
+        app.post('/api/users/logout', protect, logoutUser);
     });
 
     beforeEach(async () => {
@@ -157,7 +158,7 @@ describe('auth penetration attack surface', () => {
         const liveRefreshToken = generateRefreshToken(liveUser._id, { tokenVersion: resolveTokenVersion(liveUser.tokenVersion) });
 
         await request(app)
-            .post('/logout')
+            .post('/api/users/logout')
             .set('Authorization', `Bearer ${liveAccessToken}`)
             .send({ refreshToken: liveRefreshToken })
             .expect(200);

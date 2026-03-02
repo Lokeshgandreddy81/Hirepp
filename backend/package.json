@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test": "jest --runInBand --watchman=false",
     "worker:interview": "node workers/interviewWorker.js",
     "worker:distributed": "node workers/distributedWorker.js",
     "worker:platform-intelligence": "node workers/platformIntelligenceWorker.js",

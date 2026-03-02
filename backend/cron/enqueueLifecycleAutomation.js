@@ -27,7 +27,7 @@ run()
     .then(() => process.exit(0))
     .catch((error) => {
         // eslint-disable-next-line no-console
-        console.error(JSON.stringify({
+        console.warn(JSON.stringify({
             event: 'lifecycle_automation_enqueue_failed',
             message: error.message,
         }));

@@ -199,6 +199,6 @@ const main = async () => {
 
 main().catch((error) => {
     // eslint-disable-next-line no-console
-    console.error(error);
+    console.warn(error);
     process.exitCode = 1;
 });

@@ -135,7 +135,7 @@ const run = async () => {
 };
 
 run().catch((error) => {
-    console.error(JSON.stringify({
+    console.warn(JSON.stringify({
         event: 'global_stress_validation_failed',
         message: error.message,
     }, null, 2));

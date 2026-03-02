@@ -1,6 +1,6 @@
 {
   "phase": "phase3_money_flow_validation",
-  "generatedAt": "2026-03-02T04:41:35.797Z",
+  "generatedAt": "2026-03-02T04:52:16.691Z",
   "mode": "simulation",
   "pass": true,
   "steps": [
@@ -8,7 +8,7 @@
       "name": "escrow_transaction",
       "passed": true,
       "details": {
-        "escrowId": "69a514ffc45673d6f7bd15b2",
+        "escrowId": "69a5178060c9b6b7de7be71b",
         "status": "funded",
         "created": true
       }
@@ -17,7 +17,7 @@
       "name": "dispute_scenario",
       "passed": true,
       "details": {
-        "disputeId": "69a514ffc45673d6f7bd15c5",
+        "disputeId": "69a5178060c9b6b7de7be72e",
         "finalStatus": "resolved",
         "decision": "split",
         "workerAmount": 500,
@@ -28,7 +28,7 @@
       "name": "withdrawal",
       "passed": true,
       "details": {
-        "withdrawalId": "69a514ffc45673d6f7bd15ed",
+        "withdrawalId": "69a5178060c9b6b7de7be755",
         "status": "processed",
         "amount": 500
       }
@@ -37,7 +37,7 @@
       "name": "failed_payment_test",
       "passed": true,
       "details": {
-        "paymentRecordId": "69a514ffc45673d6f7bd15f9",
+        "paymentRecordId": "69a5178060c9b6b7de7be761",
         "status": "failed"
       }
     }

@@ -86,7 +86,7 @@ const createWidgetSessionTokenController = async (req, res) => {
 const serveHireWidgetScript = async (req, res) => {
     const token = String(req.query.token || '').trim();
     if (!token) {
-        return res.status(400).type('application/javascript').send('console.error("Hire widget token is required");');
+        return res.status(400).type('application/javascript').send('console.warn("Hire widget token is required");');
     }
 
     const script = `(() => {

@@ -1,6 +1,6 @@
 {
   "phase": "phase5_trust_test",
-  "generatedAt": "2026-03-02T04:41:38.896Z",
+  "generatedAt": "2026-03-02T04:52:19.677Z",
   "pass": true,
   "trustChecks": {
     "fakeProfileAttempt": true,
@@ -76,7 +76,7 @@
           "score": 100,
           "status": "open",
           "blocked": false,
-          "detectedAt": "2026-03-02T04:41:37.739Z"
+          "detectedAt": "2026-03-02T04:52:18.621Z"
         }
       ],
       "fakeProfileSignals": [
@@ -85,7 +85,7 @@
           "score": 80,
           "status": "open",
           "blocked": false,
-          "detectedAt": "2026-03-02T04:41:38.435Z"
+          "detectedAt": "2026-03-02T04:52:19.222Z"
         }
       ],
       "otpSignals": [
@@ -94,7 +94,7 @@
           "score": 100,
           "status": "open",
           "blocked": false,
-          "detectedAt": "2026-03-02T04:41:38.625Z"
+          "detectedAt": "2026-03-02T04:52:19.344Z"
         }
       ]
     }

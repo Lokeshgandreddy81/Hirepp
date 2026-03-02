@@ -1,123 +1,281 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as SecureStore from 'expo-secure-store';
+import client from '../api/client';
+import { AuthContext } from '../context/AuthContext';
+import { trackEvent } from '../services/analytics';
+import { triggerHaptic } from '../utils/haptics';
+import { navigateToWelcomeFallback } from '../utils/authNavigation';
+
+const ROLE_ITEMS = [
+    {
+        key: 'employer',
+        title: "I'm Hiring",
+        description: 'Find qualified candidates faster with ranked matches.',
+        icon: 'briefcase-outline',
+    },
+    {
+        key: 'worker',
+        title: "I'm Looking for Work",
+        description: 'Get matched to roles built around your real profile.',
+        icon: 'person-outline',
+    },
+];
+
+function RoleCard({
+    title,
+    description,
+    icon,
+    selected,
+    scale,
+    onPress,
+    onPressIn,
+    onPressOut,
+}) {
+    return (
+        <Animated.View style={{ transform: [{ scale }] }}>
+            <TouchableOpacity
+                style={[styles.card, selected && styles.cardSelected]}
+                activeOpacity={0.95}
+                onPress={onPress}
+                onPressIn={onPressIn}
+                onPressOut={onPressOut}
+                accessibilityRole="button"
+                accessibilityLabel={title}
+                accessibilityHint={description}
+            >
+                <View style={styles.cardIconWrap}>
+                    <Ionicons name={icon} size={20} color={selected ? '#1d4ed8' : '#334155'} />
+                </View>
+                <View style={styles.cardBody}>
+                    <Text style={[styles.cardTitle, selected && styles.cardTitleSelected]}>{title}</Text>
+                    <Text style={styles.cardDescription}>{description}</Text>
+                </View>
+                <Ionicons name="arrow-forward" size={18} color={selected ? '#1d4ed8' : '#94a3b8'} />
+            </TouchableOpacity>
+        </Animated.View>
+    );
+}
 
 export default function RoleSelectionScreen({ navigation }) {
-    // Check for existing session
-    React.useEffect(() => {
-        const checkLogin = async () => {
-            try {
-                const userInfo = await SecureStore.getItemAsync('userInfo');
-                if (userInfo) {
-                    navigation.replace('MainTab');
-                }
-            } catch (e) {
-                console.error("Auto-login check failed", e);
-            }
-        };
-        checkLogin();
-    }, []);
-
-    const handleRoleSelect = async (role) => {
-        // We can store the selected role in SecureStore or just pass it as param
-        if (role === 'candidate') {
-            await SecureStore.setItemAsync('selectedRole', 'candidate');
-        } else {
-            await SecureStore.setItemAsync('selectedRole', 'recruiter');
+    const insets = useSafeAreaInsets();
+    const { userToken, userInfo, updateUserInfo } = useContext(AuthContext);
+    const initialSelectedRole = useMemo(() => {
+        if (userInfo?.hasSelectedRole === false) {
+            return null;
         }
-        // Navigate to Login/Signup flow
-        // For now, let's assume we go to a "Welcome" or directly to Login which links to Signup
-        navigation.navigate('Login');
-    };
+        const normalizedPrimary = String(userInfo?.primaryRole || '').toLowerCase();
+        if (normalizedPrimary === 'employer' || normalizedPrimary === 'worker') return normalizedPrimary;
+        const normalizedRole = String(userInfo?.role || '').toLowerCase();
+        return normalizedRole === 'recruiter' ? 'employer' : (normalizedRole === 'candidate' ? 'worker' : null);
+    }, [userInfo?.primaryRole, userInfo?.role]);
+
+    const [selectedRole, setSelectedRole] = useState(initialSelectedRole);
+    const [savingRole, setSavingRole] = useState(false);
+    const scaleValues = useRef({
+        employer: new Animated.Value(1),
+        worker: new Animated.Value(1),
+    }).current;
+
+    const animateScale = useCallback((roleKey, target) => {
+        Animated.timing(scaleValues[roleKey], {
+            toValue: target,
+            duration: 90,
+            useNativeDriver: true,
+        }).start();
+    }, [scaleValues]);
+
+    const handleBackPress = useCallback(() => {
+        if (navigation.canGoBack()) {
+            navigation.goBack();
+            return;
+        }
+        navigateToWelcomeFallback(navigation);
+    }, [navigation]);
+
+    const handleRoleSelect = useCallback(async (roleKey) => {
+        if (savingRole) return;
+        setSelectedRole(roleKey);
+        triggerHaptic.light();
+        setSavingRole(true);
+
+        const rolePayload = {
+            source: 'role_selection_screen',
+            role: roleKey,
+        };
+        trackEvent('ROLE_SELECTED', rolePayload);
+
+        try {
+            if (!userToken) {
+                navigation.navigate('Login');
+                return;
+            }
+
+            await client.put('/api/settings', {
+                accountInfo: {
+                    role: roleKey,
+                },
+            });
+
+            await updateUserInfo({
+                role: roleKey === 'employer' ? 'recruiter' : 'candidate',
+                primaryRole: roleKey,
+                hasSelectedRole: true,
+            });
+
+            Animated.sequence([
+                Animated.timing(scaleValues[roleKey], {
+                    toValue: 1.02,
+                    duration: 120,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(scaleValues[roleKey], {
+                    toValue: 1,
+                    duration: 120,
+                    useNativeDriver: true,
+                }),
+            ]).start();
+        } catch (error) {
+            const message = error?.response?.data?.message || 'Unable to save role selection. Please try again.';
+            Alert.alert('Role Selection Failed', message);
+        } finally {
+            setSavingRole(false);
+        }
+    }, [navigation, savingRole, scaleValues, updateUserInfo, userToken]);
 
     return (
-        <SafeAreaView style={styles.container}>
-            <Text style={styles.title}>Welcome to HireApp</Text>
-            <Text style={styles.subtitle}>Choose your role to get started</Text>
+        <View style={styles.container}>
+            <LinearGradient
+                colors={['#f5f7fa', '#eaf0fb']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+            />
 
-            <View style={styles.cardContainer}>
-                {/* Job Seeker Card */}
-                <TouchableOpacity
-                    style={styles.card}
-                    onPress={() => handleRoleSelect('candidate')}
-                >
-                    <View style={[styles.iconContainer, { backgroundColor: '#EEF2FF' }]}>
-                        <Ionicons name="person" size={32} color="#4F46E5" />
-                    </View>
-                    <Text style={styles.cardTitle}>Job Seeker</Text>
-                    <Text style={styles.cardDesc}>I'm looking for a job</Text>
+            <View style={[styles.content, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 24 }]}>
+                <TouchableOpacity style={styles.backBtn} onPress={handleBackPress} activeOpacity={0.75}>
+                    <Ionicons name="arrow-back" size={18} color="#334155" />
+                    <Text style={styles.backBtnText}>Back</Text>
                 </TouchableOpacity>
 
-                {/* Employer Card */}
-                <TouchableOpacity
-                    style={styles.card}
-                    onPress={() => handleRoleSelect('recruiter')}
-                >
-                    <View style={[styles.iconContainer, { backgroundColor: '#F0FDF4' }]}>
-                        <Ionicons name="briefcase" size={32} color="#16A34A" />
-                    </View>
-                    <Text style={styles.cardTitle}>Employer</Text>
-                    <Text style={styles.cardDesc}>I'm hiring talent</Text>
-                </TouchableOpacity>
+                <View style={styles.header}>
+                    <Text style={styles.title}>Choose your role</Text>
+                    <Text style={styles.subtitle}>Select how you want to use HIRE before continuing.</Text>
+                </View>
+
+                <View style={styles.cardsStack}>
+                    {ROLE_ITEMS.map((item) => {
+                        const isSelected = selectedRole === item.key;
+                        return (
+                            <RoleCard
+                                key={item.key}
+                                title={item.title}
+                                description={item.description}
+                                icon={item.icon}
+                                selected={isSelected}
+                                scale={scaleValues[item.key]}
+                                onPress={() => handleRoleSelect(item.key)}
+                                onPressIn={() => animateScale(item.key, 0.98)}
+                                onPressOut={() => animateScale(item.key, isSelected ? 1.02 : 1)}
+                            />
+                        );
+                    })}
+                </View>
             </View>
-        </SafeAreaView>
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#fff',
-        padding: 24,
-        justifyContent: 'center',
+        backgroundColor: '#f5f7fa',
+    },
+    content: {
+        flex: 1,
+        paddingHorizontal: 24,
+    },
+    backBtn: {
+        minHeight: 44,
+        alignSelf: 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 20,
+    },
+    backBtnText: {
+        fontSize: 14,
+        fontWeight: '500',
+        color: '#334155',
+    },
+    header: {
+        marginBottom: 32,
     },
     title: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#111827',
-        textAlign: 'center',
+        fontSize: 26,
+        fontWeight: '700',
+        color: '#0f172a',
         marginBottom: 8,
+        letterSpacing: -0.2,
     },
     subtitle: {
         fontSize: 16,
-        color: '#6B7280',
-        textAlign: 'center',
-        marginBottom: 48,
+        fontWeight: '400',
+        color: '#475569',
+        lineHeight: 24,
     },
-    cardContainer: {
+    cardsStack: {
         gap: 16,
     },
     card: {
+        minHeight: 118,
+        borderRadius: 18,
         borderWidth: 1,
-        borderColor: '#E5E7EB',
-        borderRadius: 16,
-        padding: 24,
+        borderColor: '#d6deea',
+        backgroundColor: '#ffffff',
+        padding: 18,
+        flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#fff',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
+        gap: 14,
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 6 },
         shadowOpacity: 0.05,
-        shadowRadius: 4,
+        shadowRadius: 14,
         elevation: 2,
     },
-    iconContainer: {
-        width: 64,
-        height: 64,
-        borderRadius: 32,
-        justifyContent: 'center',
+    cardSelected: {
+        borderColor: '#1d4ed8',
+        shadowColor: '#1d4ed8',
+        shadowOpacity: 0.14,
+    },
+    cardIconWrap: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d6deea',
+        backgroundColor: '#f8fbff',
         alignItems: 'center',
-        marginBottom: 16,
+        justifyContent: 'center',
+    },
+    cardBody: {
+        flex: 1,
     },
     cardTitle: {
         fontSize: 18,
-        fontWeight: 'bold',
-        color: '#1F2937',
-        marginBottom: 4,
+        fontWeight: '600',
+        color: '#0f172a',
+        marginBottom: 6,
     },
-    cardDesc: {
+    cardTitleSelected: {
+        color: '#1d4ed8',
+    },
+    cardDescription: {
         fontSize: 14,
-        color: '#6B7280',
+        fontWeight: '400',
+        color: '#64748b',
+        lineHeight: 20,
     },
 });

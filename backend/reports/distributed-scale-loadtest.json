@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-03-02T04:52:11.954Z",
-  "startedAt": "2026-03-02T04:52:11.884Z",
-  "durationMs": 70.16,
+  "generatedAt": "2026-03-02T05:24:29.779Z",
+  "startedAt": "2026-03-02T05:24:29.707Z",
+  "durationMs": 72.13,
   "targets": {
     "concurrentUsers": 1000,
     "smartInterviewParallel": 500,
@@ -17,13 +17,13 @@
       "completed": 1000,
       "failed": 0,
       "errorRate": 0,
-      "durationMs": 10,
+      "durationMs": 12,
       "throughputPerSec": 1000,
       "latencyMs": {
-        "p50": 1.513,
-        "p95": 2.661,
-        "p99": 2.845,
-        "max": 3.059
+        "p50": 1.71,
+        "p95": 3.219,
+        "p99": 3.481,
+        "max": 3.575
       }
     },
     "smartInterviewParallel": {
@@ -32,13 +32,13 @@
       "completed": 500,
       "failed": 0,
       "errorRate": 0,
-      "durationMs": 17,
+      "durationMs": 16,
       "throughputPerSec": 500,
       "latencyMs": {
-        "p50": 3.294,
-        "p95": 4.668,
-        "p99": 5.123,
-        "max": 5.237
+        "p50": 3.058,
+        "p95": 4.801,
+        "p99": 5.311,
+        "max": 5.431
       }
     },
     "jobApplications": {
@@ -47,13 +47,13 @@
       "completed": 2000,
       "failed": 0,
       "errorRate": 0,
-      "durationMs": 15,
+      "durationMs": 14,
       "throughputPerSec": 2000,
       "latencyMs": {
-        "p50": 1.674,
-        "p95": 2.267,
-        "p99": 2.323,
-        "max": 2.403
+        "p50": 1.665,
+        "p95": 2.127,
+        "p99": 2.191,
+        "max": 2.392
       }
     },
     "feedRequests": {
@@ -62,13 +62,13 @@
       "completed": 10000,
       "failed": 0,
       "errorRate": 0,
-      "durationMs": 12,
+      "durationMs": 13,
       "throughputPerSec": 10000,
       "latencyMs": {
-        "p50": 0.092,
-        "p95": 0.989,
-        "p99": 7.926,
-        "max": 8.354
+        "p50": 0.101,
+        "p95": 1.046,
+        "p99": 8.053,
+        "max": 8.622
       }
     },
     "chatMessagesPerMinute": {
@@ -77,13 +77,13 @@
       "completed": 5000,
       "failed": 0,
       "errorRate": 0,
-      "durationMs": 6,
+      "durationMs": 5,
       "throughputPerSec": 5000,
       "latencyMs": {
-        "p50": 0.008,
-        "p95": 1.744,
-        "p99": 2.287,
-        "max": 2.448
+        "p50": 0.009,
+        "p95": 1.674,
+        "p99": 2.74,
+        "max": 2.78
       }
     }
   },
@@ -97,36 +97,36 @@
   },
   "resourceUsage": {
     "cpu": {
-      "userMs": 89.26,
-      "systemMs": 4.66,
+      "userMs": 86.48,
+      "systemMs": 4.27,
       "loadAvg": [
-        3.61181640625,
-        3.36962890625,
-        3.326171875
+        6.32080078125,
+        5.17431640625,
+        4.55712890625
       ],
       "cpuCount": 8
     },
     "memory": {
       "start": {
-        "rssMb": 60.27,
-        "heapUsedMb": 11.46,
+        "rssMb": 59.75,
+        "heapUsedMb": 11.47,
         "heapTotalMb": 18.14
       },
       "end": {
-        "rssMb": 79.83,
-        "heapUsedMb": 16.6,
-        "heapTotalMb": 28.39
+        "rssMb": 79.56,
+        "heapUsedMb": 16.3,
+        "heapTotalMb": 27.89
       },
       "peak": {
-        "rssMb": 78.64,
-        "heapUsedMb": 17.19
+        "rssMb": 77.38,
+        "heapUsedMb": 16.78
       }
     }
   },
   "latency": {
-    "smartInterviewP95Ms": 4.668,
-    "feedP95Ms": 0.989,
-    "chatP95Ms": 1.744
+    "smartInterviewP95Ms": 4.801,
+    "feedP95Ms": 1.046,
+    "chatP95Ms": 1.674
   },
   "errorRate": 0,
   "stable": true

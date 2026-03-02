@@ -164,7 +164,7 @@ const sendOtpHandler = async (req, res) => {
                     userId: String(user._id),
                     reason: 'otp_request_limit_exceeded',
                 },
-            }).catch(() => {});
+            }).catch(() => { });
             return res.status(429).json({ message: 'OTP request limit exceeded. Maximum 3 requests in 15 minutes.' });
         }
 
@@ -296,7 +296,7 @@ router.post('/verify-otp', verifyOtpLimiter, validate({ body: otpVerifySchema })
                     userId: String(user._id),
                     reason: 'otp_invalid_attempt',
                 },
-            }).catch(() => {});
+            }).catch(() => { });
             return res.status(400).json({ message: 'Invalid or expired code' });
         }
 
@@ -304,6 +304,7 @@ router.post('/verify-otp', verifyOtpLimiter, validate({ body: otpVerifySchema })
             user.isEmailVerified = true;
         }
         user.isVerified = true;
+        user.otpVerified = true;
         resetOtpState(user);
         await user.save({ validateBeforeSave: false });
 

@@ -99,6 +99,14 @@ const userSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    otpVerified: {
+      type: Boolean,
+      default: false,
+    },
+    profileComplete: {
+      type: Boolean,
+      default: false,
+    },
     phoneNumber: {
       type: String,
       default: null,

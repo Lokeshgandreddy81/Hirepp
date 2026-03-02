@@ -49,6 +49,51 @@ const protect = async (req, res, next) => {
         req.user = applyRoleContractToUser(user);
         req.auth = decoded;
         req.authToken = token;
+        // Exemption paths that bypassing profile completion gating (Auth routes don't usually hit protect, but covered just in case)
+        const exemptPaths = [
+            '/api/users/login',
+            '/api/users/register',
+            '/api/users/refresh-token',
+            '/api/users/logout',
+            '/api/users/forgotpassword',
+            '/api/users/resetpassword',
+            '/api/users/verifyemail',
+            '/api/users/resendverification',
+            '/api/users/profile/setup',
+            '/api/users/profile/complete',
+            '/api/users/profile', // Usually needed to fetch their own profile to complete setup
+            '/health'
+        ];
+
+        // Ensure trailing slash agnostic matching
+        const reqPath = req.originalUrl.split('?')[0].replace(/\/$/, '');
+        const isExempt = exemptPaths.some(ep => reqPath === ep || reqPath.startsWith(ep));
+
+        if (!isExempt) {
+            if (user.otpVerified === false) {
+                return res.status(403).json({ message: 'OTP verification required', code: 'OTP_NOT_VERIFIED' });
+            }
+            if (user.profileComplete === false) {
+                return res.status(403).json({ message: 'Profile completion required', code: 'PROFILE_INCOMPLETE' });
+            }
+
+            // Role-Specific Validations
+            const activeRole = req.user?.activeRole || user.activeRole;
+            if (activeRole === 'employer') {
+                const EmployerProfile = require('../models/EmployerProfile');
+                const empProfile = await EmployerProfile.findOne({ user: user._id });
+                if (!empProfile || !empProfile.companyName) {
+                    return res.status(403).json({ message: 'Employer profile incomplete', code: 'PROFILE_INCOMPLETE_ROLE' });
+                }
+            } else if (activeRole === 'worker') {
+                const WorkerProfile = require('../models/WorkerProfile');
+                const workerProfile = await WorkerProfile.findOne({ user: user._id });
+                if (!workerProfile || !workerProfile.roleProfiles || workerProfile.roleProfiles.length === 0) {
+                    return res.status(403).json({ message: 'Worker profile requires at least one role profile.', code: 'PROFILE_INCOMPLETE_ROLE' });
+                }
+            }
+        }
+
         return next();
     } catch (error) {
         logger.security({

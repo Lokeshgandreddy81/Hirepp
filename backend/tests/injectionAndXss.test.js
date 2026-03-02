@@ -49,6 +49,8 @@ describe('injection and XSS guards', () => {
         hasCompletedProfile: true,
         isVerified: true,
         isEmailVerified: true,
+        otpVerified: true,
+        profileComplete: true,
     });
 
     beforeAll(async () => {

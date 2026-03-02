@@ -641,4 +641,52 @@ router.put('/profile', protect, async (req, res) => {
     }
 });
 
+// POST /api/users/profile/complete - Explicit explicit profile completion marker
+router.post('/profile/complete', protect, async (req, res) => {
+    try {
+        const userDoc = await resolveUserDocument(req.user, { lean: false });
+        if (!userDoc || userDoc.isDeleted) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const isEmployer = isRecruiter(userDoc);
+
+        if (isEmployer) {
+            const EmployerProfile = require('../models/EmployerProfile');
+            const empProfile = await EmployerProfile.findOne({ user: userDoc._id }).lean();
+            if (!empProfile || !empProfile.companyName || !empProfile.location) {
+                return res.status(400).json({ message: 'Employer profile requires companyName and location before completion.' });
+            }
+        } else {
+            const workerProfile = await WorkerProfile.findOne({ user: userDoc._id }).lean();
+            if (!workerProfile || !workerProfile.firstName || !workerProfile.city) {
+                return res.status(400).json({ message: 'Worker profile requires firstName and city before completion.' });
+            }
+        }
+
+        userDoc.profileComplete = true;
+        // Assume they also resolved their role
+        userDoc.hasSelectedRole = true;
+        await userDoc.save();
+
+        const completion = evaluateProfileCompletion({
+            user: userDoc,
+            workerProfile: isEmployer ? null : {}, // Pass empty object to avoid crash, or fetch it
+            employerProfile: isEmployer ? {} : null,
+            roleOverride: isEmployer ? 'employer' : 'worker',
+        });
+
+        res.json({
+            message: 'Profile marked complete',
+            profileComplete: true,
+            userRef: userDoc._id,
+            profileCompletion: completion
+        });
+
+    } catch (error) {
+        logger.warn({ event: 'profile_complete_error', message: error?.message || error });
+        res.status(500).json({ message: "Server Error" });
+    }
+});
+
 module.exports = router;

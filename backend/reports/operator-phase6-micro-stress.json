@@ -1,6 +1,6 @@
 {
   "phase": "phase6_micro_stress",
-  "generatedAt": "2026-03-02T04:41:45.155Z",
+  "generatedAt": "2026-03-02T04:52:26.150Z",
   "pass": true,
   "checks": {
     "concurrentUsers200": true,
@@ -15,7 +15,7 @@
     "loadSimulationExtreme": {
       "status": 0,
       "result": {
-        "generatedAt": "2026-03-02T04:41:38.944Z",
+        "generatedAt": "2026-03-02T04:52:19.726Z",
         "host": "GANDREDDYs-MacBook-Air.local",
         "cpuCount": 8,
         "scaleFactor": 1,
@@ -79,19 +79,19 @@
             "completed": true
           }
         ],
-        "elapsedMs": 0.33,
+        "elapsedMs": 0.28,
         "cpuUsageMicros": {
-          "user": 282,
-          "system": 23,
-          "total": 305
+          "user": 245,
+          "system": 19,
+          "total": 264
         },
         "eventLoop": {
           "meanMs": null,
           "p95Ms": 0
         },
         "memory": {
-          "rssBefore": 38010880,
-          "rssAfter": 38354944,
+          "rssBefore": 38125568,
+          "rssAfter": 38469632,
           "rssDeltaMb": 0.33,
           "heapBefore": 3697624,
           "heapAfter": 3948888,
@@ -116,16 +116,16 @@
         "maxSteps": 8,
         "completionRate": 1,
         "forcedMaxStepCount": 20,
-        "clarificationTriggeredCount": 40,
-        "clarificationResolvedCount": 24,
-        "clarificationSkippedCount": 16,
-        "averageClarificationsPerInterview": 2,
-        "geminiFallbackCount": 17,
+        "clarificationTriggeredCount": 44,
+        "clarificationResolvedCount": 27,
+        "clarificationSkippedCount": 17,
+        "averageClarificationsPerInterview": 2.2,
+        "geminiFallbackCount": 11,
         "latencyMs": {
-          "p50": 0.008,
-          "p95": 0.029,
-          "p99": 0.242,
-          "avg": 0.016
+          "p50": 0.007,
+          "p95": 0.023,
+          "p99": 0.212,
+          "avg": 0.014
         },
         "guards": {
           "infiniteLoopDetected": false,

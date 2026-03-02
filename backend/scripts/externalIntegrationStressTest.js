@@ -7,7 +7,7 @@ const API_KEY = String(process.env.EXTERNAL_STRESS_API_KEY || '');
 const DASHBOARD_BEARER = String(process.env.EXTERNAL_STRESS_DASHBOARD_TOKEN || '');
 
 if (!API_KEY) {
-    console.error('Missing EXTERNAL_STRESS_API_KEY');
+    console.warn('Missing EXTERNAL_STRESS_API_KEY');
     process.exit(1);
 }
 
@@ -203,7 +203,7 @@ const main = async () => {
 };
 
 main().catch((error) => {
-    console.error(JSON.stringify({
+    console.warn(JSON.stringify({
         passed: false,
         error: error.message,
     }, null, 2));

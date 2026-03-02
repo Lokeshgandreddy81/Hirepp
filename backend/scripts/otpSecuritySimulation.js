@@ -103,6 +103,6 @@ const run = async () => {
 };
 
 run().catch((error) => {
-    console.error(error);
+    console.warn(error);
     process.exit(1);
 });

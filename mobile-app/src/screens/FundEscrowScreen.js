@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+    KeyboardAvoidingView,
+    Platform,
+} from 'react-native';
 import { fundEscrow } from '../services/FinancialService';
 
 export default function FundEscrowScreen({ navigation }) {
@@ -34,39 +44,46 @@ export default function FundEscrowScreen({ navigation }) {
     };
 
     return (
-        <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-            <Text style={styles.title}>Fund Escrow</Text>
-            <Text style={styles.subtitle}>Use a server-verified `paymentRecordId` from payment verification.</Text>
+        <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <ScrollView
+                style={styles.container}
+                contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            >
+                <Text style={styles.title}>Fund Escrow</Text>
+                <Text style={styles.subtitle}>Use a server-verified `paymentRecordId` from payment verification.</Text>
 
-            <View style={styles.card}>
-                <Text style={styles.label}>Job ID</Text>
-                <TextInput style={styles.input} value={jobId} onChangeText={setJobId} autoCapitalize="none" />
+                <View style={styles.card}>
+                    <Text style={styles.label}>Job ID</Text>
+                    <TextInput style={styles.input} value={jobId} onChangeText={setJobId} autoCapitalize="none" />
 
-                <Text style={styles.label}>Worker User ID</Text>
-                <TextInput style={styles.input} value={workerId} onChangeText={setWorkerId} autoCapitalize="none" />
+                    <Text style={styles.label}>Worker User ID</Text>
+                    <TextInput style={styles.input} value={workerId} onChangeText={setWorkerId} autoCapitalize="none" />
 
-                <Text style={styles.label}>Amount</Text>
-                <TextInput
-                    style={styles.input}
-                    value={amount}
-                    onChangeText={setAmount}
-                    keyboardType="decimal-pad"
-                    autoCapitalize="none"
-                />
+                    <Text style={styles.label}>Amount</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={amount}
+                        onChangeText={setAmount}
+                        keyboardType="decimal-pad"
+                        autoCapitalize="none"
+                    />
 
-                <Text style={styles.label}>Payment Record ID</Text>
-                <TextInput
-                    style={styles.input}
-                    value={paymentRecordId}
-                    onChangeText={setPaymentRecordId}
-                    autoCapitalize="none"
-                />
-            </View>
+                    <Text style={styles.label}>Payment Record ID</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={paymentRecordId}
+                        onChangeText={setPaymentRecordId}
+                        autoCapitalize="none"
+                    />
+                </View>
 
-            <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
-                <Text style={styles.buttonText}>{submitting ? 'Funding...' : 'Fund Escrow'}</Text>
-            </TouchableOpacity>
-        </ScrollView>
+                <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
+                    <Text style={styles.buttonText}>{submitting ? 'Funding...' : 'Fund Escrow'}</Text>
+                </TouchableOpacity>
+            </ScrollView>
+        </KeyboardAvoidingView>
     );
 }
 

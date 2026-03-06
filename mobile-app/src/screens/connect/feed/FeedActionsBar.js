@@ -1,22 +1,37 @@
 import React, { memo, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
-import { IconCheck } from '../../../components/Icons';
-import { connectPalette } from '../connectPalette';
+import { Ionicons } from '@expo/vector-icons';
 import { MOTION } from '../../../theme/motion';
-import { RADIUS, SHADOWS } from '../../../theme/theme';
+import { RADIUS } from '../../../theme/theme';
 
-function ActionCountButton({ children, onPress }) {
+const formatCompactNumber = (value) => {
+    const safeValue = Number(value || 0);
+    if (!Number.isFinite(safeValue) || safeValue <= 0) return '0';
+    if (safeValue >= 1000000) {
+        const millions = safeValue / 1000000;
+        const rounded = millions >= 10 ? millions.toFixed(0) : millions.toFixed(1);
+        return `${rounded.replace(/\.0$/, '')}M`;
+    }
+    if (safeValue >= 1000) {
+        const thousands = safeValue / 1000;
+        const rounded = thousands >= 10 ? thousands.toFixed(0) : thousands.toFixed(1);
+        return `${rounded.replace(/\.0$/, '')}K`;
+    }
+    return String(Math.round(safeValue));
+};
+
+function ActionIconButton({ children, onPress }) {
     const scale = useRef(new Animated.Value(1)).current;
 
     return (
         <Animated.View style={{ transform: [{ scale }] }}>
             <TouchableOpacity
-                style={styles.actionButton}
+                style={styles.iconButton}
                 onPress={onPress}
                 activeOpacity={0.88}
                 onPressIn={() => {
                     Animated.timing(scale, {
-                        toValue: 0.96,
+                        toValue: 0.95,
                         duration: MOTION.pressInMs,
                         useNativeDriver: true,
                     }).start();
@@ -41,61 +56,77 @@ function FeedActionsBarComponent({
     postId,
     likeCount,
     commentCount,
+    viewCount,
+    vouchCount,
     vouched,
     isLiked,
-    isBounty,
+    isSaved,
+    post,
     onToggleLike,
+    onToggleSave,
     onToggleComment,
     onToggleVouch,
 }) {
+    const safeLikes = Math.max(0, Number(likeCount || 0));
+    const safeComments = Math.max(0, Number(commentCount || 0));
+    const safeViews = Math.max(0, Number(viewCount || 0));
+    const safeVouches = Math.max(0, Number(vouchCount || 0));
+
     const handleLike = useCallback(() => {
-        onToggleLike(postId);
+        onToggleLike?.(postId);
     }, [onToggleLike, postId]);
 
     const handleComment = useCallback(() => {
-        onToggleComment(postId);
+        onToggleComment?.(postId);
     }, [onToggleComment, postId]);
 
     const handleVouch = useCallback(() => {
-        onToggleVouch(postId);
-    }, [onToggleVouch, postId]);
+        onToggleVouch?.(postId, post);
+    }, [onToggleVouch, postId, post]);
+
+    const handleSave = useCallback(() => {
+        onToggleSave?.(postId, post);
+    }, [onToggleSave, postId, post]);
+
+    const iconColor = '#111111';
+    const likeIconColor = isLiked ? '#ef4444' : iconColor;
+    const vouchIconColor = vouched ? '#7c3aed' : iconColor;
+    const saveIconColor = isSaved ? '#7c3aed' : iconColor;
 
     return (
-        <View style={[styles.container, isBounty && styles.containerBounty]}>
-            <ActionCountButton onPress={handleLike}>
-                <Text style={[styles.actionText, isLiked && styles.actionTextLiked, isBounty && styles.actionTextBounty]}>
-                    {'👍 '}
-                    {likeCount}
-                </Text>
-            </ActionCountButton>
+        <View style={styles.container}>
+            <View style={styles.iconRow}>
+                <View style={styles.leftIconRow}>
+                    <ActionIconButton onPress={handleLike}>
+                        <Ionicons name={isLiked ? 'heart' : 'heart-outline'} size={24} color={likeIconColor} />
+                    </ActionIconButton>
+                    <ActionIconButton onPress={handleComment}>
+                        <Ionicons name="chatbubble-outline" size={22} color={iconColor} />
+                    </ActionIconButton>
+                    <ActionIconButton onPress={handleVouch}>
+                        <Ionicons name={vouched ? 'ribbon' : 'ribbon-outline'} size={22} color={vouchIconColor} />
+                    </ActionIconButton>
+                </View>
+                <ActionIconButton onPress={handleSave}>
+                    <Ionicons name={isSaved ? 'bookmark' : 'bookmark-outline'} size={22} color={saveIconColor} />
+                </ActionIconButton>
+            </View>
 
-            <ActionCountButton onPress={handleComment}>
-                <Text style={[styles.actionText, isBounty && styles.actionTextBounty]}>
-                    {'💬 '}
-                    {commentCount}
-                </Text>
-            </ActionCountButton>
+            <Text style={styles.likesText}>{formatCompactNumber(safeLikes)} likes</Text>
 
-            <TouchableOpacity
-                style={[
-                    styles.vouchButton,
-                    vouched && styles.vouchButtonActive,
-                    isBounty && !vouched && styles.vouchButtonBounty,
-                ]}
-                onPress={handleVouch}
-                activeOpacity={0.85}
-            >
-                {vouched ? <IconCheck size={14} color={connectPalette.surface} /> : null}
-                <Text
-                    style={[
-                        styles.vouchText,
-                        vouched && styles.vouchTextActive,
-                        isBounty && !vouched && styles.vouchTextBounty,
-                    ]}
-                >
-                    {isBounty ? 'REFER & EARN' : (vouched ? 'VOUCHED' : 'VOUCH')}
+            <TouchableOpacity activeOpacity={0.82} onPress={handleComment}>
+                <Text style={styles.commentsText}>
+                    {safeComments > 0
+                        ? `View all ${formatCompactNumber(safeComments)} comments`
+                        : 'Add a comment...'}
                 </Text>
             </TouchableOpacity>
+
+            <View style={styles.statsRow}>
+                <Text style={styles.statText}>{formatCompactNumber(safeVouches)} vouch{safeVouches === 1 ? '' : 'es'}</Text>
+                <Text style={styles.statDot}>•</Text>
+                <Text style={styles.statText}>{formatCompactNumber(safeViews)} views</Text>
+            </View>
         </View>
     );
 }
@@ -104,66 +135,49 @@ export default memo(FeedActionsBarComponent);
 
 const styles = StyleSheet.create({
     container: {
-        marginTop: 4,
-        borderTopWidth: 1,
-        borderTopColor: connectPalette.line,
-        paddingTop: 10,
+        marginTop: 6,
+        gap: 4,
+    },
+    iconRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 16,
+        justifyContent: 'space-between',
     },
-    containerBounty: {
-        borderTopColor: 'rgba(255,255,255,0.2)',
-    },
-    actionButton: {
+    leftIconRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        borderRadius: RADIUS.md,
-        paddingHorizontal: 6,
-        paddingVertical: 4,
+        gap: 2,
     },
-    actionText: {
-        color: connectPalette.muted,
+    iconButton: {
+        width: 36,
+        height: 36,
+        borderRadius: RADIUS.full,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    likesText: {
+        color: '#111111',
+        fontSize: 12.5,
+        fontWeight: '700',
+    },
+    commentsText: {
+        color: '#5b21b6',
         fontSize: 12,
-        fontWeight: '800',
+        fontWeight: '600',
     },
-    actionTextLiked: {
-        color: connectPalette.accent,
-    },
-    actionTextBounty: {
-        color: connectPalette.surface,
-    },
-    vouchButton: {
-        marginLeft: 'auto',
+    statsRow: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
-        borderWidth: 1,
-        borderColor: 'transparent',
-        borderRadius: RADIUS.md,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        backgroundColor: '#f5f6fb',
-        ...SHADOWS.sm,
     },
-    vouchButtonActive: {
-        borderColor: connectPalette.accent,
-        backgroundColor: connectPalette.accent,
+    statText: {
+        color: '#4b5563',
+        fontSize: 10.5,
+        fontWeight: '600',
     },
-    vouchButtonBounty: {
-        borderColor: connectPalette.surface,
-        backgroundColor: 'rgba(255,255,255,0.12)',
-    },
-    vouchText: {
-        color: connectPalette.accentDark,
-        fontSize: 11,
-        fontWeight: '900',
-        letterSpacing: 0.4,
-    },
-    vouchTextActive: {
-        color: connectPalette.surface,
-    },
-    vouchTextBounty: {
-        color: connectPalette.surface,
+    statDot: {
+        color: '#9ca3af',
+        fontSize: 10,
+        fontWeight: '700',
     },
 });

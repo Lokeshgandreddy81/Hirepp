@@ -1,24 +1,33 @@
 import React, { memo, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Animated } from 'react-native';
-import { RADIUS } from '../../theme/theme';
-import { connectPalette } from './connectPalette';
+import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { MOTION } from '../../theme/motion';
 
-function AnimatedTabLabel({ tab, active, onPress }) {
+const TAB_META = {
+    Feed: { icon: 'newspaper-outline', iconActive: 'newspaper' },
+    Pulse: { icon: 'flash-outline', iconActive: 'flash' },
+    Academy: { icon: 'school-outline', iconActive: 'school' },
+    Circles: { icon: 'people-outline', iconActive: 'people' },
+    Bounties: { icon: 'trophy-outline', iconActive: 'trophy' },
+};
+
+function TabButton({ tab, active, onPress }) {
     const scale = useRef(new Animated.Value(active ? 1 : 0.96)).current;
-    const opacity = useRef(new Animated.Value(active ? 1 : 0.75)).current;
+    const opacity = useRef(new Animated.Value(active ? 1 : 0.8)).current;
+    const tabMeta = TAB_META[tab] || TAB_META.Feed;
+    const iconName = active ? tabMeta.iconActive : tabMeta.icon;
 
     useEffect(() => {
         Animated.parallel([
             Animated.spring(scale, {
                 toValue: active ? 1 : 0.96,
                 stiffness: 220,
-                damping: 16,
-                mass: 0.8,
+                damping: 18,
+                mass: 0.85,
                 useNativeDriver: true,
             }),
             Animated.timing(opacity, {
-                toValue: active ? 1 : 0.75,
+                toValue: active ? 1 : 0.8,
                 duration: MOTION.tabTransitionMs,
                 useNativeDriver: true,
             }),
@@ -26,35 +35,37 @@ function AnimatedTabLabel({ tab, active, onPress }) {
     }, [active, opacity, scale]);
 
     return (
-        <TouchableOpacity style={styles.tabButton} onPress={onPress} activeOpacity={0.75}>
-            <Animated.View style={{ transform: [{ scale }], opacity }}>
-                <Text style={[styles.tabText, active && styles.tabTextActive]}>{tab}</Text>
+        <TouchableOpacity
+            style={[styles.tabButton, active && styles.tabButtonActive]}
+            onPress={onPress}
+            activeOpacity={0.82}
+        >
+            <Animated.View style={{ transform: [{ scale }], opacity, alignItems: 'center' }}>
+                <Ionicons name={iconName} size={16} color={active ? '#ffffff' : '#5b4b7c'} />
+                <Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>
+                    {tab}
+                </Text>
             </Animated.View>
-            {active ? <View style={styles.tabIndicator} /> : null}
         </TouchableOpacity>
     );
 }
 
 function ConnectTabBarComponent({ tabs, activeTab, onTabPress }) {
-    const handleTabPress = useCallback((tab) => {
-        onTabPress(tab);
-    }, [onTabPress]);
+    const safeTabs = Array.isArray(tabs) ? tabs : [];
+    const handleTabPress = useCallback((tab) => onTabPress(tab), [onTabPress]);
 
     return (
         <View style={styles.container}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.content}>
-                {tabs.map((tab) => {
+            <View style={styles.tabRow}>
+                {safeTabs.map((tab) => {
                     const isActive = activeTab === tab;
                     return (
-                        <AnimatedTabLabel
-                            key={tab}
-                            tab={tab}
-                            active={isActive}
-                            onPress={() => handleTabPress(tab)}
-                        />
+                        <View key={tab} style={styles.tabSlot}>
+                            <TabButton tab={tab} active={isActive} onPress={() => handleTabPress(tab)} />
+                        </View>
                     );
                 })}
-            </ScrollView>
+            </View>
         </View>
     );
 }
@@ -63,35 +74,53 @@ export default memo(ConnectTabBarComponent);
 
 const styles = StyleSheet.create({
     container: {
-        backgroundColor: connectPalette.surface,
-        borderBottomWidth: 1,
-        borderBottomColor: connectPalette.line,
+        backgroundColor: '#f4edff',
+        paddingHorizontal: 12,
+        paddingTop: 6,
+        paddingBottom: 10,
     },
-    content: {
-        paddingHorizontal: 10,
+    tabRow: {
+        flexDirection: 'row',
+        alignItems: 'stretch',
+        borderRadius: 18,
+        backgroundColor: '#efe5ff',
+        borderWidth: 1,
+        borderColor: '#e1d0ff',
+        paddingHorizontal: 5,
+        paddingVertical: 6,
+        gap: 4,
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 9,
+        elevation: 1,
+    },
+    tabSlot: {
+        flex: 1,
     },
     tabButton: {
-        paddingHorizontal: 14,
-        paddingVertical: 13,
+        minHeight: 50,
+        borderRadius: 13,
         alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 6,
+    },
+    tabButtonActive: {
+        backgroundColor: '#7c3aed',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.16,
+        shadowRadius: 8,
+        elevation: 3,
     },
     tabText: {
-        fontSize: 28 / 2,
+        marginTop: 4,
+        color: '#5b4b7c',
+        fontSize: 10.5,
         fontWeight: '700',
-        color: connectPalette.subtle,
-        textTransform: 'uppercase',
-        letterSpacing: 1.4,
+        letterSpacing: 0.1,
     },
     tabTextActive: {
-        color: connectPalette.accent,
-    },
-    tabIndicator: {
-        position: 'absolute',
-        bottom: 0,
-        left: 12,
-        right: 12,
-        height: 2.5,
-        backgroundColor: connectPalette.accent,
-        borderRadius: RADIUS.sm,
+        color: '#ffffff',
     },
 });

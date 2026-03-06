@@ -1,70 +1,121 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Platform, RefreshControl } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
 import SkeletonLoader from '../components/SkeletonLoader';
 import EmptyState from '../components/EmptyState';
-import { logger } from '../utils/logger';
 import { validateNotificationsResponse, logValidationError } from '../utils/apiValidator';
 import { useAppStore } from '../store/AppStore';
-import { DEMO_MODE } from '../config';
+import { logger } from '../utils/logger';
+
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+const normalizeObjectId = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') {
+        const normalized = value.trim();
+        return OBJECT_ID_PATTERN.test(normalized) ? normalized : '';
+    }
+    if (typeof value === 'object') {
+        const nestedId = normalizeObjectId(value._id || value.id || value.$oid || '');
+        if (nestedId) return nestedId;
+    }
+    return '';
+};
 
 export default function NotificationsScreen({ navigation }) {
     const { setNotificationsCount, activeChatId, role } = useAppStore();
     const normalizedRole = String(role || '').toLowerCase();
     const isEmployer = normalizedRole === 'employer' || normalizedRole === 'recruiter';
     const [notifications, setNotifications] = useState([]);
-    const [loading, setLoading] = useState(!DEMO_MODE);
+    const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [clearing, setClearing] = useState(false);
     const [error, setError] = useState('');
 
-    useEffect(() => {
-        fetchNotifications();
-    }, []);
-
-    const fetchNotifications = async () => {
+    const fetchNotifications = useCallback(async ({ showLoader = true } = {}) => {
         try {
-            if (!DEMO_MODE) {
+            if (showLoader) {
                 setLoading(true);
+            } else {
+                setRefreshing(true);
             }
             setError('');
-            const { data } = await client.get('/api/notifications');
+            const { data } = await client.get('/api/notifications', { __skipApiErrorHandler: true });
             const validatedNotifications = validateNotificationsResponse(data);
             setNotifications(validatedNotifications);
-            setNotificationsCount(validatedNotifications.filter((item) => !item.isRead).length);
-        } catch (error) {
-            if (error?.name === 'ApiValidationError') {
-                logValidationError(error, '/api/notifications');
+            const unreadCount = Number(data?.unreadCount);
+            if (Number.isFinite(unreadCount)) {
+                setNotificationsCount(unreadCount);
+            } else {
+                setNotificationsCount(validatedNotifications.filter((item) => !item.isRead).length);
             }
-            setError('Could not load notifications');
-            logger.error('Failed to fetch notifications:', error);
+        } catch (fetchError) {
+            if (fetchError?.name === 'ApiValidationError') {
+                logValidationError(fetchError, '/api/notifications');
+            }
+            setNotifications([]);
+            setError('Could not load notifications. Please retry.');
         } finally {
-            if (!DEMO_MODE) {
+            if (showLoader) {
                 setLoading(false);
+            } else {
+                setRefreshing(false);
             }
         }
-    };
+    }, [setNotificationsCount]);
+
+    useEffect(() => {
+        fetchNotifications({ showLoader: true });
+    }, [fetchNotifications]);
+
+    useFocusEffect(useCallback(() => {
+        fetchNotifications({ showLoader: false });
+    }, [fetchNotifications]));
 
     const markAsRead = async (id) => {
         try {
-            await client.put(`/api/notifications/${id}/read`);
+            const { data } = await client.put(`/api/notifications/${id}/read`, {}, { __skipApiErrorHandler: true });
+            const unreadCount = Number(data?.unreadCount);
             setNotifications(prev => {
                 const next = prev.map(n => n._id === id ? { ...n, isRead: true } : n);
-                setNotificationsCount(next.filter((item) => !item.isRead).length);
+                if (Number.isFinite(unreadCount)) {
+                    setNotificationsCount(unreadCount);
+                } else {
+                    setNotificationsCount(next.filter((item) => !item.isRead).length);
+                }
                 return next;
             });
         } catch (error) {
-            logger.error('Failed to mark read:', error);
+            logger.warn('Failed to mark notification read:', error?.message || error);
         }
     };
 
     const markAllRead = async () => {
         try {
-            await client.put('/api/notifications');
+            const { data } = await client.put('/api/notifications', {}, { __skipApiErrorHandler: true });
             setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
-            setNotificationsCount(0);
+            const unreadCount = Number(data?.unreadCount);
+            setNotificationsCount(Number.isFinite(unreadCount) ? unreadCount : 0);
         } catch (error) {
-            logger.error('Failed to mark all read:', error);
+            logger.warn('Failed to mark all notifications read:', error?.message || error);
+        }
+    };
+
+    const clearAll = async () => {
+        if (clearing) return;
+        setClearing(true);
+        // Optimistically clear the UI immediately.
+        setNotifications([]);
+        setNotificationsCount(0);
+        try {
+            await client.delete('/api/notifications', { __skipApiErrorHandler: true });
+        } catch (error) {
+            logger.warn('Failed to clear all notifications:', error?.message || error);
+            // Even on failure, keep UI cleared — user intent was clear.
+        } finally {
+            setClearing(false);
         }
     };
 
@@ -73,10 +124,14 @@ export default function NotificationsScreen({ navigation }) {
 
         if (item.type === 'application_received' && item.relatedData?.jobId) {
             navigation.navigate('MainTab', { screen: isEmployer ? 'My Jobs' : 'Applications' });
-        } else if (item.type === 'status_update') {
+        } else if (['status_update', 'application_accepted', 'offer_update', 'interview_schedule'].includes(item.type)) {
             navigation.navigate('MainTab', { screen: 'Applications' });
         } else if (item.type === 'message_received') {
-            const applicationId = item.relatedData?.applicationId || item.relatedData?.chatId || item.applicationId;
+            const applicationId = normalizeObjectId(
+                item?.relatedData?.applicationId
+                || item?.relatedData?.chatId
+                || item?.applicationId
+            );
             if (applicationId) {
                 if (String(activeChatId) === String(applicationId)) {
                     return;
@@ -145,11 +200,18 @@ export default function NotificationsScreen({ navigation }) {
         <SafeAreaView style={styles.container} edges={['top']}>
             <View style={styles.header}>
                 <Text style={styles.headerTitle}>Notifications</Text>
-                {notifications.some(n => !n.isRead) && (
-                    <TouchableOpacity onPress={markAllRead}>
-                        <Text style={styles.markAllText}>Mark all read</Text>
-                    </TouchableOpacity>
-                )}
+                <View style={styles.headerActions}>
+                    {notifications.some(n => !n.isRead) && (
+                        <TouchableOpacity onPress={markAllRead} style={styles.headerBtn}>
+                            <Text style={styles.markAllText}>Mark all read</Text>
+                        </TouchableOpacity>
+                    )}
+                    {notifications.length > 0 && (
+                        <TouchableOpacity onPress={clearAll} disabled={clearing} style={styles.headerBtn}>
+                            <Ionicons name="trash-outline" size={20} color={clearing ? '#cbd5e1' : '#ef4444'} />
+                        </TouchableOpacity>
+                    )}
+                </View>
             </View>
 
             {error ? (
@@ -169,9 +231,16 @@ export default function NotificationsScreen({ navigation }) {
             ) : (
                 <FlatList
                     data={notifications}
-                    keyExtractor={item => item._id}
+                    keyExtractor={(item, index) => String(item?._id || `notification-${index}`)}
                     renderItem={renderItem}
                     contentContainerStyle={styles.listContent}
+                    refreshControl={
+                        <RefreshControl
+                            refreshing={refreshing}
+                            onRefresh={() => fetchNotifications({ showLoader: false })}
+                            tintColor="#7c3aed"
+                        />
+                    }
                     showsVerticalScrollIndicator={false}
                     removeClippedSubviews={Platform.OS === 'android'}
                     maxToRenderPerBatch={10}

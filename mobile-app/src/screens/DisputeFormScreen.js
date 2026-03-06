@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+    KeyboardAvoidingView,
+    Platform,
+} from 'react-native';
 import { raiseDispute } from '../services/FinancialService';
 
 export default function DisputeFormScreen() {
@@ -27,32 +37,39 @@ export default function DisputeFormScreen() {
     };
 
     return (
-        <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-            <Text style={styles.title}>Dispute Form</Text>
-            <View style={styles.card}>
-                <Text style={styles.label}>Escrow ID</Text>
-                <TextInput
-                    style={styles.input}
-                    value={escrowId}
-                    onChangeText={setEscrowId}
-                    autoCapitalize="none"
-                />
+        <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <ScrollView
+                style={styles.container}
+                contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            >
+                <Text style={styles.title}>Dispute Form</Text>
+                <View style={styles.card}>
+                    <Text style={styles.label}>Escrow ID</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={escrowId}
+                        onChangeText={setEscrowId}
+                        autoCapitalize="none"
+                    />
 
-                <Text style={styles.label}>Reason</Text>
-                <TextInput
-                    style={[styles.input, styles.textArea]}
-                    value={reason}
-                    onChangeText={setReason}
-                    multiline
-                    numberOfLines={4}
-                    textAlignVertical="top"
-                />
+                    <Text style={styles.label}>Reason</Text>
+                    <TextInput
+                        style={[styles.input, styles.textArea]}
+                        value={reason}
+                        onChangeText={setReason}
+                        multiline
+                        numberOfLines={4}
+                        textAlignVertical="top"
+                    />
 
-                <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
-                    <Text style={styles.buttonText}>{submitting ? 'Submitting...' : 'Submit Dispute'}</Text>
-                </TouchableOpacity>
-            </View>
-        </ScrollView>
+                    <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
+                        <Text style={styles.buttonText}>{submitting ? 'Submitting...' : 'Submit Dispute'}</Text>
+                    </TouchableOpacity>
+                </View>
+            </ScrollView>
+        </KeyboardAvoidingView>
     );
 }
 

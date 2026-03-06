@@ -14,6 +14,57 @@ import { useTheme } from '../theme/ThemeProvider';
 import { RADIUS, SHADOWS, SPACING } from '../theme/theme';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
+import Constants from 'expo-constants';
+
+const withTimeout = (promise, timeoutMs, timeoutMessage) => {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            reject(new Error(timeoutMessage || 'Request timed out.'));
+        }, timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        clearTimeout(timeoutId);
+    });
+};
+
+const CONNECT_SAVED_POST_IDS_KEY_PREFIX = '@connect_saved_post_ids_';
+const getSavedPostsStorageKey = (userId = 'guest') => (
+    `${CONNECT_SAVED_POST_IDS_KEY_PREFIX}${String(userId || 'guest').trim() || 'guest'}`
+);
+const parseSavedPostCount = (rawValue) => {
+    try {
+        const parsed = JSON.parse(String(rawValue || '[]'));
+        if (!Array.isArray(parsed)) return 0;
+        return parsed
+            .map((id) => String(id || '').trim())
+            .filter(Boolean)
+            .length;
+    } catch (_error) {
+        return 0;
+    }
+};
+
+const normalizeRoleList = (rolesValue) => (
+    Array.isArray(rolesValue)
+        ? Array.from(new Set(
+            rolesValue
+                .map((role) => String(role || '').trim().toLowerCase())
+                .filter((role) => role === 'worker' || role === 'employer')
+        ))
+        : []
+);
+
+const resolveAllowedRoles = (user = {}, fallbackPrimaryRole = 'worker') => {
+    const normalizedRoles = normalizeRoleList(user?.roles);
+    if (normalizedRoles.length > 0) return normalizedRoles;
+
+    const inferredPrimaryRole = String(
+        user?.activeRole || user?.primaryRole || fallbackPrimaryRole || 'worker'
+    ).toLowerCase() === 'employer' ? 'employer' : 'worker';
+    return [inferredPrimaryRole];
+};
 
 export default function SettingsScreen({ navigation }) {
     const insets = useSafeAreaInsets();
@@ -21,6 +72,10 @@ export default function SettingsScreen({ navigation }) {
     const { role: appRole, setRole } = useAppStore();
     const { mode, toggleTheme, palette } = useTheme();
     const { t } = useTranslation();
+    const isExpoGo = (
+        Constants.executionEnvironment === 'storeClient'
+        || Constants.appOwnership === 'expo'
+    );
 
     const [isAdmin, setIsAdmin] = useState(false);
 
@@ -53,6 +108,12 @@ export default function SettingsScreen({ navigation }) {
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
     const [languagePref, setLanguagePref] = useState('en');
     const [accountPhoneNumber, setAccountPhoneNumber] = useState('Not set');
+    const [savedPostsCount, setSavedPostsCount] = useState(0);
+    const [clearingSavedPosts, setClearingSavedPosts] = useState(false);
+    const savedPostsStorageKey = React.useMemo(
+        () => getSavedPostsStorageKey(String(userInfo?._id || 'guest')),
+        [userInfo?._id]
+    );
 
     useEffect(() => {
         const loadUserHeader = async () => {
@@ -70,7 +131,11 @@ export default function SettingsScreen({ navigation }) {
             setIsAdmin(Boolean(user?.isAdmin) || String(user.role || '').toLowerCase() === 'admin');
 
             try {
-                const { data } = await client.get('/api/users/profile');
+                const { data } = await client.get('/api/users/profile', {
+                    params: {
+                        role: resolvedPrimaryRole === 'employer' ? 'employer' : 'worker',
+                    },
+                });
                 const profile = data?.profile || {};
                 setReferralDashboard(data?.referralDashboard || null);
                 const settingsResponse = await client.get('/api/settings').catch(() => null);
@@ -122,10 +187,14 @@ export default function SettingsScreen({ navigation }) {
             const languageEntry = pairs.find(([key]) => key === '@language_pref');
             const safeLanguage = languageEntry?.[1] === 'hi' ? 'hi' : 'en';
             setLanguagePref(safeLanguage);
-            i18n.changeLanguage(safeLanguage).catch(() => {});
+            i18n.changeLanguage(safeLanguage).catch(() => { });
         });
 
         const loadNotificationPermission = async () => {
+            if (isExpoGo) {
+                setPushPermissionStatus('expo_go');
+                return;
+            }
             try {
                 const Notifications = await import('expo-notifications');
                 const status = await Notifications.getPermissionsAsync();
@@ -135,12 +204,32 @@ export default function SettingsScreen({ navigation }) {
             }
         };
         loadNotificationPermission();
-    }, [userInfo, appRole]);
+    }, [userInfo, appRole, isExpoGo]);
 
     const handleToggle = async (key, setter, value) => {
         setter(value);
         await AsyncStorage.setItem(key, String(value));
     };
+
+    const loadSavedPostsCount = React.useCallback(async () => {
+        try {
+            const rawValue = await AsyncStorage.getItem(savedPostsStorageKey);
+            setSavedPostsCount(parseSavedPostCount(rawValue));
+        } catch (_error) {
+            setSavedPostsCount(0);
+        }
+    }, [savedPostsStorageKey]);
+
+    useEffect(() => {
+        loadSavedPostsCount();
+    }, [loadSavedPostsCount]);
+
+    useEffect(() => {
+        const unsubscribe = navigation.addListener('focus', () => {
+            loadSavedPostsCount();
+        });
+        return unsubscribe;
+    }, [navigation, loadSavedPostsCount]);
 
     const animateRoleSwitchToast = React.useCallback((message) => {
         setRoleSwitchMessage(message);
@@ -156,17 +245,13 @@ export default function SettingsScreen({ navigation }) {
         const nextLanguage = languagePref === 'hi' ? 'en' : 'hi';
         setLanguagePref(nextLanguage);
         await AsyncStorage.setItem('@language_pref', nextLanguage);
-        await i18n.changeLanguage(nextLanguage).catch(() => {});
+        await i18n.changeLanguage(nextLanguage).catch(() => { });
     };
 
     const performLocalSignOut = async () => {
         try {
             await SecureStore.deleteItemAsync('selectedRole');
             await logout();
-            navigation.reset({
-                index: 0,
-                routes: [{ name: 'Login' }],
-            });
         } catch (error) {
             logger.error('Sign out error:', error);
         }
@@ -185,54 +270,158 @@ export default function SettingsScreen({ navigation }) {
         );
     };
 
+    const applyResolvedRoleLocally = React.useCallback(async (resolvedRole, roleContract = {}, bootstrapPayload = null) => {
+        const normalizedResolvedRole = String(resolvedRole || '').toLowerCase() === 'employer' ? 'employer' : 'worker';
+        const localAllowedRoles = resolveAllowedRoles(userInfo || {}, primaryRole || normalizedResolvedRole);
+        setPrimaryRole(normalizedResolvedRole);
+        setRole(normalizedResolvedRole);
+        SecureStore.setItemAsync('selectedRole', normalizedResolvedRole).catch(() => { });
+        setProfileHeader((prev) => ({
+            ...prev,
+            role: normalizedResolvedRole === 'employer' ? 'Recruiter' : 'Candidate',
+        }));
+
+        const fallbackRoleContract = {
+            roles: localAllowedRoles,
+            activeRole: normalizedResolvedRole,
+            primaryRole: normalizedResolvedRole,
+            capabilities: undefined,
+        };
+
+        await updateUserInfo({
+            ...(bootstrapPayload || {}),
+            role: normalizedResolvedRole === 'employer' ? 'recruiter' : 'candidate',
+            activeRole: roleContract?.activeRole || fallbackRoleContract.activeRole,
+            primaryRole: roleContract?.primaryRole || fallbackRoleContract.primaryRole,
+            roles: Array.isArray(roleContract?.roles) && roleContract.roles.length > 0
+                ? roleContract.roles
+                : fallbackRoleContract.roles,
+            capabilities: roleContract?.capabilities || fallbackRoleContract.capabilities,
+            hasSelectedRole: true,
+        });
+    }, [primaryRole, setRole, updateUserInfo, userInfo]);
+
+    const attemptRoleSwitchServerSide = React.useCallback(async (nextRole) => {
+        try {
+            const { data } = await client.put('/api/settings', { accountInfo: { role: nextRole } }, {
+                __skipApiErrorHandler: true,
+                __skipUnauthorizedHandler: true,
+                __allowWhenCircuitOpen: true,
+                __maxRetries: 0,
+                timeout: 5000,
+            });
+            return data || null;
+        } catch (_error) {
+            return null;
+        }
+    }, []);
+
+    const attemptRoleBootstrap = React.useCallback(async (resolvedRole) => {
+        try {
+            const { data } = await client.post('/api/auth/dev-bootstrap', {
+                role: resolvedRole,
+            }, {
+                __skipUnauthorizedHandler: true,
+                __skipApiErrorHandler: true,
+                __allowWhenCircuitOpen: true,
+                __maxRetries: 1,
+                timeout: 7000,
+            });
+
+            if (!data || typeof data !== 'object') {
+                return null;
+            }
+            return data;
+        } catch (_error) {
+            return null;
+        }
+    }, []);
+
     const handleRoleToggle = async () => {
         if (isSwitchingRole) return;
+
+        const accountMode = String(userInfo?.accountMode || '').toLowerCase();
+        const isHybridAccount = accountMode === 'hybrid';
+        const allowedRoles = ['worker', 'employer'];
+        const canToggleRoles = isHybridAccount;
+        if (!canToggleRoles) {
+            Alert.alert(
+                'Role switching not available',
+                'Your account is set up for a single role. If you need both roles, please create a new Hybrid account.',
+                [{ text: 'OK' }]
+            );
+            return;
+        }
+
         const previousRole = primaryRole === 'employer' ? 'employer' : 'worker';
         const nextRole = previousRole === 'employer' ? 'worker' : 'employer';
 
         setIsSwitchingRole(true);
-        setPrimaryRole(nextRole);
-        setProfileHeader((prev) => ({
-            ...prev,
-            role: nextRole === 'employer' ? 'Recruiter' : 'Candidate',
-        }));
-
         try {
-            const { data } = await client.put('/api/settings', {
-                accountInfo: {
-                    role: nextRole,
-                },
+            // Apply locally and immediately — no waiting for server responses.
+            setPrimaryRole(nextRole);
+            setRole(nextRole);
+            setProfileHeader((prev) => ({
+                ...prev,
+                role: nextRole === 'employer' ? 'Recruiter' : 'Candidate',
+            }));
+            SecureStore.setItemAsync('selectedRole', nextRole).catch(() => { });
+
+            // Preserve user's allowed roles and avoid UI lock if local persistence is slow.
+            await withTimeout(
+                updateUserInfo({
+                    role: nextRole === 'employer' ? 'recruiter' : 'candidate',
+                    activeRole: nextRole,
+                    primaryRole: nextRole,
+                    roles: allowedRoles,
+                    hasSelectedRole: true,
+                }),
+                1800,
+                'Local role update timed out.',
+            ).catch((error) => {
+                logger.warn('Local role persistence delayed:', error?.message || error);
             });
 
-            const roleContract = data?.settings?.roleContract || {};
-            const resolvedRole = String(roleContract.activeRole || nextRole).toLowerCase() === 'employer'
-                ? 'employer'
-                : 'worker';
-
-            setPrimaryRole(resolvedRole);
-            setRole(resolvedRole);
-            await updateUserInfo({
-                role: resolvedRole === 'employer' ? 'recruiter' : 'candidate',
-                activeRole: resolvedRole,
-                primaryRole: resolvedRole,
-                roles: Array.isArray(roleContract.roles) && roleContract.roles.length > 0
-                    ? roleContract.roles
-                    : ['worker', 'employer'],
-                capabilities: roleContract.capabilities || undefined,
-                hasSelectedRole: true,
-            });
             animateRoleSwitchToast(
-                resolvedRole === 'employer'
+                nextRole === 'employer'
                     ? 'Recruiter mode enabled'
                     : 'Candidate mode enabled'
             );
+            if (nextRole === 'worker') {
+                Alert.alert(
+                    'Role switched',
+                    'Your seeker profile is active. View matching jobs now?',
+                    [
+                        { text: 'Later', style: 'cancel' },
+                        {
+                            text: 'View Matches',
+                            onPress: () => navigation.navigate('MainTab', {
+                                screen: 'Jobs',
+                                params: { source: 'role_switch', highlightMatches: true },
+                            }),
+                        },
+                    ]
+                );
+            }
+
+            // Fire-and-forget background server sync — never blocks or reverts the UI.
+            attemptRoleSwitchServerSide(nextRole).then((data) => {
+                const roleContract = data?.settings?.roleContract || data?.roleContract || {};
+                if (roleContract?.activeRole) {
+                    applyResolvedRoleLocally(roleContract.activeRole, roleContract);
+                }
+            }).catch(() => {
+                // Background sync failed — silently ignore. User already has the new role.
+            });
         } catch (error) {
+            logger.warn('Role toggle failed', error?.message || error);
             setPrimaryRole(previousRole);
+            setRole(previousRole);
             setProfileHeader((prev) => ({
                 ...prev,
                 role: previousRole === 'employer' ? 'Recruiter' : 'Candidate',
             }));
-            Alert.alert('Role switch failed', error?.response?.data?.message || 'Unable to switch role right now.');
+            Alert.alert('Role switch failed', 'Please try again.');
         } finally {
             setIsSwitchingRole(false);
         }
@@ -290,9 +479,19 @@ export default function SettingsScreen({ navigation }) {
 
     const readablePushPermission = pushPermissionStatus === 'granted'
         ? 'Granted'
-        : (pushPermissionStatus === 'denied' ? 'Denied' : 'Not set');
+        : (pushPermissionStatus === 'expo_go'
+            ? 'Use development build'
+            : (pushPermissionStatus === 'denied' ? 'Denied' : 'Not set'));
 
     const handleRequestPushPermission = async () => {
+        if (isExpoGo) {
+            Alert.alert(
+                'Development build required',
+                'Remote push notifications are not supported in Expo Go (SDK 53+). Use an EAS development build.'
+            );
+            setPushPermissionStatus('expo_go');
+            return;
+        }
         try {
             const { requestNotificationPermission } = await import('../services/NotificationService');
             const result = await requestNotificationPermission();
@@ -306,6 +505,13 @@ export default function SettingsScreen({ navigation }) {
 
     const handleTestNotification = async () => {
         if (testingNotification) return;
+        if (isExpoGo) {
+            Alert.alert(
+                'Development build required',
+                'Remote notifications are not supported in Expo Go. Use a development build for full push testing.'
+            );
+            return;
+        }
         setTestingNotification(true);
         try {
             const { scheduleLocalNotificationTest } = await import('../services/NotificationService');
@@ -317,6 +523,39 @@ export default function SettingsScreen({ navigation }) {
             setTestingNotification(false);
         }
     };
+
+    const clearSavedPosts = React.useCallback(async () => {
+        if (clearingSavedPosts) return;
+        setClearingSavedPosts(true);
+        try {
+            await AsyncStorage.removeItem(savedPostsStorageKey);
+            setSavedPostsCount(0);
+            Alert.alert('Saved posts cleared', 'Your saved posts list has been reset.');
+        } catch (_error) {
+            Alert.alert('Clear failed', 'Could not clear saved posts right now.');
+        } finally {
+            setClearingSavedPosts(false);
+        }
+    }, [clearingSavedPosts, savedPostsStorageKey]);
+
+    const handleClearSavedPosts = React.useCallback(() => {
+        if (savedPostsCount <= 0) {
+            Alert.alert('No saved posts', 'You have not saved any posts yet.');
+            return;
+        }
+        Alert.alert(
+            'Clear saved posts',
+            'Remove all saved posts from your account?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Clear',
+                    style: 'destructive',
+                    onPress: clearSavedPosts,
+                },
+            ]
+        );
+    }, [clearSavedPosts, savedPostsCount]);
 
     const renderHeader = () => (
         <View style={[styles.profileHeader, { paddingTop: insets.top + 16 }]}>
@@ -345,7 +584,17 @@ export default function SettingsScreen({ navigation }) {
         </View>
     );
 
-    const renderRow = (label, value = null, hasArrow = false, isSwitch = false, switchValue, onSwitchChange, isLast = false, onRowPress = null) => (
+    const renderRow = (
+        label,
+        value = null,
+        hasArrow = false,
+        isSwitch = false,
+        switchValue,
+        onSwitchChange,
+        isLast = false,
+        onRowPress = null,
+        switchDisabled = false
+    ) => (
         <TouchableOpacity
             style={[styles.row, !isLast && styles.rowBorder]}
             activeOpacity={0.7}
@@ -359,6 +608,7 @@ export default function SettingsScreen({ navigation }) {
                     <Switch
                         value={switchValue}
                         onValueChange={onSwitchChange}
+                        disabled={switchDisabled}
                         trackColor={{ false: '#e2e8f0', true: '#10b981' }}
                         thumbColor="#ffffff"
                         style={{ transform: [{ scaleX: 0.9 }, { scaleY: 0.9 }] }}
@@ -368,6 +618,8 @@ export default function SettingsScreen({ navigation }) {
             </View>
         </TouchableOpacity>
     );
+
+    const canSwitchRole = String(userInfo?.accountMode || '').toLowerCase() === 'hybrid';
 
     return (
         <View style={[styles.container, { backgroundColor: palette.background }]}>
@@ -396,16 +648,28 @@ export default function SettingsScreen({ navigation }) {
                 <View style={styles.sectionsContainer}>
                     <View style={styles.sectionCard}>
                         {renderSectionTextHeader('Account')}
-                        {renderRow(
+                        {canSwitchRole && renderRow(
                             'Recruiter Mode',
                             isSwitchingRole ? 'Switching…' : (primaryRole === 'employer' ? 'On' : 'Off'),
                             false,
                             true,
                             primaryRole === 'employer',
-                            handleRoleToggle
+                            handleRoleToggle,
+                            false,
+                            null,
+                            isSwitchingRole
                         )}
                         {renderRow('Current Role', primaryRole === 'employer' ? 'Recruiter' : 'Candidate')}
-                        {renderRow('Go Pro', 'Upgrade', true, false, null, null, false, () => navigation.navigate('Subscription'))}
+                        {renderRow(
+                            'HireCircle Plans',
+                            subscriptionPlan === 'free' ? 'Free' : String(subscriptionPlan || 'free').toUpperCase(),
+                            true,
+                            false,
+                            null,
+                            null,
+                            false,
+                            () => navigation.navigate('Subscription')
+                        )}
                         {renderRow('Change Password', null, true, false, null, null, !isAdmin, () => navigation.navigate('ForgotPassword'))}
                         {renderRow(
                             t('settings.language', 'Language'),
@@ -427,6 +691,21 @@ export default function SettingsScreen({ navigation }) {
                         {renderRow('Profile Visibility', 'Public')}
                         {renderRow('Blocked Contacts', '0')}
                         {renderRow('Delete Account', null, true, false, null, null, true, confirmDeleteAccount)}
+                    </View>
+
+                    <View style={styles.sectionCard}>
+                        {renderSectionTextHeader('Saved Posts')}
+                        {renderRow('Saved Posts Count', String(savedPostsCount))}
+                        {renderRow(
+                            'Clear Saved Posts',
+                            clearingSavedPosts ? 'Clearing…' : null,
+                            false,
+                            false,
+                            null,
+                            null,
+                            true,
+                            handleClearSavedPosts
+                        )}
                     </View>
 
                     <View style={styles.sectionCard}>
@@ -524,6 +803,7 @@ export default function SettingsScreen({ navigation }) {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
+        backgroundColor: '#f8fafc',
     },
     scrollContent: {
         paddingBottom: 40,
@@ -532,7 +812,7 @@ const styles = StyleSheet.create({
         marginHorizontal: SPACING.md,
         marginTop: SPACING.sm,
         marginBottom: SPACING.xs,
-        borderRadius: RADIUS.md,
+        borderRadius: 12,
         borderWidth: 1,
         borderColor: '#bfdbfe',
         backgroundColor: '#eff6ff',
@@ -549,10 +829,11 @@ const styles = StyleSheet.create({
     profileHeader: {
         backgroundColor: '#ffffff',
         paddingHorizontal: SPACING.lg,
-        paddingBottom: SPACING.lg,
+        paddingBottom: SPACING.md + 2,
         flexDirection: 'row',
         alignItems: 'center',
-        ...SHADOWS.md,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f1f5f9',
         marginBottom: SPACING.md,
     },
     avatar: {
@@ -562,8 +843,8 @@ const styles = StyleSheet.create({
         marginRight: 16,
     },
     userName: {
-        fontSize: 20,
-        fontWeight: 'bold',
+        fontSize: 22,
+        fontWeight: '800',
         color: '#0f172a',
         marginBottom: 2,
     },
@@ -590,20 +871,19 @@ const styles = StyleSheet.create({
     },
     sectionsContainer: {
         paddingHorizontal: SPACING.md,
-        gap: SPACING.md,
+        gap: 12,
     },
     sectionCard: {
         backgroundColor: '#ffffff',
-        borderRadius: RADIUS.md,
+        borderRadius: 12,
         borderWidth: 1,
-        borderColor: '#f1f5f9',
+        borderColor: '#e2e8f0',
         overflow: 'hidden',
-        ...SHADOWS.sm,
     },
     sectionHeaderBg: {
         backgroundColor: '#f8fafc',
         paddingHorizontal: SPACING.md,
-        paddingVertical: SPACING.smd,
+        paddingVertical: 10,
         borderBottomWidth: 1,
         borderBottomColor: '#f1f5f9',
     },
@@ -618,44 +898,51 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingVertical: SPACING.md,
+        paddingVertical: 14,
         paddingHorizontal: SPACING.md,
     },
     rowBorder: {
         borderBottomWidth: 1,
-        borderBottomColor: '#f8fafc',
+        borderBottomColor: '#f1f5f9',
     },
     rowLabel: {
         fontSize: 14,
-        fontWeight: '600',
+        fontWeight: '500',
         color: '#334155',
+        flex: 1,
+        paddingRight: 12,
     },
     rowRight: {
         flexDirection: 'row',
         alignItems: 'center',
+        flexShrink: 0,
     },
     rowValue: {
         fontSize: 14,
         color: '#94a3b8',
+        fontWeight: '500',
+        marginRight: 6,
     },
     arrowIcon: {
         fontSize: 20,
         color: '#94a3b8',
-        marginLeft: 8,
+        marginLeft: 4,
         lineHeight: 20,
     },
     signOutButton: {
         backgroundColor: '#fef2f2',
-        borderRadius: RADIUS.md,
-        paddingVertical: 14,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#fee2e2',
+        paddingVertical: 13,
         alignItems: 'center',
-        marginTop: 8,
+        marginTop: 6,
         marginBottom: 24,
     },
     signOutText: {
         color: '#dc2626',
-        fontWeight: 'bold',
-        fontSize: 16,
+        fontWeight: '800',
+        fontSize: 15,
     },
     modalOverlay: {
         flex: 1,

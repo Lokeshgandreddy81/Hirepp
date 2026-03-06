@@ -1,34 +1,74 @@
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert } from 'react-native';
 
-import { API_BASE_URL } from '../config';
-import { navigate } from '../navigation/navigationRef';
+import { API_BASE_CANDIDATES, API_BASE_URL } from '../config';
 import { logger } from '../utils/logger';
 
 const MAX_RETRIES = Number.parseInt(process.env.EXPO_PUBLIC_API_MAX_RETRIES || '3', 10);
 const CIRCUIT_FAILURE_THRESHOLD = Number.parseInt(process.env.EXPO_PUBLIC_API_CIRCUIT_FAILURE_THRESHOLD || '6', 10);
 const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.EXPO_PUBLIC_API_CIRCUIT_COOLDOWN_MS || '30000', 10);
+const CIRCUIT_ENABLED = ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.EXPO_PUBLIC_API_CIRCUIT_ENABLED ?? (__DEV__ ? 'false' : 'true')).trim().toLowerCase()
+);
 
 const circuitState = {
     consecutiveFailures: 0,
     openUntil: 0,
-    lastAlertAt: 0,
 };
 
 let refreshInFlight = null;
+let unauthorizedInProgress = false;
+let unauthorizedHandler = null;
+let apiErrorHandler = null;
+
+export const setUnauthorizedHandler = (handler) => {
+    unauthorizedHandler = typeof handler === 'function' ? handler : null;
+};
+
+export const setApiErrorHandler = (handler) => {
+    apiErrorHandler = typeof handler === 'function' ? handler : null;
+};
 
 const now = () => Date.now();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const normalizeBaseUrl = (value = '') => String(value || '').trim().replace(/\/+$/, '');
 
-const isCircuitOpen = () => circuitState.openUntil > now();
+const resolvedApiBaseCandidates = Array.from(
+    new Set(
+        [API_BASE_URL, ...(Array.isArray(API_BASE_CANDIDATES) ? API_BASE_CANDIDATES : [])]
+            .map((item) => normalizeBaseUrl(item))
+            .filter(Boolean)
+    )
+);
+let activeApiBaseUrl = resolvedApiBaseCandidates[0] || normalizeBaseUrl(API_BASE_URL);
+
+const setActiveApiBaseUrl = (baseUrl) => {
+    const normalized = normalizeBaseUrl(baseUrl);
+    if (!normalized) return;
+    activeApiBaseUrl = normalized;
+};
+
+const getNextFallbackBaseUrl = (config = {}) => {
+    const tried = new Set(
+        (Array.isArray(config.__triedApiBases) ? config.__triedApiBases : [])
+            .map((item) => normalizeBaseUrl(item))
+            .filter(Boolean)
+    );
+    const current = normalizeBaseUrl(config.baseURL || activeApiBaseUrl || API_BASE_URL);
+    if (current) tried.add(current);
+    return resolvedApiBaseCandidates.find((candidate) => !tried.has(candidate)) || null;
+};
+
+const isCircuitOpen = () => CIRCUIT_ENABLED && circuitState.openUntil > now();
 
 const tripCircuit = () => {
+    if (!CIRCUIT_ENABLED) return;
     circuitState.openUntil = now() + CIRCUIT_COOLDOWN_MS;
 };
 
 const registerFailure = () => {
+    if (!CIRCUIT_ENABLED) return;
     circuitState.consecutiveFailures += 1;
     if (circuitState.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
         tripCircuit();
@@ -40,19 +80,15 @@ const registerSuccess = () => {
     circuitState.openUntil = 0;
 };
 
-const showConnectivityAlert = () => {
-    const sinceLast = now() - circuitState.lastAlertAt;
-    if (sinceLast < 15000) return;
-    circuitState.lastAlertAt = now();
-
-    Alert.alert(
-        'Connectivity degraded',
-        'We are retrying in the background. Some actions may take longer to complete.',
-        [{ text: 'OK' }]
-    );
+const buildCorrelationId = () => `m-${Math.random().toString(36).slice(2, 10)}-${Date.now()}`;
+const resolveMaxRetries = (config = {}) => {
+    const override = Number(config?.__maxRetries);
+    if (Number.isFinite(override) && override >= 0) {
+        return Math.floor(override);
+    }
+    return MAX_RETRIES;
 };
 
-const buildCorrelationId = () => `m-${Math.random().toString(36).slice(2, 10)}-${Date.now()}`;
 const getOrCreateDeviceId = async () => {
     const existing = await AsyncStorage.getItem('@device_id');
     if (existing) return existing;
@@ -81,8 +117,84 @@ const clearStoredAdminToken = async () => {
     await SecureStore.deleteItemAsync('adminAuthToken');
 };
 
+const notifyApiError = (error) => {
+    try {
+        if (apiErrorHandler) {
+            apiErrorHandler(error);
+        }
+    } catch (handlerError) {
+        logger.error('Global API error handler failed:', handlerError);
+    }
+};
+
+const shouldNotifyApiError = (config = {}) => !Boolean(config?.__skipApiErrorHandler);
+
+const buildApiError = (error, type, message, retry = null) => {
+    const status = Number(error?.response?.status || 0);
+    const normalized = new Error(message);
+    normalized.name = 'ApiClientError';
+    normalized.type = type;
+    normalized.status = status;
+    normalized.code = error?.code || null;
+    normalized.retry = typeof retry === 'function' ? retry : null;
+    normalized.originalError = error;
+    return normalized;
+};
+
+const handleUnauthorized = async () => {
+    if (unauthorizedInProgress) {
+        return;
+    }
+
+    unauthorizedInProgress = true;
+    try {
+        await clearStoredUserInfo();
+        await clearStoredAdminToken();
+        if (unauthorizedHandler) {
+            await unauthorizedHandler();
+        }
+    } catch (error) {
+        logger.error('Unauthorized handler failed:', error);
+    } finally {
+        unauthorizedInProgress = false;
+    }
+};
+
+const ABSOLUTE_HTTP_URL_PATTERN = /^https?:\/\//i;
+const hasApiPrefixInBaseUrl = /\/api$/i.test(API_BASE_URL);
+const normalizeRouteForChecks = (urlValue = '') => {
+    const raw = String(urlValue || '').trim();
+    if (!raw) return '';
+
+    const withoutOrigin = ABSOLUTE_HTTP_URL_PATTERN.test(raw)
+        ? raw.replace(/^https?:\/\/[^/]+/i, '')
+        : raw;
+
+    if (withoutOrigin.startsWith('/api')) return withoutOrigin;
+    if (withoutOrigin.startsWith('/')) return `/api${withoutOrigin}`;
+    return `/api/${withoutOrigin}`;
+};
+const normalizeRequestUrl = (urlValue = '') => {
+    const raw = String(urlValue || '').trim();
+    if (!raw || ABSOLUTE_HTTP_URL_PATTERN.test(raw) || !hasApiPrefixInBaseUrl) {
+        return raw;
+    }
+
+    if (/^\/api(\/|$)/i.test(raw)) {
+        const stripped = raw.replace(/^\/api(?=\/|$)/i, '');
+        return stripped || '/';
+    }
+
+    if (/^api(\/|$)/i.test(raw)) {
+        const stripped = raw.replace(/^api(?=\/|$)/i, '');
+        return stripped.startsWith('/') ? stripped : `/${stripped}`;
+    }
+
+    return raw;
+};
+
 const client = axios.create({
-    baseURL: API_BASE_URL,
+    baseURL: activeApiBaseUrl,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -99,7 +211,7 @@ const refreshAuthToken = async () => {
             throw new Error('Missing refresh token');
         }
 
-        const response = await axios.post(`${API_BASE_URL}/api/users/refresh-token`, { refreshToken }, {
+        const response = await axios.post(`${activeApiBaseUrl}/users/refresh-token`, { refreshToken }, {
             timeout: 10000,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -127,6 +239,7 @@ client.interceptors.request.use(
         if (!config?.headers) {
             config.headers = {};
         }
+        config.baseURL = normalizeBaseUrl(config.baseURL || activeApiBaseUrl);
 
         if (!config.headers['x-correlation-id']) {
             config.headers['x-correlation-id'] = buildCorrelationId();
@@ -138,16 +251,30 @@ client.interceptors.request.use(
             config.headers['x-device-platform'] = 'mobile';
         }
 
-        if (!config.__allowWhenCircuitOpen && isCircuitOpen()) {
-            const error = new Error('API circuit is open');
-            error.code = 'API_CIRCUIT_OPEN';
-            throw error;
+        const routeForChecks = normalizeRouteForChecks(config?.url || '');
+        const normalizedMethod = String(config?.method || 'get').toLowerCase();
+        const isWriteMethod = ['post', 'put', 'patch', 'delete'].includes(normalizedMethod);
+        const isDevBootstrapRoute = routeForChecks === '/api/auth/dev-bootstrap';
+        const isProfileWriteRoute = routeForChecks === '/api/users/profile' && normalizedMethod !== 'get';
+        const isProfileCompleteRoute = routeForChecks === '/api/users/profile/complete';
+        const shouldBypassCircuit = Boolean(
+            config.__allowWhenCircuitOpen
+            || isWriteMethod
+            || isDevBootstrapRoute
+            || isProfileWriteRoute
+            || isProfileCompleteRoute
+        );
+
+        if (isCircuitOpen() && !shouldBypassCircuit) {
+            const circuitError = new Error('Service temporarily unavailable. Please retry.');
+            circuitError.code = 'API_CIRCUIT_OPEN';
+            throw circuitError;
         }
 
         try {
-            const url = String(config?.url || '');
-            const isAdminRoute = url.startsWith('/api/admin');
-            const isAdminAuthRoute = url.startsWith('/api/admin/auth');
+            const isAdminRoute = routeForChecks.startsWith('/api/admin');
+            const isAdminAuthRoute = routeForChecks.startsWith('/api/admin/auth');
+            config.url = normalizeRequestUrl(config.url);
 
             if (isAdminRoute && !isAdminAuthRoute) {
                 const adminToken = await getStoredAdminToken();
@@ -172,6 +299,10 @@ client.interceptors.request.use(
 
 client.interceptors.response.use(
     (response) => {
+        if (response?.config?.baseURL) {
+            setActiveApiBaseUrl(response.config.baseURL);
+            client.defaults.baseURL = activeApiBaseUrl;
+        }
         registerSuccess();
         return response;
     },
@@ -183,14 +314,39 @@ client.interceptors.response.use(
         const isServerError = status >= 500;
         const isRateLimited = status === 429;
         const isAuthError = status === 401;
+        const isPermissionError = status === 403;
+        const isValidationError = status === 422;
         const isNetworkError = Boolean(error.request) && !status;
-        const url = String(config?.url || '');
-        const isAdminRoute = url.startsWith('/api/admin');
-        const isAdminAuthRoute = url.startsWith('/api/admin/auth');
+        const routeForChecks = normalizeRouteForChecks(config?.url || '');
+        const isAdminRoute = routeForChecks.startsWith('/api/admin');
+        const isAdminAuthRoute = routeForChecks.startsWith('/api/admin/auth');
+        const retryRequest = config
+            ? async () => client({ ...config, retryCount: 0, __userRetried: true })
+            : null;
+
+        if (isNetworkError && !config.__disableBaseFallback) {
+            const fallbackBase = getNextFallbackBaseUrl(config);
+            if (fallbackBase) {
+                const currentBase = normalizeBaseUrl(config.baseURL || activeApiBaseUrl || API_BASE_URL);
+                config.__triedApiBases = Array.from(
+                    new Set([
+                        ...(Array.isArray(config.__triedApiBases) ? config.__triedApiBases : []),
+                        currentBase,
+                    ].filter(Boolean))
+                );
+                config.baseURL = fallbackBase;
+                logger.warn(`API network error on ${routeForChecks || config?.url || 'request'}. Retrying via ${fallbackBase}`);
+                return client(config);
+            }
+        }
 
         if (isAuthError && isAdminRoute && !isAdminAuthRoute) {
             await clearStoredAdminToken();
-            return Promise.reject(error);
+            const authError = buildApiError(error, 'auth', 'Session expired. Please sign in again.');
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(authError);
+            }
+            return Promise.reject(authError);
         }
 
         if (isAuthError && !config.__isRefreshRequest && !config.__authRetried) {
@@ -203,33 +359,88 @@ client.interceptors.response.use(
                 };
                 return client(config);
             } catch (refreshError) {
-                await clearStoredUserInfo();
-                navigate('Login');
-                return Promise.reject(refreshError);
+                if (!config.__skipUnauthorizedHandler) {
+                    await handleUnauthorized();
+                }
+                const authError = buildApiError(refreshError, 'auth', 'Session expired. Please sign in again.');
+                if (shouldNotifyApiError(config)) {
+                    notifyApiError(authError);
+                }
+                return Promise.reject(authError);
             }
         }
 
         if (isServerError || isRateLimited || isNetworkError) {
             registerFailure();
-            showConnectivityAlert();
+            const maxRetriesForRequest = resolveMaxRetries(config);
 
-            if (config.retryCount < MAX_RETRIES) {
+            if (config.retryCount < maxRetriesForRequest) {
                 config.retryCount += 1;
                 const backoffMs = Math.min(8000, (2 ** config.retryCount) * 250 + Math.floor(Math.random() * 200));
                 await sleep(backoffMs);
                 return client(config);
             }
-
-            if (isCircuitOpen()) {
-                const circuitError = new Error('Service temporarily unavailable (circuit breaker open)');
-                circuitError.code = 'API_CIRCUIT_OPEN';
-                return Promise.reject(circuitError);
-            }
         }
 
         if (isAuthError) {
-            await clearStoredUserInfo();
-            navigate('Login');
+            if (!config.__skipUnauthorizedHandler) {
+                await handleUnauthorized();
+            }
+            const authError = buildApiError(error, 'auth', 'Session expired. Please sign in again.');
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(authError);
+            }
+            return Promise.reject(authError);
+        }
+
+        if (isPermissionError) {
+            const permissionError = buildApiError(
+                error,
+                'permission',
+                error?.response?.data?.message || 'You do not have permission to perform this action.'
+            );
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(permissionError);
+            }
+            return Promise.reject(permissionError);
+        }
+
+        if (isValidationError) {
+            const validationError = buildApiError(
+                error,
+                'validation',
+                error?.response?.data?.message || 'Some inputs are invalid. Please review and retry.'
+            );
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(validationError);
+            }
+            return Promise.reject(validationError);
+        }
+
+        if (isServerError) {
+            const serverError = buildApiError(
+                error,
+                'server',
+                error?.response?.data?.message || 'Server error. Please try again in a moment.',
+                retryRequest,
+            );
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(serverError);
+            }
+            return Promise.reject(serverError);
+        }
+
+        if (isNetworkError || error?.code === 'API_CIRCUIT_OPEN') {
+            const networkError = buildApiError(
+                error,
+                'network',
+                'Network unavailable. Check your connection and retry.',
+                retryRequest,
+            );
+            if (shouldNotifyApiError(config)) {
+                notifyApiError(networkError);
+            }
+            return Promise.reject(networkError);
         }
 
         return Promise.reject(error);

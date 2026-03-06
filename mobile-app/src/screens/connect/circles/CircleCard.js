@@ -4,28 +4,43 @@ import { IconUsers } from '../../../components/Icons';
 import { RADIUS } from '../../../theme/theme';
 import { connectPalette, connectShadow } from '../connectPalette';
 
-function CircleCardComponent({ variant, circle, onOpenCircle, onJoinCircle }) {
+function CircleCardComponent({ variant, circle, onOpenCircle, onJoinCircle, pendingJoinCircleIds }) {
+    const safeCircle = (circle && typeof circle === 'object') ? circle : {};
+    const circleId = String(safeCircle?._id || '').trim();
+    const circleName = String(safeCircle?.name || 'Community').trim() || 'Community';
+    const circleCategory = String(safeCircle?.category || 'Community').trim() || 'Community';
+    const circleDescription = String(safeCircle?.desc || '').trim() || 'Join this circle to connect nearby.';
+    const circleMembers = String(safeCircle?.members || '0').trim() || '0';
+    const circleOnline = String(safeCircle?.online || '0').trim() || '0';
+    const primaryTopic = String(safeCircle?.topics?.[0] || 'Updates').trim() || 'Updates';
+    const circlePrivacy = String(safeCircle?.privacy || 'public').trim().toLowerCase();
+    const safePendingJoinCircleIds = pendingJoinCircleIds instanceof Set ? pendingJoinCircleIds : new Set();
+    const isJoinPending = circleId ? safePendingJoinCircleIds.has(circleId) : false;
+
     const handleOpen = useCallback(() => {
-        onOpenCircle(circle);
-    }, [onOpenCircle, circle]);
+        if (typeof onOpenCircle === 'function') {
+            onOpenCircle(safeCircle);
+        }
+    }, [onOpenCircle, safeCircle]);
 
     const handleJoin = useCallback(() => {
-        if (typeof onJoinCircle === 'function') {
-            onJoinCircle(circle._id);
+        if (isJoinPending) return;
+        if (typeof onJoinCircle === 'function' && circleId) {
+            onJoinCircle(circleId);
         }
-    }, [onJoinCircle, circle?._id]);
+    }, [isJoinPending, onJoinCircle, circleId]);
 
     if (variant === 'joined') {
         return (
             <View style={styles.joinedCard}>
                 <View style={styles.joinedLeft}>
                     <View style={styles.relativeAvatar}>
-                        <Image source={{ uri: `https://ui-avatars.com/api/?name=${circle.name}&background=8b3dff&color=fff&rounded=true` }} style={styles.joinedAvatar} />
+                        <Image source={{ uri: `https://ui-avatars.com/api/?name=${encodeURIComponent(circleName)}&background=8b3dff&color=fff&rounded=true` }} style={styles.joinedAvatar} />
                         <View style={styles.onlineDot} />
                     </View>
                     <View>
-                        <Text style={styles.joinedTitle}>{circle.name}</Text>
-                        <Text style={styles.joinedMeta}>{circle.members} MEMBERS</Text>
+                        <Text style={styles.joinedTitle}>{circleName}</Text>
+                        <Text style={styles.joinedMeta}>{circleMembers} MEMBERS</Text>
                     </View>
                 </View>
                 <TouchableOpacity style={styles.openBtn} onPress={handleOpen}>
@@ -39,23 +54,29 @@ function CircleCardComponent({ variant, circle, onOpenCircle, onJoinCircle }) {
         <View style={styles.exploreCard}>
             <IconUsers size={96} color={connectPalette.text} style={styles.exploreBgIcon} />
             <View style={styles.exploreTop}>
-                <Image source={{ uri: `https://ui-avatars.com/api/?name=${circle.name}&background=8b3dff&color=fff&rounded=true` }} style={styles.exploreAvatar} />
+                <Image source={{ uri: `https://ui-avatars.com/api/?name=${encodeURIComponent(circleName)}&background=8b3dff&color=fff&rounded=true` }} style={styles.exploreAvatar} />
                 <View style={styles.exploreMain}>
                     <View style={styles.exploreHeaderRow}>
                         <View>
-                            <Text style={styles.exploreTitle}>{circle.name}</Text>
-                            <Text style={styles.exploreCategory}>{circle.category}</Text>
-                            {Number(circle?.members || 0) >= 200 ? (
+                            <Text style={styles.exploreTitle}>{circleName}</Text>
+                            <Text style={styles.exploreCategory}>{circleCategory}</Text>
+                            {Number(safeCircle?.members || 0) >= 200 ? (
                                 <View style={styles.trendingBadge}>
                                     <Text style={styles.trendingBadgeText}>TRENDING CIRCLE</Text>
                                 </View>
                             ) : null}
                         </View>
-                        <TouchableOpacity style={styles.joinBtn} onPress={handleJoin}>
-                            <Text style={styles.joinBtnText}>JOIN</Text>
+                        <TouchableOpacity
+                            style={[styles.joinBtn, isJoinPending && styles.joinBtnPending]}
+                            onPress={handleJoin}
+                            disabled={isJoinPending}
+                        >
+                            <Text style={[styles.joinBtnText, isJoinPending && styles.joinBtnTextPending]}>
+                                {isJoinPending ? 'REQUESTED' : (circlePrivacy === 'public' ? 'JOIN' : 'REQUEST')}
+                            </Text>
                         </TouchableOpacity>
                     </View>
-                    <Text style={styles.exploreDescription}>{circle.desc}</Text>
+                    <Text style={styles.exploreDescription}>{circleDescription}</Text>
                 </View>
             </View>
             <View style={styles.exploreBottom}>
@@ -64,9 +85,9 @@ function CircleCardComponent({ variant, circle, onOpenCircle, onJoinCircle }) {
                     <View style={[styles.miniAvatar, styles.miniAvatarShiftOne]}><Text style={styles.miniAvatarText}>B</Text></View>
                     <View style={[styles.miniAvatar, styles.miniAvatarShiftTwo]}><Text style={styles.miniAvatarText}>C</Text></View>
                 </View>
-                <Text style={styles.exploreOnline}>+{circle.online} Online Now</Text>
+                <Text style={styles.exploreOnline}>+{circleOnline} Online Now</Text>
                 <View style={styles.exploreTopicWrap}>
-                    <Text style={styles.exploreTopic}>🔥 {circle.topics?.[0]}</Text>
+                    <Text style={styles.exploreTopic}>🔥 {primaryTopic}</Text>
                 </View>
             </View>
         </View>
@@ -208,10 +229,16 @@ const styles = StyleSheet.create({
         paddingVertical: 6,
         borderRadius: RADIUS.sm,
     },
+    joinBtnPending: {
+        backgroundColor: connectPalette.accentSoft,
+    },
     joinBtnText: {
         fontSize: 10,
         fontWeight: '900',
         color: connectPalette.surface,
+    },
+    joinBtnTextPending: {
+        color: connectPalette.accentDark,
     },
     exploreDescription: {
         fontSize: 12,

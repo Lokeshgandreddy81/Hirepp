@@ -5,8 +5,16 @@ import CircleCard from './CircleCard';
 import { connectPalette } from '../connectPalette';
 
 function MyCommunitiesSectionComponent({ circles, onOpenCircle }) {
+    const safeCircles = useMemo(() => (
+        (Array.isArray(circles) ? circles : []).filter((item) => (
+            item
+            && typeof item === 'object'
+            && String(item?._id || '').trim().length > 0
+        ))
+    ), [circles]);
+
     const cards = useMemo(() => (
-        circles.map((item) => (
+        safeCircles.map((item) => (
             <CircleCard
                 key={item._id}
                 variant="joined"
@@ -14,9 +22,9 @@ function MyCommunitiesSectionComponent({ circles, onOpenCircle }) {
                 onOpenCircle={onOpenCircle}
             />
         ))
-    ), [circles, onOpenCircle]);
+    ), [safeCircles, onOpenCircle]);
 
-    if (!circles || circles.length === 0) return null;
+    if (!safeCircles.length) return null;
 
     return (
         <View style={styles.section}>

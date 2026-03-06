@@ -22,7 +22,7 @@ const clamp = (value, min = 0, max = 1) => {
 };
 
 export default function EmployerAnalyticsScreen({ navigation }) {
-    useContext(AuthContext);
+    const { userInfo } = useContext(AuthContext);
     const [loading, setLoading] = useState(true);
     const [funnelData, setFunnelData] = useState(null);
     const [performanceData, setPerformanceData] = useState([]);
@@ -30,7 +30,7 @@ export default function EmployerAnalyticsScreen({ navigation }) {
 
     useEffect(() => {
         fetchAnalytics();
-    }, []);
+    }, [userInfo?._id]);
 
     const handleBack = () => {
         if (navigation.canGoBack()) {
@@ -44,30 +44,63 @@ export default function EmployerAnalyticsScreen({ navigation }) {
         try {
             setLoading(true);
             const userInfoStr = await SecureStore.getItemAsync('userInfo');
-            const userInfoStrParsed = JSON.parse(userInfoStr || '{}');
-            const employerId = userInfoStrParsed._id;
+            const persistedUser = JSON.parse(userInfoStr || '{}');
+            const employerId = String(userInfo?._id || persistedUser?._id || '').trim();
 
             if (!employerId) {
                 setFunnelData({});
                 setPerformanceData([]);
+                setFillRateMetrics(null);
                 return;
             }
 
-            const [funnelRes, perfRes, fillRateRes] = await Promise.all([
+            const [funnelSettle, perfSettle, fillRateSettle] = await Promise.allSettled([
                 client.get(`/api/analytics/employer/${employerId}/hiring-funnel`),
                 client.get(`/api/analytics/employer/${employerId}/job-performance`),
-                client.get(`/api/analytics/employer/${employerId}/fill-rate-meter`).catch(() => ({ data: null })),
+                client.get(`/api/analytics/employer/${employerId}/fill-rate-meter`),
             ]);
+
+            const funnelRes = funnelSettle.status === 'fulfilled' ? funnelSettle.value : null;
+            const perfRes = perfSettle.status === 'fulfilled' ? perfSettle.value : null;
+            const fillRateRes = fillRateSettle.status === 'fulfilled' ? fillRateSettle.value : null;
 
             const safeFunnel = funnelRes?.data && typeof funnelRes.data === 'object' ? funnelRes.data : {};
             const perfPayload = perfRes?.data;
             const safePerformance = Array.isArray(perfPayload)
                 ? perfPayload
                 : (Array.isArray(perfPayload?.data) ? perfPayload.data : (Array.isArray(perfPayload?.jobs) ? perfPayload.jobs : []));
+            const safePerformanceMapped = safePerformance.map((row) => ({
+                ...row,
+                title: String(row?.title || 'Untitled Job'),
+                status: String(row?.status || 'Unknown'),
+                views: Number(row?.views || 0),
+                applications: Number(row?.applications || 0),
+                avgMatchScore: Number(row?.avgMatchScore || 0),
+                daysOpen: Number(row?.daysOpen || 0),
+            }));
+
+            const derivedApplied = Number(safeFunnel?.funnel?.applied || 0);
+            const derivedShortlisted = Number(safeFunnel?.funnel?.shortlisted || 0);
+            const derivedHired = Number(safeFunnel?.funnel?.hired || 0);
+            const fallbackApplications = safePerformanceMapped.reduce((sum, row) => sum + Number(row.applications || 0), 0);
+            const fallbackShortlistRate = derivedApplied > 0
+                ? (derivedShortlisted / Math.max(1, derivedApplied))
+                : 0;
+            const fallbackFillRate = derivedApplied > 0
+                ? (derivedHired / Math.max(1, derivedApplied))
+                : 0;
+            const metricsFromApi = fillRateRes?.data?.metrics || null;
+            const mergedFillMetrics = {
+                applicationsCount: Number(metricsFromApi?.applicationsCount ?? fallbackApplications ?? 0),
+                shortlistRate: Number(metricsFromApi?.shortlistRate ?? fallbackShortlistRate ?? 0),
+                fillRate: Number(metricsFromApi?.fillRate ?? fallbackFillRate ?? 0),
+                estimatedTimeToFillDays: Number(metricsFromApi?.estimatedTimeToFillDays ?? (fallbackFillRate > 0 ? Math.max(2, Math.round((1 / fallbackFillRate) * 2.5)) : 21)),
+                cityAverageFillRate: Number(metricsFromApi?.cityAverageFillRate ?? fallbackFillRate ?? 0),
+            };
 
             setFunnelData(safeFunnel);
-            setPerformanceData(safePerformance);
-            setFillRateMetrics(fillRateRes?.data?.metrics || null);
+            setPerformanceData(safePerformanceMapped);
+            setFillRateMetrics(mergedFillMetrics);
 
         } catch (error) {
             logger.error('Failed to fetch analytics', error);
@@ -109,7 +142,9 @@ export default function EmployerAnalyticsScreen({ navigation }) {
                     <Ionicons name="arrow-back" size={24} color="#0f172a" />
                 </TouchableOpacity>
                 <Text style={styles.headerTitle}>Analytics Dashboard</Text>
-                <View style={{ width: 24 }} />
+                <TouchableOpacity onPress={fetchAnalytics} style={styles.refreshButton}>
+                    <Ionicons name="refresh" size={18} color="#7c3aed" />
+                </TouchableOpacity>
             </View>
 
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -193,8 +228,8 @@ export default function EmployerAnalyticsScreen({ navigation }) {
                     <View key={String(job?.jobId || job?._id || index)} style={styles.jobPerfCard}>
                         <View style={styles.jobPerfHeader}>
                             <Text style={styles.jobPerfTitle}>{job?.title || 'Untitled Job'}</Text>
-                            <View style={[styles.statusBadge, { backgroundColor: job?.status === 'Active' ? '#dcfce7' : '#f1f5f9' }]}>
-                                <Text style={[styles.statusText, { color: job?.status === 'Active' ? '#166534' : '#475569' }]}>{job?.status || 'Unknown'}</Text>
+                            <View style={[styles.statusBadge, { backgroundColor: String(job?.status || '').toLowerCase() === 'active' ? '#dcfce7' : '#f1f5f9' }]}>
+                                <Text style={[styles.statusText, { color: String(job?.status || '').toLowerCase() === 'active' ? '#166534' : '#475569' }]}>{job?.status || 'Unknown'}</Text>
                             </View>
                         </View>
 
@@ -262,6 +297,14 @@ const styles = StyleSheet.create({
     },
     backButton: {
         padding: 4,
+    },
+    refreshButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#f3e8ff',
     },
     headerTitle: {
         fontSize: 18,

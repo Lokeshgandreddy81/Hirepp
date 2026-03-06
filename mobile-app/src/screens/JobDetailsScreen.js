@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
-    Alert, ActivityIndicator, Dimensions, Image, Animated, Easing
+    Alert, ActivityIndicator, Dimensions, Image, Animated, Easing, Share
 } from 'react-native';
 import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,6 +56,17 @@ const clamp01 = (value) => {
     return Math.max(0, Math.min(1, numeric));
 };
 
+const toProbabilityRatio = (value) => {
+    const normalized = typeof value === 'string'
+        ? value.replace(/[%\s,]/g, '')
+        : value;
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric <= 1) return clamp01(numeric);
+    if (numeric <= 100) return clamp01(numeric / 100);
+    return clamp01(numeric);
+};
+
 const normalizeImpactToScore = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 0;
@@ -71,6 +82,32 @@ const tierFromProbability = (probability) => {
     return 'REJECT';
 };
 
+const extractApiErrorMessage = (error) => (
+    error?.response?.data?.message
+    || error?.response?.data?.error?.message
+    || error?.originalError?.response?.data?.message
+    || error?.originalError?.response?.data?.error?.message
+    || error?.message
+    || 'Failed to submit application.'
+);
+
+const resolveJobId = (job = {}) => {
+    const candidates = [
+        job?._id,
+        job?.id,
+        job?.jobId,
+        job?.job?._id,
+        job?.job?.id,
+    ];
+    for (const candidate of candidates) {
+        const normalized = String(candidate || '').trim();
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return '';
+};
+
 export default function JobDetailsScreen({ navigation, route }) {
     const insets = useSafeAreaInsets();
     const {
@@ -81,6 +118,7 @@ export default function JobDetailsScreen({ navigation, route }) {
         finalScore: routeFinalScore,
         tier: routeTier,
         explainability: routeExplainability,
+        entrySource,
     } = route.params || {};
     const [applying, setApplying] = useState(false);
     const [applied, setApplied] = useState(false);
@@ -99,7 +137,7 @@ export default function JobDetailsScreen({ navigation, route }) {
     const applyScale = useRef(new Animated.Value(1)).current;
     const successBurstOpacity = useRef(new Animated.Value(0)).current;
     const { dispatch } = useAppState();
-    const { featureFlags } = useAppStore();
+    const { featureFlags, role: appRole } = useAppStore();
     const isMatchUiEnabled = featureFlags?.FEATURE_MATCH_UI_V1 ?? FEATURE_MATCH_UI_V1;
     const isEmployer = viewerRole === 'employer';
 
@@ -113,11 +151,20 @@ export default function JobDetailsScreen({ navigation, route }) {
         requirements: ['Role requirements shared after apply'],
         description: 'The employer will share complete role details once your application is shortlisted.',
     };
-    const safeMatchScore = Number.isFinite(Number(matchScore)) ? Number(matchScore) : 92;
+    const safeJobId = resolveJobId(safeJob);
+    const routeMatchProbability = toProbabilityRatio(routeFinalScore)
+        ?? toProbabilityRatio(matchScore)
+        ?? toProbabilityRatio(job?.matchProbability)
+        ?? toProbabilityRatio(job?.finalScore)
+        ?? toProbabilityRatio(job?.matchScore)
+        ?? (String(routeTier || '').toUpperCase() === 'STRONG'
+            ? 0.9
+            : (String(routeTier || '').toUpperCase() === 'GOOD'
+                ? 0.78
+                : (String(routeTier || '').toUpperCase() === 'POSSIBLE' ? 0.65 : null)));
+    const safeMatchScore = Number.isFinite(Number(matchScore)) ? Number(matchScore) : Math.round((routeMatchProbability || 0) * 100);
     const safeFitReason = fitReason || `Your profile is a strong match for this ${safeJob.title} role based on your 8 years of experience.`;
-    const fallbackProbability = Number.isFinite(Number(routeFinalScore))
-        ? clamp01(routeFinalScore)
-        : clamp01(safeMatchScore / 100);
+    const fallbackProbability = routeMatchProbability ?? 0;
 
     useEffect(() => {
         let isMounted = true;
@@ -126,20 +173,35 @@ export default function JobDetailsScreen({ navigation, route }) {
             try {
                 const userInfoStr = await SecureStore.getItemAsync('userInfo');
                 const userInfo = JSON.parse(userInfoStr || '{}');
-                const normalizedRole = String(userInfo?.primaryRole || userInfo?.role || '').toLowerCase();
+                const normalizedRole = String(
+                    appRole
+                    || userInfo?.activeRole
+                    || userInfo?.primaryRole
+                    || userInfo?.role
+                    || ''
+                ).toLowerCase();
+                const forceWorkerView = String(entrySource || '').toLowerCase() === 'jobs_tab';
 
                 if (!isMounted) return;
-                setViewerRole(normalizedRole === 'employer' ? 'employer' : 'employee');
+                setViewerRole(forceWorkerView ? 'employee' : (normalizedRole === 'employer' ? 'employer' : 'employee'));
 
-                if (!isMatchUiEnabled || normalizedRole === 'employer') {
+                if (!isMatchUiEnabled || (!forceWorkerView && normalizedRole === 'employer')) {
                     return;
                 }
 
                 let workerId = String(workerIdForMatch || userInfo?.workerProfileId || '');
                 if (!workerId) {
+                    workerId = String(await AsyncStorage.getItem('@worker_profile_id') || '');
+                }
+                if (!workerId) {
                     try {
-                        const { data } = await client.get('/api/users/profile');
+                        const { data } = await client.get('/api/users/profile', {
+                            params: { role: 'worker' },
+                        });
                         workerId = String(data?.profile?._id || '');
+                        if (workerId) {
+                            await AsyncStorage.setItem('@worker_profile_id', workerId);
+                        }
                     } catch (profileError) {
                         logger.warn('Worker profile lookup failed in JobDetails', profileError?.message || profileError);
                     }
@@ -155,7 +217,7 @@ export default function JobDetailsScreen({ navigation, route }) {
 
         hydrateContext();
         return () => { isMounted = false; };
-    }, [isMatchUiEnabled, workerIdForMatch]);
+    }, [appRole, entrySource, isMatchUiEnabled, workerIdForMatch]);
 
     useEffect(() => {
         let active = true;
@@ -179,7 +241,7 @@ export default function JobDetailsScreen({ navigation, route }) {
             return;
         }
 
-        const jobId = String(safeJob?._id || safeJob?.id || '');
+        const jobId = safeJobId;
         if (!jobId || !resolvedWorkerId) {
             return;
         }
@@ -190,6 +252,8 @@ export default function JobDetailsScreen({ navigation, route }) {
 
             try {
                 const { data } = await client.get('/api/matches/probability', {
+                    __skipApiErrorHandler: true,
+                    __allowWhenCircuitOpen: true,
                     params: {
                         workerId: resolvedWorkerId,
                         jobId,
@@ -198,10 +262,13 @@ export default function JobDetailsScreen({ navigation, route }) {
 
                 if (!isMounted) return;
 
-                const probability = Number(data?.matchProbability);
-                const normalizedProbability = Number.isFinite(probability)
-                    ? clamp01(probability)
+                const fetchedProbability = toProbabilityRatio(data?.matchProbability);
+                let normalizedProbability = fetchedProbability !== null
+                    ? fetchedProbability
                     : fallbackProbability;
+                if (normalizedProbability <= 0 && fallbackProbability > 0) {
+                    normalizedProbability = fallbackProbability;
+                }
                 const resolvedTier = tierFromProbability(normalizedProbability);
 
                 setMatchProbability(normalizedProbability);
@@ -216,7 +283,7 @@ export default function JobDetailsScreen({ navigation, route }) {
                     tier: resolvedTier,
                 });
             } catch (error) {
-                logger.error('Failed to fetch match probability for JobDetails', error);
+                logger.warn('Failed to fetch match probability for JobDetails', error?.message || error);
                 if (!isMounted) return;
 
                 const resolvedTier = tierFromProbability(fallbackProbability);
@@ -239,19 +306,63 @@ export default function JobDetailsScreen({ navigation, route }) {
 
         fetchProbability();
         return () => { isMounted = false; };
-    }, [fallbackProbability, isEmployer, isMatchUiEnabled, resolvedWorkerId, routeExplainability, safeJob?._id, safeJob?.id]);
+    }, [fallbackProbability, isEmployer, isMatchUiEnabled, resolvedWorkerId, routeExplainability, safeJobId]);
+
+    useEffect(() => {
+        let isMounted = true;
+        const hydrateAppliedState = async () => {
+            if (isEmployer || !safeJobId) return;
+            try {
+                const { data } = await client.get('/api/applications', {
+                    __skipApiErrorHandler: true,
+                    __allowWhenCircuitOpen: true,
+                    params: { limit: 100 },
+                });
+                const list = Array.isArray(data)
+                    ? data
+                    : (Array.isArray(data?.data) ? data.data : []);
+                const alreadyApplied = list.some((item) => {
+                    const appliedJobId = String(item?.job?._id || item?.job || item?.jobId || '').trim();
+                    return appliedJobId && appliedJobId === safeJobId;
+                });
+                if (isMounted && alreadyApplied) {
+                    setApplied(true);
+                }
+            } catch (error) {
+                logger.warn('Failed to hydrate apply state in JobDetails', error?.message || error);
+            }
+        };
+
+        hydrateAppliedState();
+        return () => { isMounted = false; };
+    }, [isEmployer, safeJobId]);
 
     const handleApply = async () => {
+        if (applied) {
+            Alert.alert('Already applied', 'You already applied for this job.');
+            return;
+        }
+
         setApplying(true);
         try {
             const userInfoStr = await SecureStore.getItemAsync('userInfo');
             const userInfo = JSON.parse(userInfoStr || '{}');
-            const workerId = userInfo._id;
+            const workerId = String(userInfo?._id || resolvedWorkerId || userInfo?.workerProfileId || '').trim();
+            const jobId = safeJobId;
+
+            if (!jobId || !workerId) {
+                setApplying(false);
+                Alert.alert('Error', 'Missing job or profile identity. Please reopen this job and retry.');
+                return;
+            }
 
             const { data } = await client.post('/api/applications', {
-                jobId: safeJob._id || safeJob.id,
-                workerId: workerId,
+                jobId,
+                workerId,
                 initiatedBy: 'worker' // As per backend requirement
+            }, {
+                __allowWhenCircuitOpen: true,
+                __skipApiErrorHandler: true,
             });
 
             // Update global state immediately
@@ -312,8 +423,15 @@ export default function JobDetailsScreen({ navigation, route }) {
                 ]
             );
         } catch (error) {
+            const errorMsg = extractApiErrorMessage(error);
+            const normalizedMessage = String(errorMsg || '').toLowerCase();
+            if (normalizedMessage.includes('application already exists') || normalizedMessage.includes('already applied')) {
+                setApplying(false);
+                setApplied(true);
+                Alert.alert('Already applied', 'You already applied for this job.');
+                return;
+            }
             setApplying(false);
-            const errorMsg = error.response?.data?.message || 'Failed to submit application.';
             Alert.alert('Error', errorMsg);
         }
     };
@@ -389,13 +507,34 @@ export default function JobDetailsScreen({ navigation, route }) {
         totalHires: Number(safeJob?.totalHires || safeJob?.hiredCount || safeJob?.companyHires || 0),
         rating: Number(safeJob?.employerRating || safeJob?.rating || safeJob?.employer?.rating || 0),
     };
+    const matchedSkills = Array.isArray(safeJob?.requirements) ? safeJob.requirements.slice(0, 8) : [];
+    const whyMatchBullets = Array.isArray(explanation) && explanation.length
+        ? explanation.slice(0, 3)
+        : [safeFitReason];
+
+    const handleShareJob = async () => {
+        try {
+            await Share.share({
+                title: safeJob?.title || 'Job Opportunity',
+                message: `${safeJob?.title || 'Job'} at ${safeJob?.companyName || 'Company'}\n${safeJob?.location || 'Location'}\nSalary: ${safeJob?.salaryRange || 'Not listed'}`,
+            });
+        } catch (_error) {
+            Alert.alert('Share failed', 'Could not open share sheet right now.');
+        }
+    };
 
     return (
         <View style={styles.container}>
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
                 {/* Banner Header */}
                 <View style={styles.bannerContainer}>
-                    <Image source={{ uri: 'https://images.unsplash.com/photo-1519389950473-47ba0277781c?auto=format&fit=crop&q=80&w=800' }} style={styles.bannerImage} />
+                    <Image
+                        source={{
+                            uri: String(safeJob?.bannerImage || safeJob?.bannerUrl || '').trim()
+                                || `https://ui-avatars.com/api/?name=${encodeURIComponent(String(safeJob?.companyName || 'Company'))}&background=7c3aed&color=fff&size=512`,
+                        }}
+                        style={styles.bannerImage}
+                    />
                     <View style={styles.bannerOverlay} />
                     <View style={[styles.bannerHeader, { paddingTop: insets.top + 16 }]}>
                         <TouchableOpacity
@@ -410,14 +549,6 @@ export default function JobDetailsScreen({ navigation, route }) {
                         >
                             <Text style={styles.iconBtnText}>‹</Text>
                         </TouchableOpacity>
-                        <View style={styles.headerRightActions}>
-                            <TouchableOpacity style={styles.iconBtnBlur} onPress={() => Alert.alert('Share Job', 'Opening share sheet...')}>
-                                <Text style={styles.iconBtnSmallIcon}>↗</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.iconBtnBlur, { marginLeft: 12 }]} onPress={() => setIsSaved(!isSaved)}>
-                                <Text style={styles.iconBtnSmallIcon}>{isSaved ? '♥' : '♡'}</Text>
-                            </TouchableOpacity>
-                        </View>
                     </View>
                 </View>
 
@@ -479,6 +610,55 @@ export default function JobDetailsScreen({ navigation, route }) {
                         </View>
                     ) : null}
 
+                    {!isEmployer ? (
+                        <View style={styles.detailsActionRow}>
+                            <TouchableOpacity style={styles.detailsActionPill} onPress={handleShareJob} activeOpacity={0.85}>
+                                <Text style={styles.detailsActionPillText}>Share</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.detailsActionPill, isSaved && styles.detailsActionPillSaved]}
+                                onPress={() => setIsSaved((prev) => !prev)}
+                                activeOpacity={0.85}
+                            >
+                                <Text style={[styles.detailsActionPillText, isSaved && styles.detailsActionPillSavedText]}>
+                                    {isSaved ? 'Saved' : 'Save'}
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.detailsQuickApplyBtn, (applying || applied) && styles.detailsQuickApplyBtnDisabled]}
+                                onPress={handleApply}
+                                disabled={applying || applied}
+                                activeOpacity={0.9}
+                            >
+                                <Text style={styles.detailsQuickApplyText}>
+                                    {applying ? 'Applying...' : (applied ? 'Applied' : 'Quick Apply')}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
+
+                    {!isEmployer && matchedSkills.length > 0 ? (
+                        <View style={styles.section}>
+                            <Text style={styles.sectionTitle}>Matched Skills</Text>
+                            <View style={styles.tagsRow}>
+                                {matchedSkills.map((req, i) => (
+                                    <View key={i} style={styles.skillTag}>
+                                        <Text style={styles.skillTagText}>{req}</Text>
+                                    </View>
+                                ))}
+                            </View>
+                        </View>
+                    ) : null}
+
+                    {!isEmployer ? (
+                        <View style={styles.section}>
+                            <Text style={styles.sectionTitle}>Why This Match</Text>
+                            {whyMatchBullets.map((bullet, index) => (
+                                <Text key={`why-${index}`} style={styles.whyMatchText}>• {String(bullet || '').trim()}</Text>
+                            ))}
+                        </View>
+                    ) : null}
+
                     {/* Location */}
                     <View style={styles.locationBox}>
                         <IconMapPin size={16} color="#64748b" />
@@ -494,7 +674,7 @@ export default function JobDetailsScreen({ navigation, route }) {
                     </View>
 
                     {/* Requirements */}
-                    {safeJob?.requirements?.length > 0 && (
+                    {isEmployer && safeJob?.requirements?.length > 0 && (
                         <View style={styles.section}>
                             <Text style={styles.sectionTitle}>Requirements</Text>
                             <View style={styles.tagsRow}>
@@ -704,11 +884,9 @@ const styles = StyleSheet.create({
     bannerContainer: { height: 160, position: 'relative' },
     bannerImage: { width: '100%', height: '100%', position: 'absolute' },
     bannerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15, 23, 42, 0.4)' },
-    bannerHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, position: 'absolute', top: 0, left: 0, right: 0 },
+    bannerHeader: { flexDirection: 'row', justifyContent: 'flex-start', paddingHorizontal: 16, position: 'absolute', top: 0, left: 0, right: 0 },
     iconBtnBlur: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center' },
     iconBtnText: { color: '#fff', fontSize: 32, lineHeight: 36, fontWeight: '300', marginLeft: -2 },
-    headerRightActions: { flexDirection: 'row', alignItems: 'center' },
-    iconBtnSmallIcon: { color: '#fff', fontSize: 20, fontWeight: '600' },
 
     // Content
     contentCard: {
@@ -775,6 +953,48 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: '700',
     },
+    detailsActionRow: {
+        marginBottom: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    detailsActionPill: {
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#d9cdfc',
+        backgroundColor: '#faf5ff',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    detailsActionPillText: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#5b21b6',
+    },
+    detailsActionPillSaved: {
+        backgroundColor: '#ede9fe',
+        borderColor: '#c4b5fd',
+    },
+    detailsActionPillSavedText: {
+        color: '#6d28d9',
+    },
+    detailsQuickApplyBtn: {
+        marginLeft: 'auto',
+        borderRadius: 999,
+        paddingHorizontal: 14,
+        paddingVertical: 9,
+        backgroundColor: '#7c3aed',
+    },
+    detailsQuickApplyBtnDisabled: {
+        opacity: 0.65,
+    },
+    detailsQuickApplyText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.2,
+    },
 
     locationBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#f8fbff', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#dbe3ec', marginBottom: 24 },
     locationText: { fontSize: 14, fontWeight: '500', color: '#475569' },
@@ -782,6 +1002,7 @@ const styles = StyleSheet.create({
     section: { marginBottom: 24 },
     sectionTitle: { fontSize: 18, fontWeight: '600', color: '#0f172a', marginBottom: 12 },
     descriptionText: { fontSize: 15, lineHeight: 22, color: '#475569', fontWeight: '400' },
+    whyMatchText: { fontSize: 14, color: '#475569', lineHeight: 22, marginBottom: 6 },
 
     tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
     skillTag: { backgroundColor: '#f8fbff', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: '#dbe3ec' },

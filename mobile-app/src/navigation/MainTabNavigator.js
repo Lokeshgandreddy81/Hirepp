@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, StyleSheet, Platform, Animated, Easing, Pressable } from 'react-native';
-import { useIsFocused, useRoute } from '@react-navigation/native';
+import { useIsFocused } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { triggerHaptic } from '../utils/haptics';
 
 // Custom Icons
@@ -11,14 +12,14 @@ import {
     IconMessageSquare,
     IconBriefcase,
     IconSettings,
-    IconVideo
+    IconVideo,
 } from '../components/Icons';
 
 // Screens
-import ConnectScreen from '../screens/ConnectScreen';
-import ProfilesScreen from '../screens/ProfilesScreen';
+import ConnectContainer from '../containers/ConnectContainer';
+import ProfileContainer from '../containers/ProfileContainer';
 import ApplicationsScreen from '../screens/ApplicationsScreen';
-import JobsScreen from '../screens/JobsScreen';
+import JobsContainer from '../containers/JobsContainer';
 import SettingsScreen from '../screens/SettingsScreen';
 import EmployerDashboardScreen from '../screens/EmployerDashboardScreen';
 import TalentScreen from '../screens/TalentScreen';
@@ -27,34 +28,26 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import { useAppStore } from '../store/AppStore';
 import { trackEvent } from '../services/analytics';
 import { MOTION } from '../theme/motion';
-import { SHADOWS, theme, RADIUS, SPACING } from '../theme/theme';
+import { theme, SPACING } from '../theme/theme';
 
 const Tab = createBottomTabNavigator();
+const TAB_ACCENT = '#7c3aed';
 
 function TabSceneTransition({ children }) {
     const isFocused = useIsFocused();
-    const opacity = useRef(new Animated.Value(isFocused ? 1 : 0)).current;
-    const translateY = useRef(new Animated.Value(isFocused ? 0 : 6)).current;
+    const opacity = useRef(new Animated.Value(isFocused ? 1 : 0.96)).current;
 
     useEffect(() => {
-        Animated.parallel([
-            Animated.timing(opacity, {
-                toValue: isFocused ? 1 : 0.92,
-                duration: MOTION.tabTransitionMs,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }),
-            Animated.timing(translateY, {
-                toValue: isFocused ? 0 : 6,
-                duration: MOTION.tabTransitionMs,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }),
-        ]).start();
-    }, [isFocused, opacity, translateY]);
+        Animated.timing(opacity, {
+            toValue: isFocused ? 1 : 0.96,
+            duration: MOTION.tabTransitionMs,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+    }, [isFocused, opacity]);
 
     return (
-        <Animated.View style={{ flex: 1, opacity, transform: [{ translateY }] }}>
+        <Animated.View style={{ flex: 1, opacity }}>
             {children}
         </Animated.View>
     );
@@ -62,13 +55,11 @@ function TabSceneTransition({ children }) {
 
 export default function MainTabNavigator({ navigation }) {
     const { role } = useAppStore();
-    const route = useRoute();
+    const insets = useSafeAreaInsets();
     const normalizedRole = String(role || '').toLowerCase();
     const isDemandMode = normalizedRole === 'employer' || normalizedRole === 'recruiter';
     const resolvedRole = isDemandMode ? 'employer' : 'worker';
-    const tabState = route?.state;
-    const activeTabRoute = tabState?.routes?.[tabState?.index ?? 0];
-    const shouldHideFab = Boolean(activeTabRoute?.params?.hideFab);
+    const [activeTabName, setActiveTabName] = useState('');
 
     const handleRecordClick = () => {
         navigation.navigate('SmartInterview');
@@ -84,9 +75,10 @@ export default function MainTabNavigator({ navigation }) {
 
     const screenOptions = ({ route }) => ({
         headerShown: false,
+        tabBarHideOnKeyboard: true,
         tabBarIcon: ({ focused }) => {
             let IconComponent;
-            let iconColor = focused ? theme.surface : '#64748b';
+            let iconColor = focused ? TAB_ACCENT : '#64748b';
 
             if (route.name === 'Connect') {
                 IconComponent = IconGlobe;
@@ -98,7 +90,7 @@ export default function MainTabNavigator({ navigation }) {
                 IconComponent = IconBriefcase;
             } else if (route.name === 'Notifications') {
                 return (
-                    <View style={[styles.iconContainer, focused && styles.iconContainerFocused]}>
+                    <View style={styles.iconContainer}>
                         <Ionicons name="notifications" size={24} color={iconColor} />
                     </View>
                 );
@@ -106,27 +98,35 @@ export default function MainTabNavigator({ navigation }) {
                 IconComponent = IconSettings;
             }
 
+            if (!IconComponent) {
+                return <View style={styles.iconContainer} />;
+            }
+
             return (
-                <View style={[styles.iconContainer, focused && styles.iconContainerFocused]}>
-                    <IconComponent size={24} color={iconColor} style={focused ? { fill: theme.surface } : {}} />
+                <View style={styles.iconContainer}>
+                    <IconComponent size={24} color={iconColor} />
                 </View>
             );
         },
-        tabBarActiveTintColor: theme.primary,
+        tabBarActiveTintColor: TAB_ACCENT,
         tabBarInactiveTintColor: '#64748b',
         tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '600',
-            marginTop: -4,
-            marginBottom: Platform.OS === 'android' ? 8 : 0,
+            fontSize: 10,
+            fontWeight: '500',
+            marginTop: 1,
+            marginBottom: Platform.OS === 'android' ? 4 : 0,
         },
         tabBarStyle: {
-            height: Platform.OS === 'ios' ? 92 : 72,
-            paddingTop: SPACING.xs,
-            backgroundColor: 'rgba(255,255,255,0.97)',
+            height: Platform.OS === 'ios' ? 80 : 66,
+            paddingTop: 4,
+            backgroundColor: '#ffffff',
             borderTopWidth: 1,
-            borderTopColor: '#e5ebf5',
-            ...SHADOWS.lg,
+            borderTopColor: '#e2e8f0',
+            shadowColor: '#0f172a',
+            shadowOffset: { width: 0, height: -1 },
+            shadowOpacity: 0.04,
+            shadowRadius: 6,
+            elevation: 8,
         },
     });
 
@@ -134,13 +134,13 @@ export default function MainTabNavigator({ navigation }) {
         {
             name: 'Connect',
             roles: ['worker', 'employer'],
-            component: ConnectScreen,
+            component: ConnectContainer,
             tabBarLabel: 'Connect',
         },
         {
             name: 'Profiles',
             roles: ['worker'],
-            component: ProfilesScreen,
+            component: ProfileContainer,
             tabBarLabel: 'Profile',
         },
         {
@@ -155,13 +155,13 @@ export default function MainTabNavigator({ navigation }) {
             component: ApplicationsScreen,
             tabBarLabelByRole: {
                 worker: 'Apps',
-                employer: 'Applications',
+                employer: 'Apps',
             },
         },
         {
             name: 'Jobs',
             roles: ['worker'],
-            component: JobsScreen,
+            component: JobsContainer,
             tabBarLabel: 'Find Work',
             wrapWithBoundary: false,
         },
@@ -181,16 +181,44 @@ export default function MainTabNavigator({ navigation }) {
     ];
 
     const visibleTabs = tabDefinitions.filter((tab) => tab.roles.includes(resolvedRole));
+    const roleLandingTab = resolvedRole === 'employer' ? 'My Jobs' : 'Jobs';
+    const initialTabName = visibleTabs.some((tab) => tab.name === roleLandingTab)
+        ? roleLandingTab
+        : String(visibleTabs[0]?.name || 'Connect');
+
+    useEffect(() => {
+        const defaultTab = initialTabName;
+        if (!defaultTab) {
+            setActiveTabName('');
+            return;
+        }
+        setActiveTabName((current) => (current && visibleTabs.some((tab) => tab.name === current) ? current : defaultTab));
+    }, [initialTabName, visibleTabs]);
+
+    const fabAllowedTabs = resolvedRole === 'employer'
+        ? new Set(['Talent'])
+        : new Set(['Profiles']);
+    const showSmartInterviewFab = fabAllowedTabs.has(activeTabName);
 
     return (
         <View style={styles.container}>
+            <View
+                pointerEvents="none"
+                style={[styles.statusBarTint, { height: insets.top + 3 }]}
+            />
             <Tab.Navigator
+                key={`main-tabs-${resolvedRole}`}
+                initialRouteName={initialTabName}
                 sceneContainerStyle={styles.sceneContainer}
                 screenOptions={screenOptions}
                 screenListeners={({ route }) => ({
                     tabPress: () => {
                         handleMainTabPress(route.name);
-                    }
+                        setActiveTabName(route.name);
+                    },
+                    focus: () => {
+                        setActiveTabName(route.name);
+                    },
                 })}
             >
                 {visibleTabs.map((tab) => {
@@ -224,7 +252,7 @@ export default function MainTabNavigator({ navigation }) {
                 })}
             </Tab.Navigator>
 
-            {!shouldHideFab ? (
+            {showSmartInterviewFab ? (
                 <View style={styles.fabGroup}>
                     <Pressable
                         android_ripple={{ color: 'rgba(255,255,255,0.24)', borderless: false, radius: 28 }}
@@ -248,18 +276,22 @@ const styles = StyleSheet.create({
         position: 'relative',
         backgroundColor: theme.background,
     },
+    statusBarTint: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        backgroundColor: TAB_ACCENT,
+        zIndex: 30,
+    },
     sceneContainer: {
         backgroundColor: theme.background,
     },
     iconContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        padding: SPACING.xs,
-        borderRadius: RADIUS.md,
-    },
-    iconContainerFocused: {
-        backgroundColor: theme.primary,
-        ...SHADOWS.md,
+        width: 28,
+        height: 24,
     },
     fabGroup: {
         position: 'absolute',
@@ -271,10 +303,10 @@ const styles = StyleSheet.create({
         width: 56,
         height: 56,
         borderRadius: 28,
-        backgroundColor: theme.primary,
+        backgroundColor: TAB_ACCENT,
         justifyContent: 'center',
         alignItems: 'center',
-        shadowColor: theme.primary,
+        shadowColor: TAB_ACCENT,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.34,
         shadowRadius: 12,

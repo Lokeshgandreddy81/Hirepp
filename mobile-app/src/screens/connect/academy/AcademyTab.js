@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { IconAward, IconBookOpen, IconSparkles } from '../../../components/Icons';
 import MentorCard from './MentorCard';
 import { RADIUS } from '../../../theme/theme';
@@ -92,38 +92,65 @@ function AcademyTabComponent({
     enrolledCourseIds,
     mentors,
     connectedMentorIds,
+    isLoading,
+    isMentorRefreshing,
+    academyError,
     onEnrollCourse,
     onConnectMentor,
+    onRefreshMentors,
+    onRetryAcademy,
+    onBecomeMentor,
+    onStartReferralAction,
     contentContainerStyle,
 }) {
+    const safeAcademyCourses = useMemo(() => (
+        Array.isArray(academyCourses)
+            ? academyCourses.filter((course) => course && typeof course === 'object')
+            : []
+    ), [academyCourses]);
+    const safeEnrolledCourses = useMemo(() => (
+        Array.isArray(enrolledCourses)
+            ? enrolledCourses.filter((item) => item && typeof item === 'object')
+            : []
+    ), [enrolledCourses]);
+    const safeMentors = Array.isArray(mentors)
+        ? mentors.filter((mentor) => mentor && typeof mentor === 'object')
+        : [];
+    const safeEnrolledCourseIds = enrolledCourseIds instanceof Set ? enrolledCourseIds : new Set();
+    const safeConnectedMentorIds = connectedMentorIds instanceof Set ? connectedMentorIds : new Set();
+
     const courses = useMemo(() => (
-        academyCourses.map((course) => ({
-            id: course.id,
-            title: course.title,
-            instructor: course.instructor || 'HireCircle Academy',
-            duration: course.duration || `${Math.max(0, Number(course.lessonCount || 0))} lessons`,
-            level: course.level ? `${course.level.charAt(0).toUpperCase()}${course.level.slice(1)}` : 'Beginner',
-            enrolled: Number(course.enrolledCount || enrolledCourses.filter((item) => item.courseId === course.id).length || 0),
-            lessonCount: Math.max(0, Number(course.lessonCount || 0)),
-            thumb: course.thumb || course.thumbnailUrl || course.coverImageUrl || '',
-        }))
-    ), [academyCourses, enrolledCourses]);
+        safeAcademyCourses.map((course, index) => {
+            const safeCourse = (course && typeof course === 'object') ? course : {};
+            const courseId = String(safeCourse.id || safeCourse._id || `course-${index}`);
+            return {
+                id: courseId,
+                title: String(safeCourse.title || 'Untitled Course'),
+                instructor: safeCourse.instructor || 'HireCircle Academy',
+                duration: safeCourse.duration || `${Math.max(0, Number(safeCourse.lessonCount || 0))} lessons`,
+                level: safeCourse.level ? `${safeCourse.level.charAt(0).toUpperCase()}${safeCourse.level.slice(1)}` : 'Beginner',
+                enrolled: Number(safeCourse.enrolledCount || safeEnrolledCourses.filter((item) => String(item?.courseId || '') === courseId).length || 0),
+                lessonCount: Math.max(0, Number(safeCourse.lessonCount || 0)),
+                thumb: safeCourse.thumb || safeCourse.thumbnailUrl || safeCourse.coverImageUrl || '',
+            };
+        })
+    ), [safeAcademyCourses, safeEnrolledCourses]);
 
     const totalCourses = courses.length;
-    const doneCourses = Math.min(enrolledCourseIds.size, totalCourses);
+    const doneCourses = Math.min(safeEnrolledCourseIds.size, totalCourses);
     const progressPct = useMemo(() => (
         totalCourses > 0 ? Math.round((doneCourses / totalCourses) * 100) : 0
     ), [doneCourses, totalCourses]);
-    const karmaEarned = useMemo(() => (enrolledCourseIds.size * 120), [enrolledCourseIds]);
+    const karmaEarned = useMemo(() => (safeEnrolledCourseIds.size * 120), [safeEnrolledCourseIds]);
     const progressFillStyle = useMemo(() => [styles.progressFill, { width: `${progressPct}%` }], [progressPct]);
 
     const isCourseEnrolled = useCallback((courseId) => (
-        enrolledCourseIds.has(courseId)
-    ), [enrolledCourseIds]);
+        safeEnrolledCourseIds.has(courseId)
+    ), [safeEnrolledCourseIds]);
 
     const isMentorConnected = useCallback((mentorId) => (
-        connectedMentorIds.has(mentorId)
-    ), [connectedMentorIds]);
+        safeConnectedMentorIds.has(mentorId)
+    ), [safeConnectedMentorIds]);
 
     const courseCards = useMemo(() => (
         courses.map((item) => (
@@ -137,7 +164,7 @@ function AcademyTabComponent({
     ), [courses, isCourseEnrolled, onEnrollCourse]);
 
     const mentorCards = useMemo(() => (
-        mentors.map((item) => (
+        safeMentors.map((item) => (
             <MentorCard
                 key={item.id}
                 mentor={item}
@@ -145,7 +172,11 @@ function AcademyTabComponent({
                 onConnect={onConnectMentor}
             />
         ))
-    ), [mentors, isMentorConnected, onConnectMentor]);
+    ), [safeMentors, isMentorConnected, onConnectMentor]);
+
+    const mentorRefreshLabel = isMentorRefreshing ? 'Running Match...' : 'Run AI Mentor Match';
+    const showCourseLoading = Boolean(isLoading) && courseCards.length === 0;
+    const showMentorLoading = Boolean(isLoading || isMentorRefreshing) && mentorCards.length === 0;
 
     return (
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={contentContainerStyle}>
@@ -169,26 +200,88 @@ function AcademyTabComponent({
                 </Text>
             </View>
 
+            {academyError ? (
+                <View style={styles.statusCard}>
+                    <Text style={styles.statusText}>{academyError}</Text>
+                    <TouchableOpacity
+                        style={styles.statusRetryButton}
+                        activeOpacity={0.85}
+                        onPress={onRetryAcademy}
+                    >
+                        <Text style={styles.statusRetryButtonText}>Retry</Text>
+                    </TouchableOpacity>
+                </View>
+            ) : null}
+
             <View style={styles.sectionHeaderRow}>
                 <IconAward size={16} color={connectPalette.accent} />
                 <Text style={styles.sectionTitle}>TOP COURSES FOR YOU</Text>
             </View>
 
-            {courseCards.length > 0 ? courseCards : (
+            {showCourseLoading ? (
+                <View style={styles.statusCard}>
+                    <ActivityIndicator size="small" color={connectPalette.accent} />
+                    <Text style={styles.statusText}>Loading academy courses...</Text>
+                </View>
+            ) : null}
+
+            {!showCourseLoading && (courseCards.length > 0 ? courseCards : (
                 <View style={styles.emptyCard}>
-                    <Text style={styles.emptyTitle}>No posts yet.</Text>
+                    <Text style={styles.emptyTitle}>No courses yet.</Text>
                     <Text style={styles.emptySubtitle}>Academy courses will appear here once published.</Text>
                 </View>
-            )}
+            ))}
 
             <View style={styles.academyCard}>
                 <View style={styles.headerRow}>
                     <IconSparkles size={16} color={connectPalette.accent} />
                     <Text style={styles.headerTitle}>AI MENTOR MATCH</Text>
                 </View>
-                {mentorCards.length > 0 ? mentorCards : (
-                    <Text style={styles.emptySubtitle}>No mentors available right now.</Text>
-                )}
+                <View style={styles.mentorActionRow}>
+                    <TouchableOpacity
+                        style={styles.mentorRefreshButton}
+                        onPress={onRefreshMentors}
+                        activeOpacity={0.85}
+                        disabled={isMentorRefreshing}
+                    >
+                        <Text style={styles.mentorRefreshButtonText}>{mentorRefreshLabel}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.mentorBecomeButton}
+                        onPress={onBecomeMentor}
+                        activeOpacity={0.85}
+                    >
+                        <Text style={styles.mentorBecomeButtonText}>Become a Mentor</Text>
+                    </TouchableOpacity>
+                </View>
+
+                {showMentorLoading ? (
+                    <View style={styles.statusCard}>
+                        <ActivityIndicator size="small" color={connectPalette.accent} />
+                        <Text style={styles.statusText}>Matching mentors for you...</Text>
+                    </View>
+                ) : (mentorCards.length > 0 ? mentorCards : (
+                    <View style={styles.mentorEmptyWrap}>
+                        <Text style={styles.emptySubtitle}>No mentors available yet. Run the AI match to fetch mentors.</Text>
+                    </View>
+                ))}
+            </View>
+
+            <View style={styles.academyCard}>
+                <View style={styles.headerRow}>
+                    <IconAward size={16} color={connectPalette.accent} />
+                    <Text style={styles.headerTitle}>REFERRAL ECONOMY</Text>
+                </View>
+                <Text style={styles.emptySubtitle}>
+                    Start your referral journey and unlock rewards as your network grows.
+                </Text>
+                <TouchableOpacity
+                    style={styles.referralButton}
+                    onPress={onStartReferralAction}
+                    activeOpacity={0.85}
+                >
+                    <Text style={styles.referralButtonText}>Start Referring</Text>
+                </TouchableOpacity>
             </View>
 
             <View style={styles.bottomSpace} />
@@ -421,5 +514,85 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: connectPalette.muted,
         lineHeight: 18,
+    },
+    statusCard: {
+        borderRadius: RADIUS.xl,
+        borderWidth: 1,
+        borderColor: connectPalette.line,
+        backgroundColor: connectPalette.surface,
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        marginBottom: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    statusText: {
+        flex: 1,
+        fontSize: 12,
+        color: connectPalette.muted,
+        lineHeight: 18,
+    },
+    statusRetryButton: {
+        backgroundColor: connectPalette.accent,
+        borderRadius: RADIUS.md,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+    },
+    statusRetryButtonText: {
+        color: connectPalette.surface,
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.2,
+    },
+    mentorEmptyWrap: {
+        gap: 10,
+    },
+    mentorActionRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 10,
+    },
+    mentorRefreshButton: {
+        alignSelf: 'flex-start',
+        backgroundColor: connectPalette.accent,
+        borderRadius: RADIUS.md,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    mentorRefreshButtonText: {
+        color: connectPalette.surface,
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.3,
+    },
+    mentorBecomeButton: {
+        alignSelf: 'flex-start',
+        backgroundColor: connectPalette.surface,
+        borderWidth: 1,
+        borderColor: connectPalette.lineStrong,
+        borderRadius: RADIUS.md,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+    },
+    mentorBecomeButtonText: {
+        color: connectPalette.text,
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.2,
+    },
+    referralButton: {
+        marginTop: 12,
+        alignSelf: 'flex-start',
+        backgroundColor: connectPalette.accent,
+        borderRadius: RADIUS.md,
+        paddingHorizontal: 14,
+        paddingVertical: 9,
+    },
+    referralButtonText: {
+        color: connectPalette.surface,
+        fontSize: 11,
+        fontWeight: '800',
+        letterSpacing: 0.25,
     },
 });

@@ -15,6 +15,7 @@ const getCategoryTone = (label = '') => {
 
 const PulseGigCard = memo(function PulseGigCardComponent({
     gig,
+    canApply,
     isApplied,
     onApplyGig,
 }) {
@@ -26,8 +27,9 @@ const PulseGigCard = memo(function PulseGigCardComponent({
     const applyTextStyle = isApplied ? styles.applyBtnTextDone : styles.applyBtnText;
 
     const handleApply = useCallback(() => {
-        if (!isApplied) onApplyGig(gig);
-    }, [isApplied, onApplyGig, gig]);
+        if (!canApply || isApplied) return;
+        onApplyGig(gig);
+    }, [canApply, isApplied, onApplyGig, gig]);
 
     return (
         <View style={styles.gigCard}>
@@ -57,9 +59,15 @@ const PulseGigCard = memo(function PulseGigCardComponent({
                 <Text style={styles.gigMeta}>📍 {gig.distance}  🕐 {gig.timePosted}</Text>
                 <View style={styles.gigBottomRight}>
                     <Text style={styles.gigPay}>{gig.pay}</Text>
-                    <TouchableOpacity style={applyBtnStyle} onPress={handleApply} disabled={isApplied}>
-                        <Text style={applyTextStyle}>{isApplied ? 'SENT ✓' : 'APPLY NOW'}</Text>
-                    </TouchableOpacity>
+                    {canApply ? (
+                        <TouchableOpacity style={applyBtnStyle} onPress={handleApply} disabled={isApplied}>
+                            <Text style={applyTextStyle}>{isApplied ? 'SENT ✓' : 'APPLY NOW'}</Text>
+                        </TouchableOpacity>
+                    ) : (
+                        <View style={styles.updateBadge}>
+                            <Text style={styles.updateBadgeText}>UPDATE</Text>
+                        </View>
+                    )}
                 </View>
             </View>
         </View>
@@ -71,31 +79,38 @@ const PulseProCard = memo(function PulseProCardComponent({
     isRequested,
     onHirePro,
 }) {
+    const safePro = (pro && typeof pro === 'object') ? pro : {};
+    const proName = String(safePro.name || 'Professional').trim() || 'Professional';
+    const proRole = String(safePro.role || 'Pro').trim() || 'Pro';
+    const proDistance = String(safePro.distance || 'Nearby').trim() || 'Nearby';
+    const proKarma = String(safePro.karma || '0').trim() || '0';
+    const proAvatar = String(safePro.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(proName)}&background=8b3dff&color=fff&rounded=true`);
+
     const availabilityDotStyle = useMemo(() => ({
-        backgroundColor: pro.available ? connectPalette.success : connectPalette.subtle,
-    }), [pro.available]);
+        backgroundColor: safePro.available ? connectPalette.success : connectPalette.subtle,
+    }), [safePro.available]);
 
     const hireBtnStyle = isRequested ? styles.hireBtnDone : styles.hireBtn;
     const hireBtnTextStyle = isRequested ? styles.hireBtnTextDone : styles.hireBtnText;
 
     const handleHire = useCallback(() => {
-        if (!isRequested) onHirePro(pro);
-    }, [isRequested, onHirePro, pro]);
+        if (!isRequested) onHirePro(safePro);
+    }, [isRequested, onHirePro, safePro]);
 
     return (
         <View style={styles.proCard}>
             <View style={styles.proAvatarWrap}>
-                <Image source={{ uri: pro.avatar }} style={styles.proAvatar} />
+                <Image source={{ uri: proAvatar }} style={styles.proAvatar} />
                 <View style={[styles.availabilityDot, availabilityDotStyle]} />
             </View>
             <View style={styles.proMain}>
-                <Text style={styles.proName}>{pro.name}</Text>
-                <Text style={styles.proMeta}>{pro.role} · 📍 {pro.distance}</Text>
+                <Text style={styles.proName}>{proName}</Text>
+                <Text style={styles.proMeta}>{proRole} · 📍 {proDistance}</Text>
             </View>
             <View style={styles.karmaBadge}>
-                <Text style={styles.karmaBadgeText}>{pro.karma} KARMA</Text>
+                <Text style={styles.karmaBadgeText}>{proKarma} KARMA</Text>
             </View>
-            {pro.available ? (
+            {safePro.available ? (
                 <TouchableOpacity style={hireBtnStyle} onPress={handleHire} disabled={isRequested}>
                     <Text style={hireBtnTextStyle}>{isRequested ? 'SENT ✓' : 'HIRE'}</Text>
                 </TouchableOpacity>
@@ -110,6 +125,8 @@ const PulseProCard = memo(function PulseProCardComponent({
 
 function PulseTabComponent({
     pulseItems,
+    nearbyPros,
+    isEmployerRole,
     appliedGigIds,
     hiredProIds,
     radarRefreshing,
@@ -119,8 +136,19 @@ function PulseTabComponent({
     onHirePro,
     contentContainerStyle,
 }) {
-    const nearbyGigs = useMemo(() => pulseItems, [pulseItems]);
-    const nearbyPros = useMemo(() => [], []);
+    const safePulseItems = useMemo(() => (
+        Array.isArray(pulseItems)
+            ? pulseItems.filter((item) => item && typeof item === 'object')
+            : []
+    ), [pulseItems]);
+    const safeAppliedGigIds = appliedGigIds instanceof Set ? appliedGigIds : new Set();
+    const safeHiredProIds = hiredProIds instanceof Set ? hiredProIds : new Set();
+    const nearbyGigs = useMemo(() => safePulseItems, [safePulseItems]);
+    const safeNearbyPros = useMemo(() => (
+        Array.isArray(nearbyPros)
+            ? nearbyPros.filter((item) => item && typeof item === 'object')
+            : []
+    ), [nearbyPros]);
 
     const pulseScale = pulseAnim.interpolate({
         inputRange: [0.3, 1],
@@ -131,18 +159,22 @@ function PulseTabComponent({
         transform: [{ scale: pulseScale }],
     }), [pulseAnim, pulseScale]);
 
-    const keyExtractor = useCallback((item) => String(item.id), []);
+    const keyExtractor = useCallback((item, index) => String(item?.id || `pulse-${index}`), []);
 
     const renderGigItem = useCallback(({ item }) => {
-        const isApplied = appliedGigIds.has(item.id);
+        const safeItem = (item && typeof item === 'object') ? item : {};
+        const actionId = String(safeItem.jobId || safeItem.id || '').trim();
+        const canApply = Boolean(safeItem?.canApply) && Boolean(String(safeItem?.jobId || '').trim());
+        const isApplied = canApply && safeAppliedGigIds.has(actionId);
         return (
             <PulseGigCard
-                gig={item}
+                gig={safeItem}
+                canApply={canApply}
                 isApplied={isApplied}
                 onApplyGig={onApplyGig}
             />
         );
-    }, [appliedGigIds, onApplyGig]);
+    }, [safeAppliedGigIds, onApplyGig]);
 
     const listHeader = useMemo(() => (
         <>
@@ -153,7 +185,7 @@ function PulseTabComponent({
                         <View style={styles.pulseRadarInner} />
                     </Animated.View>
                     <Text style={styles.pulseTitle}>Live Radar</Text>
-                    <Text style={styles.pulseSub}>{nearbyGigs.length} urgent gigs · {nearbyPros.length} pros within 2km</Text>
+                    <Text style={styles.pulseSub}>{nearbyGigs.length} urgent gigs · {safeNearbyPros.length} pros within 2km</Text>
                     <View style={styles.trendingTag}>
                         <Text style={styles.trendingTagText}>Trending right now</Text>
                     </View>
@@ -174,27 +206,33 @@ function PulseTabComponent({
                 <Text style={styles.sectionTitle}>URGENT GIGS NEAR YOU</Text>
             </View>
         </>
-    ), [nearbyGigs.length, nearbyPros.length, pulseRadarAnimatedStyle, radarRefreshing, onRefreshRadar]);
+    ), [nearbyGigs.length, safeNearbyPros.length, pulseRadarAnimatedStyle, radarRefreshing, onRefreshRadar]);
 
     const listFooter = useMemo(() => (
         <>
-            {nearbyPros.length > 0 ? (
+            {safeNearbyPros.length > 0 ? (
                 <>
                     <View style={[styles.sectionHeaderRow, styles.sectionHeaderMargin]}>
                         <IconUsers size={16} color={connectPalette.accent} />
-                        <Text style={styles.sectionTitle}>PROFESSIONALS ONLINE NEARBY</Text>
+                        <Text style={styles.sectionTitle}>PROFESSIONALS READY TO HIRE</Text>
                     </View>
-                    {nearbyPros.map((pro) => {
-                        const isRequested = hiredProIds.has(pro.id);
+                    {safeNearbyPros.map((pro, index) => {
+                        const proId = String(pro?.id || `pro-${index}`);
+                        const isRequested = safeHiredProIds.has(proId);
                         return (
-                            <PulseProCard key={pro.id} pro={pro} isRequested={isRequested} onHirePro={onHirePro} />
+                            <PulseProCard key={proId} pro={pro} isRequested={isRequested} onHirePro={onHirePro} />
                         );
                     })}
                 </>
+            ) : isEmployerRole ? (
+                <View style={styles.emptyStateCard}>
+                    <Text style={styles.emptyStateTitle}>No candidates yet.</Text>
+                    <Text style={styles.emptyStateSubtitle}>Post jobs and applicants will surface here with ranked match quality.</Text>
+                </View>
             ) : null}
             <View style={styles.bottomSpacer} />
         </>
-    ), [nearbyPros, hiredProIds, onHirePro]);
+    ), [safeNearbyPros, safeHiredProIds, onHirePro, isEmployerRole]);
 
     return (
         <FlatList
@@ -438,6 +476,20 @@ const styles = StyleSheet.create({
     },
     applyBtnTextDone: {
         color: connectPalette.accentDark,
+    },
+    updateBadge: {
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: '#dbe7ff',
+        backgroundColor: '#f8fbff',
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+    },
+    updateBadgeText: {
+        fontSize: 10,
+        fontWeight: '800',
+        color: '#64748b',
+        letterSpacing: 0.3,
     },
     proCard: {
         backgroundColor: connectPalette.surface,

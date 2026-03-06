@@ -1,7 +1,6 @@
 import React, { memo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { RADIUS } from '../../../theme/theme';
-import { connectPalette } from '../connectPalette';
 
 function BountyPostComponent({ reward }) {
     return (
@@ -22,28 +21,34 @@ const styles = StyleSheet.create({
         position: 'relative',
         zIndex: 10,
         marginBottom: 16,
+        borderWidth: 1,
+        borderColor: '#d1d5db',
+        borderRadius: RADIUS.md,
+        backgroundColor: '#fafafa',
+        paddingHorizontal: 12,
+        paddingVertical: 10,
     },
     label: {
-        color: '#e9ddff',
+        color: '#6b7280',
         fontSize: 11,
-        fontWeight: '900',
+        fontWeight: '800',
         letterSpacing: 1,
         marginBottom: 4,
     },
     reward: {
-        color: connectPalette.surface,
-        fontSize: 24,
+        color: '#111111',
+        fontSize: 22,
         fontWeight: '900',
         marginBottom: 12,
     },
     button: {
-        backgroundColor: connectPalette.surface,
+        backgroundColor: '#111111',
         paddingVertical: 10,
         alignItems: 'center',
         borderRadius: RADIUS.md,
     },
     buttonText: {
-        color: connectPalette.accentDark,
+        color: '#ffffff',
         fontSize: 12,
         fontWeight: '900',
     },

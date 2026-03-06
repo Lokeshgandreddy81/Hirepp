@@ -1,158 +1,223 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { IoBriefcase, IoPerson } from 'react-icons/io5';
+import { IoBriefcase, IoPerson, IoSparkles } from 'react-icons/io5';
 
 const LandingPage = () => {
   const navigate = useNavigate();
+  const [activeRole, setActiveRole] = useState(null);
+
+  const roleCards = [
+    {
+      key: 'candidate',
+      title: "I'm a Job Seeker",
+      description: 'Find jobs and get matched by AI.',
+      icon: IoPerson,
+    },
+    {
+      key: 'recruiter',
+      title: 'Hybrid Mode',
+      description: 'Post jobs and find top talent fast.',
+      icon: IoBriefcase,
+    },
+  ];
 
   const handleRoleSelect = (role) => {
-    // We save the selected role to localStorage so the Login/Signup pages know who this is
+    setActiveRole(role);
     localStorage.setItem('selectedRole', role);
-    navigate('/login'); // Redirect to Login after selection
+    setTimeout(() => {
+      navigate('/login');
+    }, 220);
   };
 
   return (
-    <div style={styles.container}>
-      {/* Logo Icon Placeholder */}
-      <div style={styles.logoContainer}>
-        <div style={styles.logoIcon}>✨</div>
-      </div>
+    <div style={styles.page}>
+      <div style={styles.phoneFrame}>
+        <div style={styles.screen}>
+          <div style={styles.brandBlock}>
+            <div style={styles.logoBadge}>
+              <IoSparkles size={34} />
+            </div>
+            <h1 style={styles.title}>
+              Hire<span style={styles.titleAccent}>Circle</span>
+            </h1>
+            <p style={styles.subtitle}>Smart AI matching for everyone.</p>
+          </div>
 
-      <h1 style={styles.title}>Hire App</h1>
-      <p style={styles.subtitle}>Smart AI matching for everyone.</p>
+          <div style={styles.cardContainer}>
+            {roleCards.map((role) => {
+              const RoleIcon = role.icon;
+              const isActive = activeRole === role.key;
+              return (
+                <motion.button
+                  key={role.key}
+                  whileTap={{ scale: 0.985 }}
+                  whileHover={{ y: -1 }}
+                  animate={isActive ? { scale: 1.005 } : { scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+                  style={{ ...styles.card, ...(isActive ? styles.cardActive : null) }}
+                  onClick={() => handleRoleSelect(role.key)}
+                >
+                  <div style={{ ...styles.iconBox, ...(isActive ? styles.iconBoxActive : null) }}>
+                    <RoleIcon size={33} />
+                  </div>
 
-      <div style={styles.cardContainer}>
-        {/* Job Seeker Card */}
-        <motion.div 
-          whileTap={{ scale: 0.98 }}
-          style={styles.card} 
-          onClick={() => handleRoleSelect('candidate')}
-        >
-          <div style={{...styles.iconBox, background: '#E0E7FF', color: '#4F46E5'}}>
-            <IoPerson size={24} />
-          </div>
-          <div style={styles.cardText}>
-            <h3 style={styles.cardTitle}>I'm a Job Seeker</h3>
-            <p style={styles.cardDesc}>Find jobs and get matched by AI.</p>
-          </div>
-          <div style={styles.decorationCircle}></div>
-        </motion.div>
+                  <div style={styles.cardText}>
+                    <h3 style={{ ...styles.cardTitle, ...(isActive ? styles.cardTitleActive : null) }}>{role.title}</h3>
+                    <p style={styles.cardDesc}>{role.description}</p>
+                  </div>
 
-        {/* Employer Card */}
-        <motion.div 
-          whileTap={{ scale: 0.98 }}
-          style={styles.card} 
-          onClick={() => handleRoleSelect('recruiter')}
-        >
-          <div style={{...styles.iconBox, background: '#FAE8FF', color: '#D946EF'}}>
-            <IoBriefcase size={24} />
+                  <div style={styles.decorationCircle}></div>
+                </motion.button>
+              );
+            })}
           </div>
-          <div style={styles.cardText}>
-            <h3 style={styles.cardTitle}>I'm an Employer</h3>
-            <p style={styles.cardDesc}>Post jobs and find top talent fast.</p>
-          </div>
-          <div style={styles.decorationCircle}></div>
-        </motion.div>
+        </div>
       </div>
     </div>
   );
 };
 
 const styles = {
-  container: {
+  page: {
     minHeight: '100vh',
     display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'white',
-    padding: '20px',
+    alignItems: 'center',
+    background: 'linear-gradient(180deg, #F0F3F9 0%, #E9EEF7 100%)',
+    padding: '20px 16px',
     fontFamily: "'Inter', sans-serif",
   },
-  logoContainer: {
-    marginBottom: '15px',
+  phoneFrame: {
+    width: 'min(92vw, 470px)',
+    borderRadius: '48px',
+    border: '14px solid #1F2D4A',
+    backgroundColor: '#FFFFFF',
+    boxShadow: '0 26px 80px rgba(31, 46, 77, 0.2)',
+    overflow: 'hidden',
   },
-  logoIcon: {
-    width: '60px',
-    height: '60px',
-    backgroundColor: '#F3E8FF', // Light purple bg
-    borderRadius: '16px',
+  screen: {
+    minHeight: '735px',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    padding: '40px 28px 40px',
+    background: 'radial-gradient(circle at 85% 15%, rgba(167, 139, 250, 0.12), transparent 45%), #FFFFFF',
+  },
+  brandBlock: {
+    alignItems: 'center',
+    display: 'flex',
+    flexDirection: 'column',
+    marginBottom: '40px',
+    textAlign: 'center',
+  },
+  logoBadge: {
+    width: '88px',
+    height: '88px',
+    borderRadius: '24px',
+    backgroundColor: '#ECE1FF',
+    color: '#7C3AED',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: '30px',
-    color: '#9333EA',
+    marginBottom: '20px',
   },
   title: {
-    fontSize: '28px',
+    fontSize: '62px',
     fontWeight: '800',
-    color: '#111827',
-    marginBottom: '8px',
+    color: '#0F172A',
+    marginBottom: '10px',
     marginTop: '0',
+    letterSpacing: '-2.1px',
+    lineHeight: 1,
+  },
+  titleAccent: {
+    color: '#7C3AED',
   },
   subtitle: {
-    color: '#6B7280',
-    fontSize: '16px',
-    marginBottom: '40px',
+    color: '#61728F',
+    fontSize: '15px',
+    fontWeight: 600,
     marginTop: '0',
+    marginBottom: 0,
   },
   cardContainer: {
     width: '100%',
-    maxWidth: '400px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '20px',
+    gap: '18px',
   },
   card: {
     display: 'flex',
     alignItems: 'center',
-    padding: '20px',
+    width: '100%',
+    textAlign: 'left',
+    padding: '24px 22px',
     borderRadius: '24px',
-    border: '1px solid #F3F4F6',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.02)',
+    border: '1.6px solid #E2E8F0',
+    boxShadow: '0 2px 8px rgba(15, 23, 42, 0.02)',
     cursor: 'pointer',
     position: 'relative',
     overflow: 'hidden',
-    backgroundColor: 'white',
-    transition: 'border-color 0.2s',
+    backgroundColor: '#FFFFFF',
+    transition: 'all 0.2s ease',
+    outline: 'none',
+    appearance: 'none',
+    WebkitAppearance: 'none',
+  },
+  cardActive: {
+    border: '3px solid #9C5AF7',
+    backgroundColor: '#F7F1FF',
+    boxShadow: '0 10px 24px rgba(124, 58, 237, 0.16)',
   },
   iconBox: {
-    width: '50px',
-    height: '50px',
+    width: '64px',
+    height: '64px',
     borderRadius: '50%',
+    backgroundColor: '#F3E7FF',
+    color: '#A03CE8',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: '16px',
+    marginRight: '18px',
     zIndex: 2,
+  },
+  iconBoxActive: {
+    backgroundColor: '#EFE3FF',
+    color: '#7C3AED',
   },
   cardText: {
     zIndex: 2,
+    flex: 1,
   },
   cardTitle: {
     fontSize: '16px',
     fontWeight: '700',
-    color: '#1F2937',
+    color: '#1E293B',
     margin: '0 0 4px 0',
+    letterSpacing: '-0.4px',
+    lineHeight: 1.2,
+  },
+  cardTitleActive: {
+    color: '#7C3AED',
   },
   cardDesc: {
     fontSize: '13px',
-    color: '#6B7280',
+    color: '#607089',
     margin: 0,
+    lineHeight: 1.45,
   },
   decorationCircle: {
     position: 'absolute',
-    right: '-20px',
+    right: '-18px',
     top: '50%',
     transform: 'translateY(-50%)',
-    width: '80px',
-    height: '80px',
+    width: '112px',
+    height: '112px',
     borderRadius: '50%',
-    backgroundColor: '#F3F4F6',
-    opacity: 0.5,
+    background: 'rgba(211, 187, 242, 0.28)',
     zIndex: 1,
-  }
+  },
 };
 
 export default LandingPage;

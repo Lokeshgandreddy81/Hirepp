@@ -91,6 +91,12 @@ export const wipeSensitiveCache = async () => {
             key.includes('@chat_history_') ||
             key.includes('@explain_') ||
             key.includes('@cached_candidates_') ||
+            key === '@cached_jobs' ||
+            key.startsWith('@cached_jobs:') ||
+            key === '@cached_worker_profiles' ||
+            key === '@worker_profile_id' ||
+            key === '@worker_profile_version' ||
+            key === '@hire_dismissed_jobs' ||
             key.includes('userInfo')
         );
 

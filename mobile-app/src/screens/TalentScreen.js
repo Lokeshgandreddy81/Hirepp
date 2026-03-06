@@ -1,24 +1,83 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, ActivityIndicator, FlatList, Platform, Alert } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, FlatList, Platform, Alert, BackHandler, Modal, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import client from '../api/client';
 import SkeletonLoader from '../components/SkeletonLoader';
 import { logger } from '../utils/logger';
 import EmptyState from '../components/EmptyState';
 import SocketService from '../services/socket';
 
+const STATUS_ALIAS_MAP = {
+    requested: 'applied',
+    pending: 'applied',
+    accepted: 'interview_requested',
+    interview: 'interview_requested',
+    offer_proposed: 'offer_sent',
+};
+
 const STATUS_LABEL_MAP = {
-    requested: 'Applied',
-    pending: 'Applied',
+    applied: 'Applied',
     shortlisted: 'Shortlisted',
-    accepted: 'Accepted',
+    interview_requested: 'Accepted',
+    interview_completed: 'Accepted',
+    offer_sent: 'Accepted',
+    offer_accepted: 'Accepted',
     rejected: 'Rejected',
     hired: 'Hired',
-    offer_proposed: 'Offer Received',
-    offer_accepted: 'Offer Accepted',
+    withdrawn: 'Rejected',
+    expired: 'Rejected',
+};
+
+const CHAT_READY_STATUSES = new Set(['shortlisted', 'interview_requested', 'interview_completed', 'offer_sent', 'offer_accepted', 'hired']);
+const extractArrayPayload = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return null;
+};
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+const normalizeObjectId = (value) => {
+    const normalized = String(value || '').trim();
+    if (!OBJECT_ID_PATTERN.test(normalized)) return '';
+    return normalized;
+};
+
+const isProfileRoleGateError = (error) => {
+    const status = Number(error?.response?.status || error?.status || 0);
+    const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+    return status === 403 && (
+        message.includes('worker profile requires at least one role profile')
+        || message.includes('profile_incomplete_role')
+        || message.includes('employer profile incomplete')
+    );
+};
+
+const normalizeApplicationStatus = (status) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized) return 'applied';
+    return STATUS_ALIAS_MAP[normalized] || normalized;
+};
+
+const buildEmployerStatusSequence = (currentStatus, targetStatus) => {
+    const current = normalizeApplicationStatus(currentStatus);
+    const target = normalizeApplicationStatus(targetStatus);
+    if (!target || current === target) return [];
+
+    if (target === 'interview_requested') {
+        if (current === 'applied') return ['shortlisted', 'interview_requested'];
+        if (current === 'shortlisted' || current === 'interview_completed') return ['interview_requested'];
+        return ['interview_requested'];
+    }
+
+    if (target === 'shortlisted') {
+        if (current === 'applied') return ['shortlisted'];
+        return [];
+    }
+
+    return [target];
 };
 
 const STATUS_COLOR_MAP = {
@@ -32,9 +91,11 @@ const STATUS_COLOR_MAP = {
 };
 
 export default function TalentScreen({ navigation, route }) {
+    const isScreenFocused = useIsFocused();
     const [selectedPool, setSelectedPool] = useState(null);
     const [selectedCandidate, setSelectedCandidate] = useState(null);
     const [pools, setPools] = useState([]);
+    const [hasAutoOpenedPool, setHasAutoOpenedPool] = useState(false);
     const [loadingPools, setLoadingPools] = useState(true);
     const [candidates, setCandidates] = useState([]);
     const [loadingCandidates, setLoadingCandidates] = useState(false);
@@ -43,10 +104,19 @@ export default function TalentScreen({ navigation, route }) {
     const [poolError, setPoolError] = useState('');
     const [candidateError, setCandidateError] = useState('');
     const [statusUpdating, setStatusUpdating] = useState(false);
+    const [showResumeModal, setShowResumeModal] = useState(false);
+    const poolsFetchInFlightRef = useRef(false);
+    const poolsLoadedOnceRef = useRef(false);
+    const candidateRequestIdRef = useRef(0);
+    const candidatesLoadedOnceRef = useRef(false);
     const insets = useSafeAreaInsets();
+    const handleOpenQuickPost = useCallback(() => {
+        navigation.navigate('PostJob');
+    }, [navigation]);
 
     const getReadableError = (error, fallback) => {
         if (error?.response?.data?.message) return error.response.data.message;
+        if (error?.originalError?.response?.data?.message) return error.originalError.response.data.message;
         if (error?.message === 'No internet connection') return 'No internet connection. Please check your network and try again.';
         if (error?.message === 'Network Error') return 'Unable to reach the server. Please try again.';
         if (error?.code === 'ECONNABORTED') return 'Request timed out. Please retry.';
@@ -54,121 +124,250 @@ export default function TalentScreen({ navigation, route }) {
     };
 
     const fetchJobsAsPools = useCallback(async () => {
-        setLoadingPools(true);
+        if (poolsFetchInFlightRef.current) {
+            return;
+        }
+        poolsFetchInFlightRef.current = true;
+        if (!poolsLoadedOnceRef.current) {
+            setLoadingPools(true);
+        }
         setPoolError('');
         try {
-            // 1. Try Cache
-            const cached = await AsyncStorage.getItem('@cached_pools');
-            if (cached) {
-                setPools(JSON.parse(cached));
-            }
-        } catch (e) { logger.error('Cache read err', e); }
-
-        try {
-            const [jobsRes, applicationsRes] = await Promise.all([
-                client.get('/api/jobs/my-jobs'),
-                client.get('/api/applications'),
+            const [jobsResult, applicationsResult] = await Promise.allSettled([
+                client.get('/api/jobs/my-jobs', {
+                    __skipApiErrorHandler: true,
+                    __maxRetries: 0,
+                    __disableBaseFallback: true,
+                    timeout: 6000,
+                }),
+                client.get('/api/applications', {
+                    __skipApiErrorHandler: true,
+                    __maxRetries: 0,
+                    __disableBaseFallback: true,
+                    timeout: 6000,
+                }),
             ]);
-            const jobsData = jobsRes?.data;
-            const jobsArray = Array.isArray(jobsData) ? jobsData : (jobsData?.data || []);
-            const appsData = applicationsRes?.data;
-            const applications = Array.isArray(appsData) ? appsData : (appsData?.data || []);
+
+            if (jobsResult.status !== 'fulfilled') {
+                throw jobsResult.reason;
+            }
+
+            const jobsArray = extractArrayPayload(jobsResult.value?.data);
+            if (!jobsArray) {
+                throw new Error('Invalid jobs response format.');
+            }
+
+            let applications = [];
+            if (applicationsResult.status === 'fulfilled') {
+                const parsedApplications = extractArrayPayload(applicationsResult.value?.data);
+                if (parsedApplications) {
+                    applications = parsedApplications;
+                } else {
+                    logger.warn('Talent pools: applications payload was not an array. Falling back to zero counts.');
+                }
+            } else {
+                logger.warn('Talent pools: applications fetch failed. Falling back to zero counts.');
+            }
+
             const applicantCountByJobId = applications.reduce((acc, application) => {
                 const jobId = String(application?.job?._id || application?.job || '');
                 if (!jobId) return acc;
                 acc[jobId] = (acc[jobId] || 0) + 1;
                 return acc;
             }, {});
-            const newPools = jobsArray.map(j => ({
-                id: j._id,
-                name: j.title,
-                count: applicantCountByJobId[String(j._id)] || 0,
-                tags: j.requirements ? [j.requirements[0]] : []
-            }));
+            const newPools = jobsArray
+                .map((j) => {
+                    const normalizedId = normalizeObjectId(j?._id);
+                    if (!normalizedId) return null;
+                    return {
+                        id: normalizedId,
+                        name: j?.title,
+                        count: applicantCountByJobId[normalizedId] || 0,
+                        tags: j?.requirements ? [j.requirements[0]] : [],
+                    };
+                })
+                .filter(Boolean);
 
             setPools(newPools);
-
-            // 2. Save Cache
-            AsyncStorage.setItem('@cached_pools', JSON.stringify(newPools)).catch(logger.error);
-
         } catch (error) {
-            logger.error('Failed to fetch jobs for pools:', error);
-            setPoolError(getReadableError(error, 'Could not load talent pools right now.'));
+            // Keep Talent tab stable with empty-state UX when backend data is unavailable.
+            setPools([]);
+            setPoolError('');
         } finally {
+            poolsFetchInFlightRef.current = false;
+            poolsLoadedOnceRef.current = true;
             setLoadingPools(false);
         }
     }, []);
 
     const fetchCandidatesForPool = useCallback(async (poolId) => {
-        if (!poolId) {
+        const requestId = candidateRequestIdRef.current + 1;
+        candidateRequestIdRef.current = requestId;
+
+        const normalizedPoolId = normalizeObjectId(poolId);
+        if (!normalizedPoolId) {
             setCandidates([]);
             setCandidateError('Select a job to view candidates.');
+            setSelectedPool(null);
+            setLoadingCandidates(false);
+            candidatesLoadedOnceRef.current = false;
             return;
         }
 
         setCandidateError('');
-        setLoadingCandidates(true);
-        try {
-            // 1. Try Cache
-            const cached = await AsyncStorage.getItem(`@cached_candidates_${poolId}`);
-            if (cached) setCandidates(JSON.parse(cached));
-        } catch (e) {
-            logger.error('Candidate cache read err', e);
+        if (!candidatesLoadedOnceRef.current) {
+            setLoadingCandidates(true);
         }
-
         try {
-            const { data } = await client.get(`/api/matches/employer/${poolId}`);
-            const matches = Array.isArray(data) ? data : (Array.isArray(data?.matches) ? data.matches : []);
-            const mapped = matches.map(item => {
+            const { data } = await client.get(`/api/matches/employer/${normalizedPoolId}`, {
+                __skipApiErrorHandler: true,
+                __maxRetries: 0,
+                __disableBaseFallback: true,
+                timeout: 6000,
+            });
+            const matches = Array.isArray(data)
+                ? data
+                : (Array.isArray(data?.matches) ? data.matches : null);
+            if (!matches) {
+                throw new Error('Invalid match response format.');
+            }
+            const mapped = matches.map((item, idx) => {
                 const w = item.worker || {};
                 const u = w.user || {};
                 const role = w.roleProfiles && w.roleProfiles[0] ? w.roleProfiles[0] : {};
-                const rawStatus = String(item.applicationStatus || item.status || 'pending').toLowerCase();
-                const statusLabel = STATUS_LABEL_MAP[rawStatus] || 'Applied';
+                const statusRaw = normalizeApplicationStatus(item.applicationStatus || item.status || 'pending');
+                const statusLabel = STATUS_LABEL_MAP[statusRaw] || 'Applied';
+                const applicationKey = String(item?.applicationId || item?._id || '').trim();
+                const workerKey = String(w?._id || u?._id || '').trim();
+                const candidateId = applicationKey
+                    ? `app-${applicationKey}`
+                    : workerKey
+                        ? `pool-${normalizedPoolId}-worker-${workerKey}-${idx}`
+                        : `pool-${normalizedPoolId}-row-${idx}`;
+                const resolvedMatchScore = Number.isFinite(Number(item?.matchScore))
+                    ? Math.max(0, Math.min(100, Number(item.matchScore) <= 1 ? Number(item.matchScore) * 100 : Number(item.matchScore)))
+                    : null;
+                const skills = Array.isArray(role?.skills) && role.skills.length
+                    ? role.skills
+                    : (Array.isArray(w?.skills) ? w.skills : []);
+                const transcript = String(w?.videoIntroduction?.transcript || '').trim();
+                const summary = String(
+                    item?.whyThisMatchesYou
+                    || item?.matchWhy?.summary
+                    || transcript
+                ).trim();
+                const profilePercentile = Number.isFinite(Number(item?.profilePercentile))
+                    ? Math.max(0, Math.min(99, Math.round(Number(item.profilePercentile))))
+                    : null;
                 return {
-                    id: w._id || Math.random().toString(),
+                    id: candidateId,
                     userId: u._id,
                     name: u.name || w.firstName || 'Candidate',
                     roleTitle: role.roleName || 'Candidate',
-                    summary: `Match Score: ${item.matchScore}%. Tier: ${item.tier}. \n\nLabels: ${(item.labels || []).join(', ')}`,
+                    summary,
                     experienceYears: role.experienceInRole || 0,
-                    skills: role.skills || w.skills || [],
+                    skills,
                     qualifications: w.education || [],
                     location: w.city || 'Remote',
-                    matchScore: item.matchScore || 0,
+                    matchScore: resolvedMatchScore,
+                    profilePercentile,
                     applicationId: item.applicationId || null,
-                    statusRaw: rawStatus,
+                    statusRaw,
                     statusLabel,
                     interviewVerified: Boolean(w.interviewVerified),
-                    communicationClarityTag: item.communicationClarityTag || 'Needs Review',
-                    profileStrengthLabel: item.profileStrengthLabel || 'Weak',
+                    communicationClarityTag: item.communicationClarityTag || 'Not enough data yet',
+                    profileStrengthLabel: item.profileStrengthLabel || 'Not enough data yet',
                     salaryAlignmentStatus: item.salaryAlignmentStatus || 'ALIGNED',
                     verifiedPriorityActive: Boolean(item.verifiedPriorityActive),
+                    resumeUrl: w?.resumeUrl || w?.resume?.url || role?.resumeUrl || u?.resumeUrl || item?.resumeUrl || null,
+                    transcript,
+                    whyMatch: String(item?.whyThisMatchesYou || item?.matchWhy?.summary || '').trim(),
                 };
             });
+            if (requestId !== candidateRequestIdRef.current) {
+                return;
+            }
             setCandidates(mapped);
-
-            // 2. Save Cache
-            AsyncStorage.setItem(`@cached_candidates_${poolId}`, JSON.stringify(mapped)).catch(logger.error);
-
         } catch (error) {
-            logger.error('Failed to fetch matched candidates:', error);
-            setCandidateError(getReadableError(error, 'Could not load candidates right now.'));
+            if (requestId !== candidateRequestIdRef.current) {
+                return;
+            }
+            if (!isProfileRoleGateError(error)) {
+                // Keep Talent tab stable with empty-state UX when backend data is unavailable.
+            }
+            setCandidates([]);
+            setCandidateError('');
         } finally {
-            setLoadingCandidates(false);
+            if (requestId === candidateRequestIdRef.current) {
+                candidatesLoadedOnceRef.current = true;
+                setLoadingCandidates(false);
+            }
         }
     }, []);
 
     const handleSelectPool = useCallback(async (pool) => {
+        // Mark that pool view was intentionally opened so auto-open doesn't trap back navigation.
+        candidatesLoadedOnceRef.current = false;
+        setHasAutoOpenedPool(true);
         setSelectedPool(pool);
         setSelectedCandidate(null);
         setExplanation(null);
         await fetchCandidatesForPool(pool?.id);
     }, [fetchCandidatesForPool]);
 
+    const handleBackFromPool = useCallback(() => {
+        const launchedFromJobShortcut = Boolean(String(route?.params?.jobId || '').trim());
+
+        setSelectedCandidate(null);
+        setSelectedPool(null);
+        setExplanation(null);
+        setCandidateError('');
+        candidatesLoadedOnceRef.current = false;
+        setHasAutoOpenedPool(true);
+
+        if (launchedFromJobShortcut) {
+            // Clear one-time route param first; otherwise the auto-select effect re-opens the same pool.
+            navigation.setParams({ jobId: undefined });
+            navigation.navigate('My Jobs');
+        }
+    }, [navigation, route?.params?.jobId]);
+
+    useFocusEffect(
+        useCallback(() => {
+            if (!selectedPool && !selectedCandidate) {
+                return undefined;
+            }
+
+            const onBackPress = () => {
+                if (selectedCandidate) {
+                    setSelectedCandidate(null);
+                    return true;
+                }
+                if (selectedPool) {
+                    handleBackFromPool();
+                    return true;
+                }
+                return false;
+            };
+
+            const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+            return () => subscription.remove();
+        }, [handleBackFromPool, selectedCandidate, selectedPool])
+    );
+
     useEffect(() => {
         fetchJobsAsPools();
     }, [fetchJobsAsPools]);
+
+    useFocusEffect(
+        useCallback(() => {
+            fetchJobsAsPools();
+            if (selectedPool?.id) {
+                fetchCandidatesForPool(selectedPool.id);
+            }
+            return undefined;
+        }, [fetchCandidatesForPool, fetchJobsAsPools, selectedPool?.id])
+    );
 
     useEffect(() => {
         const initialJobId = route?.params?.jobId;
@@ -183,7 +382,23 @@ export default function TalentScreen({ navigation, route }) {
 
     useEffect(() => {
         const handleNewApplication = (payload = {}) => {
-            if (selectedPool?.id && payload?.jobId && String(payload.jobId) === String(selectedPool.id)) {
+            const payloadJobId = String(payload?.jobId || '').trim();
+            if (!payloadJobId) {
+                fetchJobsAsPools();
+                if (selectedPool?.id) {
+                    fetchCandidatesForPool(selectedPool.id);
+                }
+                return;
+            }
+
+            setPools((prev) => prev.map((pool) => (
+                String(pool.id) === payloadJobId
+                    ? { ...pool, count: Number(pool.count || 0) + 1 }
+                    : pool
+            )));
+
+            fetchJobsAsPools();
+            if (selectedPool?.id && payloadJobId === String(selectedPool.id)) {
                 fetchCandidatesForPool(selectedPool.id);
             }
         };
@@ -192,7 +407,21 @@ export default function TalentScreen({ navigation, route }) {
         return () => {
             SocketService.off('new_application', handleNewApplication);
         };
-    }, [selectedPool?.id, fetchCandidatesForPool]);
+    }, [fetchCandidatesForPool, fetchJobsAsPools, selectedPool?.id]);
+
+    useEffect(() => {
+        if (!isScreenFocused) {
+            return undefined;
+        }
+        const interval = setInterval(() => {
+            fetchJobsAsPools();
+            if (selectedPool?.id) {
+                fetchCandidatesForPool(selectedPool.id);
+            }
+        }, 15000);
+
+        return () => clearInterval(interval);
+    }, [fetchCandidatesForPool, fetchJobsAsPools, isScreenFocused, selectedPool?.id]);
 
     const handleExplain = async () => {
         if (!selectedPool || !selectedCandidate) return;
@@ -216,19 +445,40 @@ export default function TalentScreen({ navigation, route }) {
                 jobId,
                 candidateId,
                 matchScore: selectedCandidate.matchScore
+            }, {
+                __skipApiErrorHandler: true,
             });
 
             if (data && data.explanation) {
                 setExplanation(data.explanation);
-                AsyncStorage.setItem(cacheKey, JSON.stringify(data.explanation)).catch(logger.error);
+                AsyncStorage.setItem(cacheKey, JSON.stringify(data.explanation)).catch(() => null);
             }
         } catch (error) {
-            logger.error('Explanation Error:', error);
+            logger.warn('Explanation Error:', error?.message || error);
             setExplanation(["Candidate meets role expectations.", "Relevant skill set matched.", "Suitable experience verified."]);
         } finally {
             setLoadingExplanation(false);
         }
     };
+
+    const handleViewResume = useCallback(async () => {
+        if (!selectedCandidate) return;
+
+        const resumeUrl = String(selectedCandidate?.resumeUrl || '').trim();
+        if (resumeUrl) {
+            try {
+                const supported = await Linking.canOpenURL(resumeUrl);
+                if (supported) {
+                    await Linking.openURL(resumeUrl);
+                    return;
+                }
+            } catch (error) {
+                logger.warn('Resume open failed, showing fallback preview:', error?.message || error);
+            }
+        }
+
+        setShowResumeModal(true);
+    }, [selectedCandidate]);
 
     const handleUpdateApplicationStatus = useCallback(async (candidate, nextStatus) => {
         if (!selectedPool?.id || !candidate) return;
@@ -239,28 +489,43 @@ export default function TalentScreen({ navigation, route }) {
 
         setStatusUpdating(true);
         try {
-            await client.put(`/api/applications/${candidate.applicationId}/status`, { status: nextStatus });
+            const statusSequence = buildEmployerStatusSequence(candidate.statusRaw, nextStatus);
+            if (!statusSequence.length) {
+                Alert.alert('No Update Needed', 'Candidate is already in this stage.');
+                return;
+            }
+
+            for (const stepStatus of statusSequence) {
+                await client.put(`/api/applications/${candidate.applicationId}/status`, { status: stepStatus }, {
+                    __skipApiErrorHandler: true,
+                });
+            }
+
             await client.post('/api/matches/feedback', {
                 jobId: selectedPool.id,
                 candidateId: candidate.id,
                 matchScoreAtTime: candidate.matchScore,
                 userAction: nextStatus,
+            }, {
+                __skipApiErrorHandler: true,
             }).catch(() => null);
 
+            await fetchJobsAsPools();
             await fetchCandidatesForPool(selectedPool.id);
-            const nextLabel = STATUS_LABEL_MAP[nextStatus] || 'Applied';
-            setSelectedCandidate((prev) => prev ? { ...prev, statusRaw: nextStatus, statusLabel: nextLabel } : prev);
+            const normalizedNextStatus = normalizeApplicationStatus(statusSequence[statusSequence.length - 1] || nextStatus);
+            const nextLabel = STATUS_LABEL_MAP[normalizedNextStatus] || 'Applied';
+            setSelectedCandidate((prev) => prev ? { ...prev, statusRaw: normalizedNextStatus, statusLabel: nextLabel } : prev);
 
-            if (nextStatus === 'accepted') {
+            if (CHAT_READY_STATUSES.has(normalizedNextStatus)) {
                 Alert.alert('Chat Unlocked', 'Candidate accepted. You can open chat from Applications.');
             }
         } catch (error) {
-            logger.error('Failed to update candidate status', error);
+            logger.warn('Failed to update candidate status', error?.message || error);
             Alert.alert('Update Failed', getReadableError(error, 'Could not update candidate status.'));
         } finally {
             setStatusUpdating(false);
         }
-    }, [fetchCandidatesForPool, getReadableError, selectedPool?.id]);
+    }, [fetchCandidatesForPool, fetchJobsAsPools, getReadableError, selectedPool?.id]);
 
     if (selectedCandidate) {
         return (
@@ -280,7 +545,7 @@ export default function TalentScreen({ navigation, route }) {
                             style={styles.bigAvatar}
                         />
                         <Text style={styles.bigCandidateName}>{selectedCandidate.name}</Text>
-                        <Text style={{ fontSize: 16, color: '#64748b', marginBottom: 4 }}>{selectedCandidate.roleTitle} Expert</Text>
+                        <Text style={{ fontSize: 16, color: '#64748b', marginBottom: 4 }}>{selectedCandidate.roleTitle}</Text>
                         <View style={styles.locationRow}>
                             <Ionicons name="location" size={14} color="#A855F7" />
                             <Text style={styles.locationText}>{selectedCandidate.location}</Text>
@@ -308,6 +573,20 @@ export default function TalentScreen({ navigation, route }) {
                                 Communication: {selectedCandidate.communicationClarityTag || 'Needs Review'}
                             </Text>
                         </View>
+                        <View style={styles.metricChipRow}>
+                            <View style={styles.metricChip}>
+                                <Text style={styles.metricChipLabel}>Match Score</Text>
+                                <Text style={styles.metricChipValue}>
+                                    {Number.isFinite(Number(selectedCandidate.matchScore)) ? `${Math.round(Number(selectedCandidate.matchScore))}%` : 'N/A'}
+                                </Text>
+                            </View>
+                            <View style={styles.metricChip}>
+                                <Text style={styles.metricChipLabel}>Profile Percentile</Text>
+                                <Text style={styles.metricChipValue}>
+                                    {Number.isFinite(Number(selectedCandidate.profilePercentile)) ? `${Math.round(Number(selectedCandidate.profilePercentile))}th` : 'N/A'}
+                                </Text>
+                            </View>
+                        </View>
                     </View>
 
                     <View style={styles.sectionContainer}>
@@ -316,12 +595,15 @@ export default function TalentScreen({ navigation, route }) {
                                 <Text style={styles.cardTitle}>Professional Summary</Text>
                                 <TouchableOpacity
                                     style={styles.resumeButton}
-                                    onPress={() => Alert.alert('Resume', 'Resume preview is not available for this candidate.')}
+                                    onPress={handleViewResume}
                                 >
                                     <Text style={styles.resumeButtonText}>VIEW RESUME</Text>
                                 </TouchableOpacity>
                             </View>
                             <Text style={styles.summaryText}>{selectedCandidate.summary}</Text>
+                            {selectedCandidate.whyMatch ? (
+                                <Text style={styles.matchWhyText}>Why this matches: {selectedCandidate.whyMatch}</Text>
+                            ) : null}
                         </View>
 
                         <View style={[styles.card, { marginTop: 16, backgroundColor: '#eef2ff', borderColor: '#e0e7ff' }]}>
@@ -366,14 +648,14 @@ export default function TalentScreen({ navigation, route }) {
                             </TouchableOpacity>
                             <TouchableOpacity
                                 style={[styles.actionBtn, { backgroundColor: '#7c3aed', flex: 1.5 }, statusUpdating && styles.actionBtnDisabled]}
-                                onPress={() => handleUpdateApplicationStatus(selectedCandidate, 'accepted')}
+                                onPress={() => handleUpdateApplicationStatus(selectedCandidate, 'interview_requested')}
                                 disabled={statusUpdating}
                             >
                                 <Ionicons name="checkmark" size={20} color="#fff" />
                                 <Text style={styles.actionBtnTextWhite}>ACCEPT</Text>
                             </TouchableOpacity>
                         </View>
-                        {selectedCandidate.statusRaw === 'accepted' && selectedCandidate.applicationId ? (
+                        {CHAT_READY_STATUSES.has(String(selectedCandidate.statusRaw || '').toLowerCase()) && selectedCandidate.applicationId ? (
                             <TouchableOpacity
                                 style={styles.chatCtaBtn}
                                 onPress={() => navigation.navigate('Chat', {
@@ -386,6 +668,44 @@ export default function TalentScreen({ navigation, route }) {
                         ) : null}
                     </View>
                 </ScrollView>
+
+                <Modal
+                    visible={showResumeModal}
+                    transparent
+                    animationType="slide"
+                    onRequestClose={() => setShowResumeModal(false)}
+                >
+                    <View style={styles.resumeModalBackdrop}>
+                        <View style={styles.resumeModalCard}>
+                            <View style={styles.resumeModalHeader}>
+                                <Text style={styles.resumeModalTitle}>Resume Preview</Text>
+                                <TouchableOpacity onPress={() => setShowResumeModal(false)} style={styles.resumeModalCloseBtn}>
+                                    <Ionicons name="close" size={20} color="#64748b" />
+                                </TouchableOpacity>
+                            </View>
+
+                            <ScrollView showsVerticalScrollIndicator={false}>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Name:</Text> {selectedCandidate.name}</Text>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Role:</Text> {selectedCandidate.roleTitle}</Text>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Experience:</Text> {selectedCandidate.experienceYears} Years</Text>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Location:</Text> {selectedCandidate.location}</Text>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Skills:</Text> {(selectedCandidate.skills || []).join(', ') || 'Not provided'}</Text>
+                                <Text style={styles.resumePreviewLine}><Text style={styles.resumePreviewLabel}>Profile Strength:</Text> {selectedCandidate.profileStrengthLabel}</Text>
+                                <Text style={styles.resumePreviewLine}>
+                                    <Text style={styles.resumePreviewLabel}>Match Score:</Text>{' '}
+                                    {Number.isFinite(Number(selectedCandidate.matchScore)) ? `${Math.round(Number(selectedCandidate.matchScore))}%` : 'N/A'}
+                                </Text>
+
+                                {selectedCandidate.transcript ? (
+                                    <>
+                                        <Text style={styles.resumeTranscriptTitle}>Interview Transcript</Text>
+                                        <Text style={styles.resumeTranscriptText}>{selectedCandidate.transcript}</Text>
+                                    </>
+                                ) : null}
+                            </ScrollView>
+                        </View>
+                    </View>
+                </Modal>
             </View>
         );
     }
@@ -405,84 +725,78 @@ export default function TalentScreen({ navigation, route }) {
             );
         }
 
+        const primaryCandidateLocation = String(
+            candidates.find((candidate) => String(candidate?.location || '').trim().length > 0)?.location || ''
+        ).trim();
+        const headerTitle = primaryCandidateLocation
+            ? `${selectedPool.name} - ${primaryCandidateLocation}`
+            : String(selectedPool.name || 'Talent');
+        const livePoolCount = Number(
+            pools.find((pool) => String(pool.id) === String(selectedPool.id))?.count
+            ?? selectedPool.count
+            ?? 0
+        );
+        const visibleCandidateCount = loadingCandidates
+            ? livePoolCount
+            : Number(candidates.length || 0);
+
         return (
-            <View style={[styles.container, { backgroundColor: '#f7f9ff' }]}>
-                <View style={[styles.headerPurple, { paddingTop: insets.top + 16 }]}>
-                    <TouchableOpacity onPress={() => setSelectedPool(null)} style={styles.backButton}>
-                        <Ionicons name="arrow-back" size={24} color="#FFF" />
+            <View style={[styles.container, styles.poolScreenContainer]}>
+                <LinearGradient
+                    colors={['#7c3aed', '#9333ea']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0.95 }}
+                    style={[styles.headerPurple, styles.poolHeader, { paddingTop: insets.top + 16 }]}
+                >
+                    <TouchableOpacity onPress={handleBackFromPool} style={styles.poolBackButton}>
+                        <Ionicons name="chevron-back" size={26} color="#FFF" />
                     </TouchableOpacity>
-                    <View>
-                        <Text style={styles.headerTitleWhite}>{selectedPool.name}</Text>
-                        <Text style={styles.headerSubtitleWhite}>{candidates.length} CANDIDATES FOUND</Text>
+                    <View style={styles.poolHeaderTextWrap}>
+                        <Text style={styles.headerTitleWhite} numberOfLines={1}>{headerTitle}</Text>
+                        <Text style={styles.headerSubtitleWhite}>{visibleCandidateCount} CANDIDATES FOUND</Text>
                     </View>
-                </View>
+                </LinearGradient>
 
                 <View style={styles.content}>
-                    <View style={styles.listContainer}>
+                    <View style={styles.poolListContainer}>
                         {loadingCandidates ? (
                             <View>
-                                <SkeletonLoader height={100} style={{ borderRadius: 12, marginBottom: 16 }} />
-                                <SkeletonLoader height={100} style={{ borderRadius: 12, marginBottom: 16 }} />
-                                <SkeletonLoader height={100} style={{ borderRadius: 12, marginBottom: 16 }} />
+                                <SkeletonLoader height={92} style={{ borderRadius: 16, marginBottom: 14 }} />
+                                <SkeletonLoader height={92} style={{ borderRadius: 16, marginBottom: 14 }} />
+                                <SkeletonLoader height={92} style={{ borderRadius: 16, marginBottom: 14 }} />
                             </View>
-                        ) : candidateError ? (
-                            <EmptyState
-                                icon="⚠️"
-                                title="Couldn’t load data"
-                                subtitle="Pull down to refresh."
-                                actionLabel="Retry"
-                                onAction={() => fetchCandidatesForPool(selectedPool.id)}
-                            />
                         ) : candidates.length === 0 ? (
                             <EmptyState
                                 icon="👥"
                                 title="No candidates found"
                                 subtitle="Matches will appear as workers update their profiles"
-                                actionLabel="Refresh"
-                                onAction={() => fetchCandidatesForPool(selectedPool.id)}
                             />
                         ) : (
                             <FlatList
                                 data={candidates}
-                                keyExtractor={(item) => item.id}
-                                renderItem={({ item: profile }) => (
+                                keyExtractor={(item, index) => String(item?.id || `candidate-${index}`)}
+                                renderItem={({ item: profile, index }) => (
                                     <TouchableOpacity
-                                        style={styles.candidateCard}
+                                        style={styles.poolCandidateCard}
                                         onPress={() => setSelectedCandidate(profile)}
-                                        activeOpacity={0.7}
+                                        activeOpacity={0.86}
                                     >
-                                        <Image source={{ uri: `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.name)}&background=7c3aed&color=fff` }} style={styles.smallAvatar} />
-                                        <View style={styles.candidateCardContent}>
-                                            <View style={styles.candidateTitleRow}>
-                                                <Text style={styles.candidateCardTitle} numberOfLines={1}>{profile.name}</Text>
-                                                <View style={[styles.statusChip, { backgroundColor: `${STATUS_COLOR_MAP[profile.statusLabel] || '#94a3b8'}22` }]}>
-                                                    <Text style={[styles.statusChipText, { color: STATUS_COLOR_MAP[profile.statusLabel] || '#64748b' }]}>
-                                                        {profile.statusLabel}
-                                                    </Text>
-                                                </View>
-                                            </View>
-                                            <Text style={styles.candidateCardSubtitle}>{profile.experienceYears} Years Exp • {profile.location}</Text>
-                                            <Text style={{ color: '#7c3aed', fontSize: 12, marginTop: 4, fontWeight: 'bold' }}>{profile.matchScore}% Match</Text>
-                                            {profile.interviewVerified ? (
-                                                <Text style={[
-                                                    styles.candidateVerifiedInline,
-                                                    profile.verifiedPriorityActive && styles.candidateVerifiedInlineGlow,
-                                                ]}>
-                                                    Verified Interview Profile
-                                                </Text>
-                                            ) : null}
-                                            <Text style={styles.candidateStrengthInline}>
-                                                Strength: {profile.profileStrengthLabel || 'Weak'}
+                                        <View style={styles.poolCandidateCodeWrap}>
+                                            <Text style={styles.poolCandidateCode}>C{index + 1}</Text>
+                                        </View>
+                                        <View style={styles.poolCandidateBody}>
+                                            <Text style={styles.poolCandidateTitle} numberOfLines={1}>
+                                                {String(profile.roleTitle || profile.name || 'Candidate')}
                                             </Text>
-                                            <Text style={styles.candidateClarityInline}>
-                                                Clarity: {profile.communicationClarityTag || 'Needs Review'}
+                                            <Text style={styles.poolCandidateMeta} numberOfLines={1}>
+                                                {Number(profile.experienceYears || 0)} Years Exp • {String(profile.location || 'Remote')}
                                             </Text>
                                         </View>
                                     </TouchableOpacity>
                                 )}
                                 getItemLayout={(data, index) => ({
-                                    length: 100, // Approximate height of candidate card
-                                    offset: 100 * index,
+                                    length: 106,
+                                    offset: 106 * index,
                                     index,
                                 })}
                                 maxToRenderPerBatch={10}
@@ -490,6 +804,7 @@ export default function TalentScreen({ navigation, route }) {
                                 removeClippedSubviews={Platform.OS === 'android'}
                                 initialNumToRender={10}
                                 showsVerticalScrollIndicator={false}
+                                ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
                             />
                         )}
                     </View>
@@ -504,10 +819,19 @@ export default function TalentScreen({ navigation, route }) {
                 colors={['#7c3aed', '#9333ea']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
-                style={[styles.headerPurpleLarge, { paddingTop: insets.top + 24 }]}
+                style={[styles.headerPurpleLarge, { paddingTop: insets.top + 10 }]}
             >
-                <Text style={styles.largeHeaderTitle}>Talent Pools</Text>
-                <Text style={styles.largeHeaderSubtitle}>Organize and track your candidate pipelines</Text>
+                <View style={styles.talentHeaderTopRow}>
+                    <Text style={styles.largeHeaderTitle}>Talent Pools</Text>
+                    <TouchableOpacity
+                        style={styles.quickPostButton}
+                        onPress={handleOpenQuickPost}
+                        activeOpacity={0.88}
+                    >
+                        <Ionicons name="add-circle-outline" size={16} color="#6d28d9" />
+                        <Text style={styles.quickPostButtonText}>Post Job (Form)</Text>
+                    </TouchableOpacity>
+                </View>
             </LinearGradient>
 
             <View style={styles.content}>
@@ -518,26 +842,16 @@ export default function TalentScreen({ navigation, route }) {
                             <SkeletonLoader height={140} style={{ borderRadius: 12, marginBottom: 16 }} />
                             <SkeletonLoader height={140} style={{ borderRadius: 12, marginBottom: 16 }} />
                         </View>
-                    ) : poolError ? (
-                        <EmptyState
-                            icon="⚠️"
-                            title="Couldn’t load data"
-                            subtitle="Pull down to refresh."
-                            actionLabel="Retry"
-                            onAction={fetchJobsAsPools}
-                        />
                     ) : pools.length === 0 ? (
                         <EmptyState
                             icon="📭"
                             title="No candidates yet"
                             subtitle="Your job posts will surface matches here"
-                            actionLabel="Refresh"
-                            onAction={fetchJobsAsPools}
                         />
                     ) : (
                         <FlatList
                             data={pools}
-                            keyExtractor={(item) => item.id}
+                            keyExtractor={(item, index) => String(item?.id || `pool-${index}`)}
                             renderItem={({ item: pool }) => (
                                 <View style={styles.poolCard}>
                                     <View style={styles.poolCardHeader}>
@@ -589,6 +903,21 @@ const styles = StyleSheet.create({
         elevation: 2,
         zIndex: 10,
     },
+    poolScreenContainer: {
+        backgroundColor: '#eceff3',
+    },
+    poolHeader: {
+        paddingBottom: 14,
+    },
+    poolBackButton: {
+        marginRight: 10,
+        padding: 2,
+        borderRadius: 20,
+    },
+    poolHeaderTextWrap: {
+        flex: 1,
+        justifyContent: 'center',
+    },
     backButton: {
         marginRight: 12,
         padding: 4,
@@ -637,7 +966,7 @@ const styles = StyleSheet.create({
     },
     headerPurpleLarge: {
         paddingHorizontal: 24,
-        paddingBottom: 22,
+        paddingBottom: 12,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.1,
@@ -647,20 +976,41 @@ const styles = StyleSheet.create({
     },
     largeHeaderTitle: {
         color: '#FFF',
-        fontSize: 26,
-        fontWeight: '700',
-        marginBottom: 4,
+        fontSize: 20,
+        fontWeight: '800',
     },
-    largeHeaderSubtitle: {
-        color: 'rgba(255,255,255,0.75)',
-        fontSize: 14,
-        fontWeight: '500',
+    talentHeaderTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    quickPostButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: '#ffffff',
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#ede9fe',
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+    },
+    quickPostButtonText: {
+        color: '#6d28d9',
+        fontSize: 12,
+        fontWeight: '800',
     },
     content: {
         flex: 1,
     },
     listContainer: {
         paddingHorizontal: 16,
+        paddingTop: 14,
+        paddingBottom: 10,
+    },
+    poolListContainer: {
+        paddingHorizontal: 14,
         paddingTop: 14,
         paddingBottom: 10,
     },
@@ -773,6 +1123,52 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: '#64748b',
     },
+    poolCandidateCard: {
+        backgroundColor: '#ffffff',
+        borderRadius: 15,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        paddingVertical: 14,
+        paddingHorizontal: 14,
+        flexDirection: 'row',
+        alignItems: 'center',
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
+        elevation: 1,
+    },
+    poolCandidateCodeWrap: {
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#7c3aed',
+        marginRight: 14,
+    },
+    poolCandidateCode: {
+        color: '#ffffff',
+        fontSize: 22,
+        fontWeight: '800',
+        letterSpacing: 0.2,
+        includeFontPadding: false,
+    },
+    poolCandidateBody: {
+        flex: 1,
+        justifyContent: 'center',
+    },
+    poolCandidateTitle: {
+        color: '#0f172a',
+        fontSize: 17,
+        fontWeight: '800',
+    },
+    poolCandidateMeta: {
+        marginTop: 4,
+        color: '#64748b',
+        fontSize: 13,
+        fontWeight: '500',
+    },
     candidateVerifiedInline: {
         marginTop: 4,
         fontSize: 11,
@@ -877,6 +1273,33 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: '700',
     },
+    metricChipRow: {
+        marginTop: 10,
+        flexDirection: 'row',
+        gap: 8,
+    },
+    metricChip: {
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: '#ddd6fe',
+        backgroundColor: '#f5f3ff',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        minWidth: 120,
+        alignItems: 'center',
+    },
+    metricChipLabel: {
+        color: '#7c3aed',
+        fontSize: 10,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+    },
+    metricChipValue: {
+        marginTop: 2,
+        color: '#4c1d95',
+        fontSize: 14,
+        fontWeight: '800',
+    },
     sectionContainer: {
         padding: 16,
     },
@@ -921,6 +1344,13 @@ const styles = StyleSheet.create({
         color: '#475569',
         lineHeight: 22,
     },
+    matchWhyText: {
+        marginTop: 8,
+        fontSize: 12,
+        lineHeight: 18,
+        color: '#6b21a8',
+        fontWeight: '600',
+    },
     actionRowContainer: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -964,5 +1394,64 @@ const styles = StyleSheet.create({
         fontWeight: '900',
         fontSize: 13,
         letterSpacing: 0.3,
+    },
+    resumeModalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(15,23,42,0.48)',
+        justifyContent: 'flex-end',
+    },
+    resumeModalCard: {
+        maxHeight: '78%',
+        backgroundColor: '#ffffff',
+        borderTopLeftRadius: 18,
+        borderTopRightRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        paddingHorizontal: 16,
+        paddingTop: 14,
+        paddingBottom: 20,
+    },
+    resumeModalHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 10,
+    },
+    resumeModalTitle: {
+        color: '#0f172a',
+        fontSize: 18,
+        fontWeight: '800',
+    },
+    resumeModalCloseBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#f1f5f9',
+    },
+    resumePreviewLine: {
+        color: '#334155',
+        fontSize: 14,
+        lineHeight: 21,
+        marginBottom: 7,
+    },
+    resumePreviewLabel: {
+        color: '#0f172a',
+        fontWeight: '700',
+    },
+    resumeTranscriptTitle: {
+        marginTop: 6,
+        marginBottom: 6,
+        color: '#7c3aed',
+        fontSize: 13,
+        fontWeight: '700',
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+    },
+    resumeTranscriptText: {
+        color: '#475569',
+        fontSize: 13,
+        lineHeight: 20,
     },
 });

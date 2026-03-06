@@ -11,13 +11,14 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0f172a"
+      "backgroundColor": "#ffffff"
     },
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "HireCircle needs camera access to capture your interview and profile videos.",
         "NSMicrophoneUsageDescription": "HireCircle needs microphone access to record audio with your interview videos.",
+        "NSSpeechRecognitionUsageDescription": "HireCircle needs speech recognition to update interview progress in real time.",
         "NSUserNotificationUsageDescription": "HireCircle uses notifications for chat messages, application updates, and matches."
       }
     },
@@ -32,18 +33,18 @@
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0f172a"
+        "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": false
     },
     "androidStatusBar": {
-      "backgroundColor": "#0f172a",
+      "backgroundColor": "#7c3aed",
       "barStyle": "light-content",
       "translucent": false
     },
     "androidNavigationBar": {
-      "backgroundColor": "#0f172a",
-      "barStyle": "light-content"
+      "backgroundColor": "#ffffff",
+      "barStyle": "dark-content"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -66,6 +67,16 @@
         {
           "cameraPermission": "HireCircle needs camera access to capture your interview and profile videos.",
           "microphonePermission": "HireCircle needs microphone access to record audio with your interview videos."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow HireCircle to use the microphone for Smart Interview live progress.",
+          "speechRecognitionPermission": "Allow HireCircle to transcribe your answers for Smart Interview live progress.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
         }
       ],
       [

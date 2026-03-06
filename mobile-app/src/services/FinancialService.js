@@ -9,7 +9,10 @@ export const getTransactions = async ({ limit = 100, offset = 0 } = {}) => {
     const { data } = await client.get('/api/financial/wallet/transactions', {
         params: { limit, offset },
     });
-    return data.transactions || [];
+    if (!Array.isArray(data?.transactions)) {
+        throw new Error('Invalid transactions payload.');
+    }
+    return data.transactions;
 };
 
 export const fundEscrow = async ({ jobId, workerId, amount, currency = 'INR', paymentRecordId }) => {
@@ -48,7 +51,10 @@ export const requestWithdrawal = async ({ amount, currency = 'INR' }) => {
 
 export const getMyWithdrawals = async () => {
     const { data } = await client.get('/api/financial/withdrawals');
-    return data.withdrawals || [];
+    if (!Array.isArray(data?.withdrawals)) {
+        throw new Error('Invalid withdrawals payload.');
+    }
+    return data.withdrawals;
 };
 
 export const raiseDispute = async ({ escrowId, reason }) => {

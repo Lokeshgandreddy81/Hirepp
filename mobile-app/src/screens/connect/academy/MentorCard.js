@@ -4,9 +4,21 @@ import { RADIUS } from '../../../theme/theme';
 import { connectPalette, connectShadow } from '../connectPalette';
 
 function MentorCardComponent({ mentor, isConnected, onConnect }) {
+    const safeMentor = (mentor && typeof mentor === 'object') ? mentor : {};
+    const mentorId = String(safeMentor.id || '').trim();
+    const mentorName = String(safeMentor.name || 'Mentor').trim() || 'Mentor';
+    const mentorExp = String(safeMentor.exp || '0y').trim() || '0y';
+    const mentorSkill = String(safeMentor.skill || 'General').trim() || 'General';
+    const mentorRating = String(safeMentor.rating || '-').trim() || '-';
+    const mentorSessions = String(safeMentor.sessions || '0').trim() || '0';
+    const mentorReason = String(safeMentor.reason || '').trim();
+    const mentorAvatar = String(safeMentor.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(mentorName)}&background=8b3dff&color=fff&rounded=true`);
+
     const handleConnect = useCallback(() => {
-        onConnect(mentor.id);
-    }, [onConnect, mentor.id]);
+        if (mentorId) {
+            onConnect(mentorId);
+        }
+    }, [onConnect, mentorId]);
 
     const buttonStyle = useMemo(() => [
         styles.connectButton,
@@ -20,11 +32,12 @@ function MentorCardComponent({ mentor, isConnected, onConnect }) {
 
     return (
         <View style={styles.card}>
-            <Image source={{ uri: mentor.avatar }} style={styles.avatar} />
+            <Image source={{ uri: mentorAvatar }} style={styles.avatar} />
             <View style={styles.main}>
-                <Text style={styles.skillLabel}>{mentor.skill.toUpperCase()}</Text>
-                <Text style={styles.nameText}>{mentor.name} ({mentor.exp} Exp)</Text>
-                <Text style={styles.metaText}>⭐ {mentor.rating} · {mentor.sessions} sessions</Text>
+                <Text style={styles.skillLabel}>{mentorSkill.toUpperCase()}</Text>
+                <Text style={styles.nameText}>{mentorName} ({mentorExp} Exp)</Text>
+                <Text style={styles.metaText}>⭐ {mentorRating} · {mentorSessions} sessions</Text>
+                {mentorReason ? <Text style={styles.reasonText}>{mentorReason}</Text> : null}
             </View>
             <TouchableOpacity style={buttonStyle} onPress={handleConnect}>
                 <Text style={buttonTextStyle}>{isConnected ? 'REQUESTED ✓' : 'CONNECT'}</Text>
@@ -71,6 +84,12 @@ const styles = StyleSheet.create({
         fontSize: 9,
         color: connectPalette.subtle,
         marginTop: 2,
+    },
+    reasonText: {
+        marginTop: 4,
+        fontSize: 10,
+        color: connectPalette.muted,
+        lineHeight: 14,
     },
     connectButton: {
         backgroundColor: connectPalette.accent,

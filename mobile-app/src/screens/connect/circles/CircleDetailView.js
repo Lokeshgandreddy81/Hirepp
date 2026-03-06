@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Image, ScrollView, TextInput } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { IconCheck, IconMessageSquare, IconMic, IconPlus, IconSend, IconSparkles } from '../../../components/Icons';
+import { IconCheck, IconMessageSquare, IconSend, IconShare, IconSparkles } from '../../../components/Icons';
 import { RADIUS } from '../../../theme/theme';
 import { connectPalette, connectShadow } from '../connectPalette';
 
@@ -10,17 +10,20 @@ const DETAIL_TABS = ['DISCUSSION', 'RATES', 'MEMBERS'];
 function CircleDetailViewComponent({
     visible,
     selectedCircle,
+    circleDetailLoading,
     onClose,
     circleDetailTab,
     onTabChange,
+    onShareCommunity,
+    onLeaveCommunity,
+    onDeleteCommunity,
+    canDeleteCommunity,
     insetsTop,
     circleChatRef,
     chatText,
     onChatTextChange,
-    isCircleRecording,
     circleMessages,
     onSendTextMessage,
-    onToggleVoiceRecording,
     circleMembers,
     circleCustomRates,
     showCircleRateForm,
@@ -32,9 +35,18 @@ function CircleDetailViewComponent({
     onShowRateForm,
     onCancelRateForm,
 }) {
+    const safeCircleMessages = Array.isArray(circleMessages) ? circleMessages : [];
+    const safeCircleMembers = Array.isArray(circleMembers)
+        ? circleMembers.filter((member) => member && typeof member === 'object')
+        : [];
+    const safeCircleCustomRates = Array.isArray(circleCustomRates)
+        ? circleCustomRates.filter((rate) => rate && typeof rate === 'object')
+        : [];
+    const safeChatText = String(chatText || '');
+    const safeSelectedCircle = (selectedCircle && typeof selectedCircle === 'object') ? selectedCircle : null;
     const rates = useMemo(
-        () => ([...(selectedCircle?.rates || []), ...circleCustomRates]),
-        [selectedCircle?.rates, circleCustomRates]
+        () => ([...(selectedCircle?.rates || []), ...safeCircleCustomRates]),
+        [selectedCircle?.rates, safeCircleCustomRates]
     );
 
     const renderTabButton = useCallback((tabKey) => {
@@ -55,22 +67,32 @@ function CircleDetailViewComponent({
 
     const rateRows = useMemo(() => (
         rates.map((item, index) => {
+            const safeRate = (item && typeof item === 'object') ? item : {};
+            const serviceLabel = String(safeRate.service || 'Service').trim() || 'Service';
+            const priceLabel = String(safeRate.price || 'TBD').trim() || 'TBD';
             const isLast = index === rates.length - 1;
             return (
-                <View key={`${item.service}-${index}`} style={[styles.rateRow, isLast && styles.rateRowLast]}>
-                    <Text style={styles.rateCol1}>{item.service}</Text>
-                    <Text style={styles.rateCol2}>{item.price}</Text>
+                <View key={`${serviceLabel}-${index}`} style={[styles.rateRow, isLast && styles.rateRowLast]}>
+                    <Text style={styles.rateCol1}>{serviceLabel}</Text>
+                    <Text style={styles.rateCol2}>{priceLabel}</Text>
                 </View>
             );
         })
     ), [rates]);
 
     const memberRows = useMemo(() => (
-        circleMembers.map((item) => (
-            <View key={item.id} style={styles.memberRow}>
+        safeCircleMembers.map((item, index) => {
+            const safeMember = (item && typeof item === 'object') ? item : {};
+            const memberId = String(safeMember.id || `member-${index}`).trim() || `member-${index}`;
+            const memberName = String(safeMember.name || 'Member').trim() || 'Member';
+            const memberRole = String(safeMember.role || 'member').trim() || 'member';
+            const memberAvatar = String(safeMember.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(memberName)}&background=8b3dff&color=fff&rounded=true`);
+
+            return (
+                <View key={memberId} style={styles.memberRow}>
                 <View style={styles.memberAvatarWrap}>
-                    <Image source={{ uri: item.avatar }} style={styles.memberAvatar} />
-                    {item.isAdmin ? (
+                    <Image source={{ uri: memberAvatar }} style={styles.memberAvatar} />
+                    {safeMember.isAdmin ? (
                         <View style={styles.adminBadge}>
                             <Text style={styles.adminBadgeText}>★</Text>
                         </View>
@@ -78,16 +100,17 @@ function CircleDetailViewComponent({
                 </View>
 
                 <View style={styles.memberMain}>
-                    <Text style={styles.memberName}>{item.name}</Text>
-                    <Text style={styles.memberSub}>{item.isAdmin ? 'Admin' : item.role}</Text>
+                    <Text style={styles.memberName}>{memberName}</Text>
+                    <Text style={styles.memberSub}>{safeMember.isAdmin ? 'Admin' : memberRole}</Text>
                 </View>
 
                 <View style={styles.memberMsgBtn}>
                     <IconMessageSquare size={21} color={connectPalette.subtle} />
                 </View>
             </View>
-        ))
-    ), [circleMembers]);
+            );
+        })
+    ), [safeCircleMembers]);
 
     return (
         <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
@@ -106,14 +129,30 @@ function CircleDetailViewComponent({
                         </TouchableOpacity>
 
                         <Image
-                            source={{ uri: `https://ui-avatars.com/api/?name=${selectedCircle?.name || 'HC'}&background=8b3dff&color=fff&rounded=true` }}
+                            source={{ uri: `https://ui-avatars.com/api/?name=${safeSelectedCircle?.name || 'HC'}&background=8b3dff&color=fff&rounded=true` }}
                             style={styles.headerAvatar}
                         />
 
                         <View style={styles.headerTextWrap}>
-                            <Text style={styles.headerTitle}>{selectedCircle?.name || 'Community'}</Text>
-                            <Text style={styles.headerSub}>{selectedCircle?.members || '0'} Members • {selectedCircle?.online || '0'} Online</Text>
+                            <Text style={styles.headerTitle}>{safeSelectedCircle?.name || 'Community'}</Text>
+                            <Text style={styles.headerSub}>{safeSelectedCircle?.members || '0'} Members • {safeSelectedCircle?.online || '0'} Online</Text>
                         </View>
+
+                        <TouchableOpacity style={styles.headerActionBtn} onPress={onShareCommunity} activeOpacity={0.85}>
+                            <IconShare size={16} color={connectPalette.surface} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.headerActionBtn, styles.headerActionLeaveBtn]} onPress={onLeaveCommunity} activeOpacity={0.85}>
+                            <Text style={styles.headerActionLeaveText}>Leave</Text>
+                        </TouchableOpacity>
+                        {canDeleteCommunity ? (
+                            <TouchableOpacity
+                                style={[styles.headerActionBtn, styles.headerActionDeleteBtn]}
+                                onPress={onDeleteCommunity}
+                                activeOpacity={0.85}
+                            >
+                                <Text style={styles.headerActionDeleteText}>Delete</Text>
+                            </TouchableOpacity>
+                        ) : null}
                     </View>
 
                     <View style={styles.tabStrip}>
@@ -122,11 +161,17 @@ function CircleDetailViewComponent({
                 </LinearGradient>
 
                 <View style={styles.contentWrap}>
+                    {circleDetailLoading ? (
+                        <View style={styles.detailLoadingWrap}>
+                            <Text style={styles.detailLoadingText}>Loading community...</Text>
+                        </View>
+                    ) : null}
+
                     {circleDetailTab === 'DISCUSSION' ? (
                         <View style={styles.flex1}>
                             <ScrollView ref={circleChatRef} contentContainerStyle={styles.chatContent} showsVerticalScrollIndicator={false}>
                                 <View style={styles.todayBadge}><Text style={styles.todayText}>TODAY</Text></View>
-                                {circleMessages.length > 0 ? circleMessages.map((message) => (
+                                {safeCircleMessages.length > 0 ? safeCircleMessages.map((message) => (
                                     <View key={message.id} style={styles.messageBlock}>
                                         <View style={styles.messageMetaRow}>
                                             <Text style={styles.messageName}>{message.user}</Text>
@@ -147,32 +192,26 @@ function CircleDetailViewComponent({
                             </ScrollView>
 
                             <View style={styles.inputBar}>
-                                <View style={styles.attachButton}>
-                                    <IconPlus size={22} color={connectPalette.muted} />
-                                </View>
+                                <TouchableOpacity style={styles.attachButton} onPress={onShareCommunity} activeOpacity={0.85}>
+                                    <IconShare size={18} color={connectPalette.muted} />
+                                </TouchableOpacity>
 
                                 <TextInput
-                                    style={[styles.chatInput, isCircleRecording && styles.chatInputRecording]}
-                                    placeholder={isCircleRecording ? 'Recording... tap mic to stop' : 'Ask for help or share updates...'}
+                                    style={styles.chatInput}
+                                    placeholder="Ask for help or share updates..."
                                     placeholderTextColor={connectPalette.subtle}
-                                    value={chatText}
+                                    value={safeChatText}
                                     onChangeText={onChatTextChange}
-                                    editable={!isCircleRecording}
                                 />
 
-                                {chatText.length > 0 ? (
-                                    <TouchableOpacity style={styles.micSendButton} onPress={onSendTextMessage} activeOpacity={0.88}>
-                                        <IconSend size={17} color={connectPalette.surface} />
-                                    </TouchableOpacity>
-                                ) : (
-                                    <TouchableOpacity
-                                        style={[styles.micSendButton, isCircleRecording && styles.micSendButtonRecording]}
-                                        onPress={onToggleVoiceRecording}
-                                        activeOpacity={0.88}
-                                    >
-                                        <IconMic size={20} color={connectPalette.surface} />
-                                    </TouchableOpacity>
-                                )}
+                                <TouchableOpacity
+                                    style={[styles.micSendButton, safeChatText.trim().length === 0 && styles.micSendButtonDisabled]}
+                                    onPress={onSendTextMessage}
+                                    activeOpacity={0.88}
+                                    disabled={safeChatText.trim().length === 0}
+                                >
+                                    <IconSend size={17} color={connectPalette.surface} />
+                                </TouchableOpacity>
                             </View>
                         </View>
                     ) : null}
@@ -302,6 +341,36 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         color: '#e9dcff',
     },
+    headerActionBtn: {
+        width: 34,
+        height: 34,
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.3)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: 8,
+    },
+    headerActionLeaveBtn: {
+        width: 'auto',
+        paddingHorizontal: 10,
+    },
+    headerActionLeaveText: {
+        color: connectPalette.surface,
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    headerActionDeleteBtn: {
+        width: 'auto',
+        paddingHorizontal: 10,
+        borderColor: '#fecaca',
+        backgroundColor: 'rgba(127,29,29,0.28)',
+    },
+    headerActionDeleteText: {
+        color: '#fee2e2',
+        fontSize: 11,
+        fontWeight: '800',
+    },
     tabStrip: {
         marginHorizontal: 16,
         padding: 4,
@@ -336,6 +405,20 @@ const styles = StyleSheet.create({
     contentWrap: {
         flex: 1,
         backgroundColor: connectPalette.page,
+    },
+    detailLoadingWrap: {
+        margin: 16,
+        borderRadius: RADIUS.lg,
+        borderWidth: 1,
+        borderColor: connectPalette.line,
+        backgroundColor: connectPalette.surface,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+    },
+    detailLoadingText: {
+        color: connectPalette.muted,
+        fontSize: 12,
+        fontWeight: '600',
     },
     flex1: {
         flex: 1,
@@ -453,9 +536,6 @@ const styles = StyleSheet.create({
         color: '#364457',
         fontSize: 14,
     },
-    chatInputRecording: {
-        color: connectPalette.danger,
-    },
     micSendButton: {
         width: 46,
         height: 46,
@@ -469,8 +549,10 @@ const styles = StyleSheet.create({
         shadowRadius: 8,
         elevation: 4,
     },
-    micSendButtonRecording: {
-        backgroundColor: connectPalette.danger,
+    micSendButtonDisabled: {
+        backgroundColor: connectPalette.subtle,
+        shadowOpacity: 0,
+        elevation: 0,
     },
     sectionContent: {
         padding: 18,

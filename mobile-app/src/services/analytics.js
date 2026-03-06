@@ -26,9 +26,7 @@ export const trackEvent = (eventName, payload = {}) => {
         analyticsQueue.shift();
     }
 
-    if (__DEV__) {
-        logger.log('[analytics]', event.name, event.payload);
-    }
+    logger.log('[analytics]', event.name, event.payload);
 };
 
 export const getAnalyticsQueue = () => analyticsQueue.slice();
@@ -52,7 +50,6 @@ export const getAnalyticsSummary = () => {
 };
 
 export const logAnalyticsSummary = (datasetSummary = null) => {
-    if (!__DEV__) return;
     const analyticsSummary = getAnalyticsSummary();
     logger.log('[analytics-metrics]', {
         dataset: datasetSummary,

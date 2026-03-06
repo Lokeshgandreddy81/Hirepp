@@ -10,7 +10,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
-const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1497366216548-37526070297c?q=80&w=800&auto=format&fit=crop';
+const DEFAULT_BANNER = '';
 const DEFAULT_PRODUCTS = [];
 const DEFAULT_TIMELINE = [];
 
@@ -19,6 +19,7 @@ export default function ContactInfoView({
     presentation = 'modal',
     title = 'Profile',
     data = {},
+    hideHeader = false,
     onBack,
     onCallPress,
     onVideoPress,
@@ -29,14 +30,14 @@ export default function ContactInfoView({
     const insets = useSafeAreaInsets();
 
     const {
-        name = 'Profile',
+        name = '',
         avatar,
-        headline = 'Moving the world, one delivery at a time.',
-        industryTag = mode === 'employer' ? 'LOGISTICS & SUPPLY CHAIN' : 'CANDIDATE PROFILE',
-        bannerImage = DEFAULT_BANNER,
-        mission = 'We are building the backbone of modern commerce. By integrating AI with a massive fleet network, we ensure fair pay for partners and lightning-fast logistics for businesses.',
-        industry = 'Logistics & Supply Chain',
-        hq = 'Hyderabad, IN',
+        headline = '',
+        industryTag = mode === 'employer' ? 'EMPLOYER PROFILE' : 'CANDIDATE PROFILE',
+        bannerImage = '',
+        mission = '',
+        industry = '',
+        hq = '',
         products = DEFAULT_PRODUCTS,
         timeline = DEFAULT_TIMELINE,
         contactInfo = {
@@ -44,26 +45,32 @@ export default function ContactInfoView({
             support: '',
             website: '',
         },
-        summary = 'Experienced candidate with strong operational background and consistent delivery record.',
-        experienceYears = 3,
-        skills = ['React', 'Node', 'Ops', 'Logistics'],
+        summary = '',
+        experienceYears = null,
+        skills = [],
         highlights = [],
         workHistory = [],
     } = data;
 
+    const resolvedName = String(name || 'Profile');
+    const resolvedBanner = String(bannerImage || DEFAULT_BANNER || '').trim()
+        || `https://ui-avatars.com/api/?name=${encodeURIComponent(resolvedName)}&background=7c3aed&color=fff&size=768`;
+
     return (
         <View style={styles.container}>
-            <View style={[styles.header, { paddingTop: insets.top + (presentation === 'screen' ? 8 : 0) }]}>
-                <TouchableOpacity onPress={onBack} style={styles.backButton}>
-                    <Text style={styles.backText}>✕</Text>
-                </TouchableOpacity>
-                <Text style={styles.title}>{title}</Text>
-                <View style={{ width: 40 }} />
-            </View>
+            {!hideHeader ? (
+                <View style={[styles.header, { paddingTop: insets.top + (presentation === 'screen' ? 8 : 0) }]}>
+                    <TouchableOpacity onPress={onBack} style={styles.backButton}>
+                        <Text style={styles.backText}>✕</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.title}>{title}</Text>
+                    <View style={{ width: 40 }} />
+                </View>
+            ) : null}
 
             <ScrollView showsVerticalScrollIndicator={false} bounces={false} contentContainerStyle={styles.scrollContent}>
                 <View style={styles.bannerContainer}>
-                    <Image source={{ uri: bannerImage }} style={styles.bannerImage} />
+                    <Image source={{ uri: resolvedBanner }} style={styles.bannerImage} />
                     <View style={styles.bannerOverlay} />
                     <View style={styles.industryTagWrap}>
                         <Text style={styles.industryTagText}>{industryTag}</Text>
@@ -72,16 +79,16 @@ export default function ContactInfoView({
 
                 <View style={styles.profileSection}>
                     <Image
-                        source={{ uri: avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=7c3aed&color=fff` }}
+                        source={{ uri: avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(resolvedName)}&background=7c3aed&color=fff` }}
                         style={styles.avatar}
                     />
                     <View style={styles.nameRow}>
-                        <Text style={styles.name}>{name}</Text>
+                        <Text style={styles.name}>{resolvedName}</Text>
                         <View style={styles.verifiedBadge}>
                             <Text style={styles.verifiedIcon}>✓</Text>
                         </View>
                     </View>
-                    <Text style={styles.headline}>{headline}</Text>
+                    <Text style={styles.headline}>{headline || 'No profile headline available.'}</Text>
                 </View>
 
                 <View style={styles.actionBtnRow}>

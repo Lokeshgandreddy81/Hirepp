@@ -1,86 +1,171 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import { Modal, View, Text, StyleSheet, TouchableOpacity, Image, ScrollView } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { IconSettings } from '../../components/Icons';
-import { theme, RADIUS } from '../../theme/theme';
+import { theme, RADIUS, SHADOWS } from '../../theme/theme';
 
-const PROFILE_SKILLS = ['Logistics', 'Operations', 'React', 'Node'];
+const toDisplayNumber = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 'N/A';
+    if (numeric >= 1000) return `${(numeric / 1000).toFixed(1)}k`;
+    return `${Math.round(numeric)}`;
+};
 
-function MyProfileModalComponent({ visible, insetsTop, userInfo, avatar, onClose, onEditProfile }) {
+const toDisplayPercent = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 'N/A';
+    return `${Math.max(0, Math.min(100, Math.round(numeric)))}%`;
+};
+
+const calculateProfileHealth = (user = {}, skills = []) => {
+    const checkpoints = [
+        Boolean(String(user?.name || '').trim()),
+        Boolean(String(user?.city || user?.acquisitionCity || '').trim()),
+        Boolean(String(user?.bio || user?.summary || '').trim()),
+        skills.length > 0,
+        Boolean(String(user?.availabilityStatus || '').trim() || user?.isAvailable),
+    ];
+    const completed = checkpoints.filter(Boolean).length;
+    return Math.round((completed / checkpoints.length) * 100);
+};
+
+function MyProfileModalComponent({
+    visible,
+    insetsTop,
+    userInfo,
+    avatar,
+    onClose,
+    onEditProfile,
+    onOpenSettings,
+}) {
+    const safeUserInfo = useMemo(
+        () => ((userInfo && typeof userInfo === 'object') ? userInfo : {}),
+        [userInfo]
+    );
+    const resolvedSkills = useMemo(() => {
+        if (!Array.isArray(safeUserInfo?.roleProfiles)) return [];
+        const merged = safeUserInfo.roleProfiles.flatMap((roleProfile) => (
+            Array.isArray(roleProfile?.skills) ? roleProfile.skills : []
+        ));
+        return Array.from(new Set(merged.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 8);
+    }, [safeUserInfo?.roleProfiles]);
+
+    const roleLabel = safeUserInfo?.primaryRole === 'employer' ? 'Hiring Actively' : 'Professional Member';
+    const cityLabel = String(safeUserInfo?.city || safeUserInfo?.acquisitionCity || '').trim() || 'Location not set';
+    const availabilityLabel = String(safeUserInfo?.availabilityStatus || '').trim()
+        || (safeUserInfo?.isAvailable ? 'Available for opportunities' : 'Availability not set');
+    const tierLabel = String(safeUserInfo?.tier || '').trim();
+    const aboutText = String(safeUserInfo?.bio || safeUserInfo?.summary || '').trim() || 'No profile summary available yet.';
+    const ratingValue = Number.isFinite(Number(safeUserInfo?.rating)) ? Number(safeUserInfo.rating).toFixed(1) : 'N/A';
+    const displayName = String(safeUserInfo?.name || 'User').trim() || 'User';
+    const profileHealth = useMemo(
+        () => calculateProfileHealth(safeUserInfo, resolvedSkills),
+        [safeUserInfo, resolvedSkills]
+    );
+    const safeAvatar = String(avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=8b3dff&color=fff&rounded=true`);
+
     return (
         <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
-            <View style={[styles.container, { paddingTop: insetsTop }]}> 
-                <View style={styles.headerBackground}>
+            <View style={[styles.container, { paddingTop: insetsTop }]}>
+                <LinearGradient
+                    colors={['#4c1d95', '#7c3aed', '#6d28d9']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.headerGradient}
+                >
                     <View style={styles.headerRow}>
-                        <TouchableOpacity onPress={onClose} style={styles.headerButton}>
+                        <TouchableOpacity onPress={onClose} style={styles.headerButton} activeOpacity={0.8}>
                             <Text style={styles.headerBackIcon}>‹</Text>
                         </TouchableOpacity>
                         <Text style={styles.headerTitle}>My Profile</Text>
-                        <View style={styles.headerButton}>
+                        <TouchableOpacity
+                            onPress={onOpenSettings || onEditProfile}
+                            style={styles.headerButton}
+                            activeOpacity={0.8}
+                        >
                             <IconSettings size={18} color={theme.surface} />
-                        </View>
-                    </View>
-                </View>
-
-                <ScrollView showsVerticalScrollIndicator={false}>
-                    <View style={styles.coverWrap}>
-                        <LinearGradient
-                            colors={['rgba(124,58,237,0.6)', 'rgba(15,23,42,0.9)']}
-                            start={{ x: 1, y: 0 }}
-                            end={{ x: 0, y: 1 }}
-                            style={StyleSheet.absoluteFillObject}
-                        />
-                        <Image
-                            source={{ uri: 'https://images.unsplash.com/photo-1521737604893-d14cc237f11d?q=80&w=1200&auto=format&fit=crop' }}
-                            style={styles.coverImage}
-                        />
-                        <View style={styles.coverBadgeRow}>
-                            <View style={styles.coverBadgeGlass}>
-                                <Text style={styles.coverBadgeText}>Ready to Work</Text>
-                            </View>
-                            <View style={styles.coverBadgeAmber}>
-                                <Text style={styles.coverBadgeAmberText}>⭐ Gold Tier</Text>
-                            </View>
-                        </View>
-                    </View>
-
-                    <View style={styles.body}>
-                        <View style={styles.topRow}>
-                            <Image source={{ uri: avatar }} style={styles.avatar} />
-                            <View style={styles.ratingCard}>
-                                <Text style={styles.ratingValue}>4.8</Text>
-                                <Text style={styles.ratingLabel}>RATING</Text>
-                            </View>
-                        </View>
-
-                        <Text style={styles.nameText}>{userInfo?.name || 'Lokesh'}</Text>
-                        <Text style={styles.metaText}>{userInfo?.primaryRole === 'employer' ? 'Hiring Actively' : 'Professional Member'} • Hyderabad</Text>
-
-                        <View style={styles.statsRow}>
-                            <View style={styles.statCard}><Text style={styles.statValue}>1.2k</Text><Text style={styles.statLabel}>KARMA</Text></View>
-                            <View style={styles.statCard}><Text style={styles.statValue}>24</Text><Text style={styles.statLabel}>JOBS</Text></View>
-                            <View style={styles.statCard}><Text style={styles.statValue}>98%</Text><Text style={styles.statLabel}>RESPONSE</Text></View>
-                        </View>
-
-                        <View style={styles.contentCard}>
-                            <Text style={styles.sectionTitle}>About Me</Text>
-                            <Text style={styles.sectionText}>Dedicated professional focused on high-trust work opportunities and fast response times.</Text>
-                        </View>
-
-                        <View style={styles.contentCard}>
-                            <Text style={styles.sectionTitle}>Skills</Text>
-                            <View style={styles.skillsRow}>
-                                {PROFILE_SKILLS.map((skill) => (
-                                    <View key={skill} style={styles.skillChip}>
-                                        <Text style={styles.skillText}>{skill}</Text>
-                                    </View>
-                                ))}
-                            </View>
-                        </View>
-
-                        <TouchableOpacity style={styles.editButton} onPress={onEditProfile}>
-                            <Text style={styles.editButtonText}>Edit Profile Details</Text>
                         </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.heroCard}>
+                        <View style={styles.heroTopRow}>
+                            <Image source={{ uri: safeAvatar }} style={styles.avatar} />
+                            <View style={styles.heroIdentity}>
+                                <Text style={styles.nameText}>{displayName}</Text>
+                                <Text style={styles.metaText}>{roleLabel}</Text>
+                                <Text style={styles.locationText}>{cityLabel}</Text>
+                            </View>
+                            <View style={styles.ratingCard}>
+                                <Text style={styles.ratingValue}>{ratingValue}</Text>
+                                <Text style={styles.ratingLabel}>Rating</Text>
+                            </View>
+                        </View>
+
+                        <View style={styles.heroBadgeRow}>
+                            <View style={styles.coverBadgeGlass}>
+                                <Text style={styles.coverBadgeText}>{availabilityLabel}</Text>
+                            </View>
+                            {tierLabel ? (
+                                <View style={styles.coverBadgeAmber}>
+                                    <Text style={styles.coverBadgeAmberText}>{tierLabel}</Text>
+                                </View>
+                            ) : null}
+                        </View>
+
+                        <View style={styles.profileHealthWrap}>
+                            <View style={styles.profileHealthTrack}>
+                                <View style={[styles.profileHealthFill, { width: `${profileHealth}%` }]} />
+                            </View>
+                            <Text style={styles.profileHealthText}>Profile Health {profileHealth}%</Text>
+                        </View>
+                    </View>
+                </LinearGradient>
+
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                    <View style={styles.body}>
+                        <View style={styles.statsRow}>
+                            <View style={styles.statCard}>
+                                <Text style={styles.statValue}>{toDisplayNumber(safeUserInfo?.karmaScore)}</Text>
+                                <Text style={styles.statLabel}>KARMA</Text>
+                            </View>
+                            <View style={styles.statCard}>
+                                <Text style={styles.statValue}>{toDisplayNumber(safeUserInfo?.jobsCompleted)}</Text>
+                                <Text style={styles.statLabel}>JOBS</Text>
+                            </View>
+                            <View style={styles.statCard}>
+                                <Text style={styles.statValue}>{toDisplayPercent(safeUserInfo?.responseRate)}</Text>
+                                <Text style={styles.statLabel}>RESPONSE</Text>
+                            </View>
+                        </View>
+
+                        <View style={styles.contentCard}>
+                            <Text style={styles.sectionTitle}>About</Text>
+                            <Text style={styles.sectionText}>{aboutText}</Text>
+                        </View>
+
+                        <View style={styles.contentCard}>
+                            <Text style={styles.sectionTitle}>Verified Skills</Text>
+                            {resolvedSkills.length > 0 ? (
+                                <View style={styles.skillsRow}>
+                                    {resolvedSkills.map((skill) => (
+                                        <View key={skill} style={styles.skillChip}>
+                                            <Text style={styles.skillText}>{skill}</Text>
+                                        </View>
+                                    ))}
+                                </View>
+                            ) : (
+                                <Text style={styles.sectionText}>No verified skills available yet.</Text>
+                            )}
+                        </View>
+
+                        <View style={styles.actionsRow}>
+                            <TouchableOpacity style={styles.secondaryButton} onPress={onOpenSettings || onEditProfile} activeOpacity={0.86}>
+                                <Text style={styles.secondaryButtonText}>Settings</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.editButton} onPress={onEditProfile} activeOpacity={0.86}>
+                                <Text style={styles.editButtonText}>Edit Profile</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
                 </ScrollView>
             </View>
@@ -95,8 +180,7 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: theme.background,
     },
-    headerBackground: {
-        backgroundColor: theme.primary,
+    headerGradient: {
         paddingBottom: 14,
     },
     headerRow: {
@@ -104,7 +188,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 16,
-        paddingTop: 16,
+        paddingTop: 12,
     },
     headerButton: {
         width: 36,
@@ -120,165 +204,174 @@ const styles = StyleSheet.create({
         fontWeight: '300',
     },
     headerTitle: {
-        fontSize: 16,
-        fontWeight: '900',
         color: theme.surface,
+        fontSize: 17,
+        fontWeight: '800',
     },
-    coverWrap: {
-        height: 176,
-        backgroundColor: theme.darkCard,
-        overflow: 'hidden',
-        position: 'relative',
+    heroCard: {
+        marginTop: 10,
+        marginHorizontal: 14,
+        borderRadius: 18,
+        backgroundColor: 'rgba(255,255,255,0.16)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.24)',
+        padding: 14,
     },
-    coverImage: {
-        ...StyleSheet.absoluteFillObject,
-        opacity: 0.35,
-    },
-    coverBadgeRow: {
-        position: 'absolute',
-        top: 14,
-        left: 16,
-        right: 16,
+    heroTopRow: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
+        gap: 12,
+    },
+    heroIdentity: {
+        flex: 1,
+    },
+    heroBadgeRow: {
+        flexDirection: 'row',
+        gap: 8,
+        marginTop: 12,
     },
     coverBadgeGlass: {
-        backgroundColor: 'rgba(255,255,255,0.22)',
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.3)',
+        backgroundColor: 'rgba(255,255,255,0.16)',
         borderRadius: RADIUS.full,
-        paddingHorizontal: 12,
+        paddingHorizontal: 10,
         paddingVertical: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.28)',
+        flex: 1,
     },
     coverBadgeText: {
-        color: theme.surface,
+        color: '#ffffff',
         fontSize: 10,
-        fontWeight: '900',
-        textTransform: 'uppercase',
-        letterSpacing: 0.7,
+        fontWeight: '800',
     },
     coverBadgeAmber: {
-        backgroundColor: '#fcd34d',
+        backgroundColor: '#fde68a',
         borderRadius: RADIUS.full,
-        paddingHorizontal: 12,
+        paddingHorizontal: 10,
         paddingVertical: 6,
     },
     coverBadgeAmberText: {
-        color: '#78350f',
+        color: '#7c2d12',
         fontSize: 10,
-        fontWeight: '900',
-        textTransform: 'uppercase',
-        letterSpacing: 0.7,
+        fontWeight: '800',
     },
-    body: {
-        paddingHorizontal: 16,
+    profileHealthWrap: {
+        marginTop: 12,
+    },
+    profileHealthTrack: {
+        height: 8,
+        borderRadius: 999,
+        backgroundColor: 'rgba(255,255,255,0.25)',
+        overflow: 'hidden',
+    },
+    profileHealthFill: {
+        height: '100%',
+        borderRadius: 999,
+        backgroundColor: '#a7f3d0',
+    },
+    profileHealthText: {
+        marginTop: 5,
+        color: '#ede9fe',
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    scrollContent: {
         paddingBottom: 24,
     },
-    topRow: {
-        marginTop: -48,
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'flex-end',
+    body: {
+        marginTop: 12,
+        paddingHorizontal: 16,
+        paddingBottom: 14,
     },
     avatar: {
-        width: 96,
-        height: 96,
-        borderRadius: RADIUS.xl,
-        borderWidth: 4,
-        borderColor: theme.surface,
-        backgroundColor: theme.surface,
+        width: 74,
+        height: 74,
+        borderRadius: RADIUS.full,
+        borderWidth: 2,
+        borderColor: 'rgba(255,255,255,0.5)',
+        backgroundColor: '#ddd6fe',
     },
     ratingCard: {
-        backgroundColor: theme.surface,
-        borderRadius: RADIUS.lg,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        alignItems: 'center',
+        minWidth: 72,
+        borderRadius: 12,
+        backgroundColor: 'rgba(15,23,42,0.3)',
         borderWidth: 1,
-        borderColor: theme.borderMedium,
+        borderColor: 'rgba(255,255,255,0.2)',
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        alignItems: 'center',
     },
     ratingValue: {
-        fontSize: 32,
+        fontSize: 18,
         fontWeight: '900',
-        color: theme.textPrimary,
-        lineHeight: 34,
+        color: '#ffffff',
     },
     ratingLabel: {
         fontSize: 10,
-        fontWeight: '900',
-        color: theme.textMuted,
-        letterSpacing: 1,
+        fontWeight: '800',
+        color: '#ddd6fe',
+        textTransform: 'uppercase',
     },
     nameText: {
-        fontSize: 26,
+        fontSize: 18,
         fontWeight: '900',
-        color: theme.textPrimary,
-        marginTop: 12,
+        color: '#ffffff',
     },
     metaText: {
+        marginTop: 2,
         fontSize: 12,
-        color: theme.textSecondary,
         fontWeight: '700',
-        marginTop: 4,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
+        color: '#ede9fe',
+    },
+    locationText: {
+        marginTop: 2,
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#d8b4fe',
     },
     statsRow: {
         flexDirection: 'row',
         gap: 10,
-        marginVertical: 16,
     },
     statCard: {
         flex: 1,
-        backgroundColor: theme.surface,
+        borderRadius: 14,
+        backgroundColor: '#ffffff',
         borderWidth: 1,
-        borderColor: theme.borderMedium,
-        borderRadius: RADIUS.lg,
-        paddingVertical: 14,
+        borderColor: '#e2e8f0',
+        paddingVertical: 12,
         alignItems: 'center',
-        shadowColor: theme.textPrimary,
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 2,
+        ...SHADOWS.sm,
     },
     statValue: {
-        fontSize: 20,
+        fontSize: 18,
         fontWeight: '900',
-        color: theme.textPrimary,
+        color: '#1e293b',
     },
     statLabel: {
-        fontSize: 9,
-        fontWeight: '900',
-        color: theme.textMuted,
-        marginTop: 2,
+        marginTop: 3,
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#94a3b8',
         letterSpacing: 1,
     },
     contentCard: {
-        backgroundColor: theme.surface,
-        borderRadius: 32,
+        marginTop: 14,
+        borderRadius: 16,
+        backgroundColor: '#ffffff',
         borderWidth: 1,
-        borderColor: theme.borderMedium,
-        padding: 20,
-        marginBottom: 12,
-        shadowColor: theme.textPrimary,
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        elevation: 2,
+        borderColor: '#e2e8f0',
+        padding: 16,
     },
     sectionTitle: {
-        fontSize: 12,
+        fontSize: 14,
         fontWeight: '900',
-        color: theme.textPrimary,
-        letterSpacing: 1,
-        marginBottom: 10,
-        textTransform: 'uppercase',
+        color: '#0f172a',
+        marginBottom: 8,
     },
     sectionText: {
-        fontSize: 14,
-        color: theme.textSecondary,
+        fontSize: 13,
+        color: '#475569',
         lineHeight: 20,
         fontWeight: '500',
     },
@@ -288,30 +381,47 @@ const styles = StyleSheet.create({
         gap: 8,
     },
     skillChip: {
+        borderRadius: RADIUS.full,
+        backgroundColor: '#f5f3ff',
+        borderWidth: 1,
+        borderColor: '#ddd6fe',
         paddingHorizontal: 10,
         paddingVertical: 6,
-        borderRadius: RADIUS.sm,
-        backgroundColor: theme.background,
-        borderWidth: 1,
-        borderColor: theme.borderMedium,
     },
     skillText: {
-        fontSize: 11,
+        color: '#5b21b6',
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    actionsRow: {
+        marginTop: 16,
+        flexDirection: 'row',
+        gap: 10,
+    },
+    secondaryButton: {
+        flex: 1,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#ddd6fe',
+        backgroundColor: '#f5f3ff',
+        paddingVertical: 13,
+        alignItems: 'center',
+    },
+    secondaryButtonText: {
+        color: '#5b21b6',
+        fontSize: 14,
         fontWeight: '800',
-        color: theme.textSecondary,
-        textTransform: 'uppercase',
     },
     editButton: {
-        backgroundColor: theme.darkCard,
-        borderRadius: RADIUS.lg,
+        flex: 1.4,
+        borderRadius: 14,
+        backgroundColor: '#7c3aed',
+        paddingVertical: 13,
         alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 15,
-        marginTop: 10,
     },
     editButtonText: {
-        color: theme.surface,
+        color: '#ffffff',
         fontSize: 14,
-        fontWeight: '900',
+        fontWeight: '800',
     },
 });

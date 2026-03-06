@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/AppStore';
-import { DEMO_MODE } from '../config';
 
 export default function OfflineBanner() {
     const { isOnline } = useAppStore();
@@ -11,9 +10,6 @@ export default function OfflineBanner() {
     const insets = useSafeAreaInsets();
 
     useEffect(() => {
-        if (DEMO_MODE) {
-            return undefined;
-        }
         if (!isOnline) {
             Animated.spring(translateY, {
                 toValue: 0,
@@ -28,10 +24,6 @@ export default function OfflineBanner() {
             }).start();
         }
     }, [isOnline, translateY]);
-
-    if (DEMO_MODE) {
-        return null;
-    }
 
     return (
         <Animated.View style={[styles.container, { transform: [{ translateY }], paddingTop: insets.top || 40 }]}>

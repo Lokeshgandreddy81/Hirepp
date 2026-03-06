@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
     View,
     Text,
@@ -6,86 +6,254 @@ import {
     TouchableOpacity,
     ScrollView,
     Image,
+    ActivityIndicator,
     Modal,
     TextInput,
     KeyboardAvoidingView,
     Platform,
+    Alert,
 } from 'react-native';
 import { logger } from '../utils/logger';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import client from '../api/client';
 import NudgeToast from '../components/NudgeToast';
+import SocketService from '../services/socket';
+
+const extractArrayPayload = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return null;
+};
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+const normalizeObjectId = (value) => {
+    const normalized = String(value || '').trim();
+    if (!OBJECT_ID_PATTERN.test(normalized)) return '';
+    return normalized;
+};
+const normalizeCardToken = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+const buildCardSignature = (job = {}) => {
+    const skills = Array.isArray(job.skills)
+        ? job.skills.map((item) => normalizeCardToken(item)).filter(Boolean).sort().join('|')
+        : '';
+    return [
+        normalizeCardToken(job.title),
+        normalizeCardToken(job.company),
+        normalizeCardToken(job.location),
+        normalizeCardToken(job.salary),
+        normalizeCardToken(job.type),
+        skills,
+    ].join('::');
+};
+const collapseDuplicateJobCards = (jobs = []) => {
+    const rows = Array.isArray(jobs) ? jobs : [];
+    const bySignature = new Set();
+    const collapsed = [];
+
+    for (const job of rows) {
+        const signature = buildCardSignature(job);
+        if (!signature || !bySignature.has(signature)) {
+            if (signature) bySignature.add(signature);
+            collapsed.push(job);
+        }
+    }
+
+    return collapsed;
+};
+const MY_JOBS_CACHE_KEY = '@cached_employer_jobs_dashboard';
 
 export default function EmployerDashboardScreen({ navigation }) {
     const [jobs, setJobs] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [errorMsg, setErrorMsg] = useState('');
     const [selectedJob, setSelectedJob] = useState(null);
-    const [activeFilter, setActiveFilter] = useState('All');
     const [showResponseReminder, setShowResponseReminder] = useState(false);
     const [toastVisible, setToastVisible] = useState(false);
+    const [actionBusy, setActionBusy] = useState(false);
+    const fetchInFlightRef = useRef(false);
+    const pendingFetchRef = useRef(false);
+    const fetchRequestIdRef = useRef(0);
+    const hasLoadedOnceRef = useRef(false);
     const insets = useSafeAreaInsets();
 
-    React.useEffect(() => {
-        fetchMyJobs();
-    }, []);
+    const fetchMyJobs = useCallback(async ({ showLoader = false } = {}) => {
+        if (fetchInFlightRef.current) {
+            pendingFetchRef.current = true;
+            return;
+        }
+        const requestId = fetchRequestIdRef.current + 1;
+        fetchRequestIdRef.current = requestId;
+        fetchInFlightRef.current = true;
 
-    React.useEffect(() => {
-        navigation.setParams({ hideFab: Boolean(selectedJob) });
-    }, [navigation, selectedJob]);
-
-    const fetchMyJobs = async () => {
-        setIsLoading(true);
-        setErrorMsg('');
+        if (showLoader || !hasLoadedOnceRef.current) {
+            setIsLoading(true);
+        }
         try {
-            const { data } = await client.get('/api/jobs/my-jobs');
+            const [jobsResult, applicationsResult] = await Promise.allSettled([
+                client.get('/api/jobs/my-jobs', {
+                    __skipApiErrorHandler: true,
+                    __maxRetries: 0,
+                    __disableBaseFallback: true,
+                    timeout: 6000,
+                }),
+                client.get('/api/applications', {
+                    __skipApiErrorHandler: true,
+                    __maxRetries: 0,
+                    __disableBaseFallback: true,
+                    timeout: 6000,
+                }),
+            ]);
+            if (requestId !== fetchRequestIdRef.current) return;
 
-            const jobsArray = Array.isArray(data) ? data : (data.data || []);
+            if (jobsResult.status !== 'fulfilled') {
+                throw jobsResult.reason;
+            }
 
-            const formattedJobs = jobsArray.map(j => ({
-                id: j._id,
-                title: j.title,
-                company: j.companyName || 'Your Company',
-                location: j.location,
-                salary: j.salaryRange,
-                type: j.shift || 'Full-time',
-                postedAt: new Date(j.createdAt).toLocaleDateString(),
-                description: j.requirements ? j.requirements.join(', ') : 'No description provided.',
-                skills: j.requirements || [],
-                applicantCount: Number(j.applicantCount || 0),
-                shortlistedCount: Number(j.shortlistedCount || j.stats?.shortlisted || 0),
-                hiredCount: Number(j.hiredCount || j.stats?.hired || 0),
-                status: String(j.status || 'open'),
-            }));
-            setJobs(formattedJobs);
-            const shouldRemind = jobsArray.some((job) => Number(job?.applicantCount || 0) > 0);
+            const jobsArray = extractArrayPayload(jobsResult.value?.data);
+            if (!jobsArray) {
+                throw new Error('Invalid jobs response format.');
+            }
+
+            let applicationsArray = [];
+            if (applicationsResult.status === 'fulfilled') {
+                const parsedApplications = extractArrayPayload(applicationsResult.value?.data);
+                if (parsedApplications) {
+                    applicationsArray = parsedApplications;
+                } else {
+                    logger.warn('My Jobs: applications payload was not an array. Falling back to zero counts.');
+                }
+            } else {
+                logger.warn('My Jobs: applications fetch failed. Falling back to zero counts.');
+            }
+
+            const perJobStats = applicationsArray.reduce((acc, application) => {
+                const jobId = String(application?.job?._id || application?.job || '');
+                if (!jobId) return acc;
+                const status = String(application?.status || '').toLowerCase();
+                if (!acc[jobId]) {
+                    acc[jobId] = {
+                        total: 0,
+                        shortlisted: 0,
+                        hired: 0,
+                        accepted: 0,
+                    };
+                }
+                acc[jobId].total += 1;
+                if (status === 'shortlisted') acc[jobId].shortlisted += 1;
+                if (status === 'hired') acc[jobId].hired += 1;
+                if (status === 'accepted' || status === 'offer_accepted') acc[jobId].accepted += 1;
+                return acc;
+            }, {});
+
+            const formattedJobs = jobsArray.map((j) => {
+                const createdAtRaw = j?.createdAt ? new Date(j.createdAt) : null;
+                const jobId = normalizeObjectId(j?._id);
+                if (!jobId) return null;
+                const liveStats = perJobStats[jobId] || {};
+                const applicantCount = Number(liveStats.total ?? j?.applicantCount ?? 0);
+                const shortlistedCount = Number(liveStats.shortlisted ?? j?.shortlistedCount ?? j?.stats?.shortlisted ?? 0);
+                const hiredCount = Number(liveStats.hired ?? j?.hiredCount ?? j?.stats?.hired ?? 0);
+                const acceptedCount = Number(liveStats.accepted ?? 0);
+
+                return {
+                    id: jobId,
+                    title: j?.title || 'Untitled Job',
+                    company: j?.companyName || 'Your Company',
+                    location: j?.location || '',
+                    salary: j?.salaryRange || 'Negotiable',
+                    type: j?.shift || 'Full-time',
+                    postedAt: createdAtRaw && !Number.isNaN(createdAtRaw.getTime())
+                        ? createdAtRaw.toLocaleDateString()
+                        : 'Recently',
+                    createdAt: createdAtRaw ? createdAtRaw.toISOString() : null,
+                    description: Array.isArray(j?.requirements) && j.requirements.length
+                        ? j.requirements.join(', ')
+                        : 'No description provided.',
+                    skills: Array.isArray(j?.requirements) ? j.requirements : [],
+                    applicantCount,
+                    shortlistedCount,
+                    hiredCount,
+                    acceptedCount,
+                    status: String(j?.status || 'open'),
+                };
+            }).filter(Boolean);
+            const uniqueById = Array.from(new Map(
+                formattedJobs.map((job) => [job.id, job])
+            ).values());
+            const stableCards = collapseDuplicateJobCards(uniqueById);
+
+            setJobs(stableCards);
+            const shouldRemind = stableCards.some((job) => Number(job?.applicantCount || 0) > 0);
             setShowResponseReminder(shouldRemind);
             if (shouldRemind) {
                 setToastVisible(true);
             }
+            AsyncStorage.setItem(MY_JOBS_CACHE_KEY, JSON.stringify(stableCards)).catch(() => { });
         } catch (error) {
-            logger.error('Failed to load jobs:', error);
-            setErrorMsg('Failed to load jobs. Please try again.');
+            if (requestId !== fetchRequestIdRef.current) return;
+            // Keep My Jobs resilient in weak-network scenarios without surfacing technical errors.
+            try {
+                const cached = await AsyncStorage.getItem(MY_JOBS_CACHE_KEY);
+                const parsed = JSON.parse(String(cached || '[]'));
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    setJobs(parsed);
+                    const shouldRemind = parsed.some((job) => Number(job?.applicantCount || 0) > 0);
+                    setShowResponseReminder(shouldRemind);
+                    return;
+                }
+            } catch (_cacheError) {
+                // Continue to empty fallback.
+            }
+            setJobs([]);
+            setShowResponseReminder(false);
         } finally {
-            setIsLoading(false);
+            if (requestId === fetchRequestIdRef.current) {
+                fetchInFlightRef.current = false;
+                hasLoadedOnceRef.current = true;
+                setIsLoading(false);
+                if (pendingFetchRef.current) {
+                    pendingFetchRef.current = false;
+                    setTimeout(() => {
+                        fetchMyJobs({ showLoader: false });
+                    }, 0);
+                }
+            }
         }
-    };
+    }, []);
 
-    const openAnalytics = useCallback(() => {
-        const parentNav = navigation?.getParent?.();
-        if (parentNav?.navigate) {
-            parentNav.navigate('EmployerAnalytics');
-            return;
-        }
-        navigation.navigate('EmployerAnalytics');
-    }, [navigation]);
+    React.useEffect(() => {
+        fetchMyJobs({ showLoader: true });
+    }, [fetchMyJobs]);
+
+    React.useEffect(() => {
+        const unsubscribeFocus = navigation.addListener('focus', fetchMyJobs);
+        return unsubscribeFocus;
+    }, [fetchMyJobs, navigation]);
+
+    React.useEffect(() => {
+        const handleRealtimeApplication = () => {
+            fetchMyJobs();
+        };
+
+        SocketService.on('new_application', handleRealtimeApplication);
+        return () => {
+            SocketService.off('new_application', handleRealtimeApplication);
+        };
+    }, [fetchMyJobs]);
+
+    const showCenteredEmptyState = !isLoading && jobs.length === 0;
 
     const handleViewApplicants = useCallback(() => {
-        if (!selectedJob?.id) return;
+        if (!selectedJob?.id) {
+            Alert.alert('Missing job', 'Could not open applicants for this job.');
+            return;
+        }
         setSelectedJob(null);
-        navigation.navigate('Talent', { jobId: selectedJob.id });
+        navigation.navigate('Talent', { jobId: selectedJob.id, jobTitle: selectedJob.title });
     }, [navigation, selectedJob]);
 
     const [isEditModalVisible, setIsEditModalVisible] = useState(false);
@@ -99,6 +267,7 @@ export default function EmployerDashboardScreen({ navigation }) {
     });
 
     const openEditModal = () => {
+        if (!selectedJob) return;
         setEditForm({
             title: selectedJob.title,
             company: selectedJob.company,
@@ -110,9 +279,22 @@ export default function EmployerDashboardScreen({ navigation }) {
         setIsEditModalVisible(true);
     };
 
-    const handleSaveEdit = () => {
-        const updatedJobs = jobs.map(j => {
-            if (j.id === selectedJob.id) {
+    const handleSaveEdit = useCallback(async () => {
+        if (!selectedJob?.id || actionBusy) return;
+        setActionBusy(true);
+        try {
+            const requirements = editForm.requirements.split(',').map((s) => s.trim()).filter(Boolean);
+            await client.put(`/api/jobs/${selectedJob.id}`, {
+                title: editForm.title,
+                companyName: editForm.company,
+                location: editForm.location,
+                salaryRange: editForm.salary,
+                requirements,
+                description: editForm.description,
+            });
+
+            const updatedJobs = jobs.map((j) => {
+                if (j.id !== selectedJob.id) return j;
                 return {
                     ...j,
                     title: editForm.title,
@@ -120,38 +302,89 @@ export default function EmployerDashboardScreen({ navigation }) {
                     location: editForm.location,
                     salary: editForm.salary,
                     description: editForm.description,
-                    skills: editForm.requirements.split(',').map(s => s.trim()).filter(s => s)
+                    skills: requirements,
                 };
-            }
-            return j;
-        });
-        setJobs(updatedJobs);
-        setSelectedJob(updatedJobs.find(j => j.id === selectedJob.id));
-        setIsEditModalVisible(false);
-    };
+            });
+            const updatedSelected = updatedJobs.find((j) => j.id === selectedJob.id) || null;
+            setJobs(updatedJobs);
+            setSelectedJob(updatedSelected);
+            setIsEditModalVisible(false);
+            setToastVisible(true);
+        } catch (error) {
+            logger.error('Failed to update job posting:', error);
+            Alert.alert('Update failed', 'Could not update this job right now. Please try again.');
+        } finally {
+            setActionBusy(false);
+        }
+    }, [actionBusy, editForm, jobs, selectedJob]);
 
-    const handleDuplicateJob = useCallback((jobToDuplicate) => {
-        if (!jobToDuplicate) return;
-        const duplicated = {
-            ...jobToDuplicate,
-            id: `${jobToDuplicate.id}-dup-${Date.now()}`,
-            title: `${jobToDuplicate.title} (Copy)`,
-            postedAt: new Date().toLocaleDateString(),
-            applicantCount: 0,
-            shortlistedCount: 0,
-            hiredCount: 0,
-            status: 'draft',
-        };
-        setJobs((prev) => [duplicated, ...prev]);
-        setToastVisible(true);
-    }, []);
+    const handleDeleteJob = useCallback((jobToDelete) => {
+        if (!jobToDelete?.id || actionBusy) return;
+        Alert.alert(
+            'Delete this job?',
+            `This will permanently remove "${jobToDelete.title}" and related applications.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setActionBusy(true);
+                        try {
+                            await client.delete(`/api/jobs/${jobToDelete.id}`);
+                            setSelectedJob(null);
+                            setJobs((prev) => prev.filter((row) => row.id !== jobToDelete.id));
+                            await fetchMyJobs();
+                            Alert.alert('Deleted', 'Job posting removed successfully.');
+                        } catch (error) {
+                            logger.error('Delete job failed:', error);
+                            Alert.alert('Delete failed', 'Could not delete this job right now. Please try again.');
+                        } finally {
+                            setActionBusy(false);
+                        }
+                    },
+                },
+            ]
+        );
+    }, [actionBusy, fetchMyJobs]);
+
+    const handleDeleteAllJobs = useCallback(() => {
+        if (actionBusy) return;
+        Alert.alert(
+            'Delete all my jobs?',
+            'This permanently removes all of your posted jobs.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete All',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setActionBusy(true);
+                        try {
+                            await client.delete('/api/jobs/my-jobs/all');
+                            setSelectedJob(null);
+                            setJobs([]);
+                            setShowResponseReminder(false);
+                            await fetchMyJobs();
+                            Alert.alert('Done', 'All your job postings were deleted.');
+                        } catch (error) {
+                            logger.error('Delete all jobs failed:', error);
+                            Alert.alert('Delete all failed', 'Could not delete all jobs right now. Please try again.');
+                        } finally {
+                            setActionBusy(false);
+                        }
+                    },
+                },
+            ]
+        );
+    }, [actionBusy, fetchMyJobs]);
 
     if (selectedJob) {
         return (
             <View style={styles.container}>
                 <View style={styles.bannerContainer}>
                     <Image
-                        source={{ uri: 'https://source.unsplash.com/random/800x400/?office,work' }}
+                        source={{ uri: `https://ui-avatars.com/api/?name=${encodeURIComponent(String(selectedJob.company || 'Company'))}&background=7c3aed&color=fff&size=512` }}
                         style={styles.bannerImage}
                     />
                     <View style={styles.bannerOverlay} />
@@ -220,11 +453,22 @@ export default function EmployerDashboardScreen({ navigation }) {
                         <TouchableOpacity style={styles.viewApplicantsButton} onPress={handleViewApplicants}>
                             <Text style={styles.viewApplicantsButtonText}>View Applicants</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.editButton} onPress={openEditModal}>
-                            <Text style={styles.editButtonText}>Edit Job Posting</Text>
+                        <TouchableOpacity style={[styles.editButton, actionBusy && styles.actionButtonDisabled]} onPress={openEditModal} disabled={actionBusy}>
+                            <Text style={styles.editButtonText}>{actionBusy ? 'Working...' : 'Edit Job Posting'}</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.duplicateButton} onPress={() => handleDuplicateJob(selectedJob)}>
-                            <Text style={styles.duplicateButtonText}>Duplicate Job</Text>
+                        <TouchableOpacity
+                            style={[styles.deleteButton, actionBusy && styles.actionButtonDisabled]}
+                            onPress={() => handleDeleteJob(selectedJob)}
+                            disabled={actionBusy}
+                        >
+                            <Text style={styles.deleteButtonText}>{actionBusy ? 'Working...' : 'Delete This Job'}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.deleteAllButton, actionBusy && styles.actionButtonDisabled]}
+                            onPress={handleDeleteAllJobs}
+                            disabled={actionBusy}
+                        >
+                            <Text style={styles.deleteAllButtonText}>{actionBusy ? 'Working...' : 'Delete All My Jobs'}</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -273,8 +517,8 @@ export default function EmployerDashboardScreen({ navigation }) {
                                     <Text style={styles.label}>Requirements (Comma separated)</Text>
                                     <TextInput style={[styles.input, styles.textArea]} value={editForm.requirements} multiline onChangeText={t => setEditForm({ ...editForm, requirements: t })} />
                                 </View>
-                                <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
-                                    <Text style={styles.saveButtonText}>Save Changes</Text>
+                                <TouchableOpacity style={[styles.saveButton, actionBusy && styles.actionButtonDisabled]} onPress={handleSaveEdit} disabled={actionBusy}>
+                                    <Text style={styles.saveButtonText}>{actionBusy ? 'Saving...' : 'Save Changes'}</Text>
                                 </TouchableOpacity>
                             </ScrollView>
                         </View>
@@ -285,93 +529,78 @@ export default function EmployerDashboardScreen({ navigation }) {
     }
 
     return (
-        <View style={[styles.container, { paddingTop: insets.top }]}>
-            <View style={styles.header}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={styles.headerTitle}>Your Job Postings</Text>
-                    <View style={styles.headerActions}>
-                        <TouchableOpacity
-                            style={styles.iconActionBtn}
-                            onPress={openAnalytics}
-                            activeOpacity={0.8}
-                        >
-                            <Ionicons name="bar-chart-outline" size={18} color="#7c3aed" />
-                        </TouchableOpacity>
-                    </View>
-                </View>
+        <View style={styles.container}>
+            <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+                <Text style={styles.headerTitle}>My Jobs</Text>
+                <Text style={styles.headerSubtitle}>Manage your job postings</Text>
 
-                {isLoading && <Text style={{ color: '#64748b', marginTop: 8 }}>Loading jobs...</Text>}
-                {errorMsg ? <Text style={{ color: 'red', marginTop: 8 }}>{errorMsg}</Text> : null}
                 {showResponseReminder ? (
                     <View style={styles.responseReminder}>
                         <Text style={styles.responseReminderText}>Respond faster to improve hire rate and candidate trust.</Text>
                     </View>
                 ) : null}
+            </View>
 
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    style={styles.filtersContainer}
-                    contentContainerStyle={styles.filtersContent}
-                >
-                    {['All', 'High Match', 'Nearby', 'New'].map(filter => (
+            {isLoading ? (
+                <View style={styles.loadingCenterWrap}>
+                    <ActivityIndicator size="large" color="#7c3aed" />
+                    <Text style={styles.loadingCenterText}>Loading jobs...</Text>
+                </View>
+            ) : showCenteredEmptyState ? (
+                <View style={styles.emptyJobsCenterWrap}>
+                    <View style={styles.emptyJobsWrap}>
+                        <Text style={styles.emptyJobsTitle}>No jobs yet</Text>
+                        <Text style={styles.emptyJobsSubtitle}>Your posted jobs will appear here.</Text>
+                    </View>
+                </View>
+            ) : (
+                <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+                    {jobs.map((job) => (
                         <TouchableOpacity
-                            key={filter}
-                            style={[styles.filterButton, activeFilter === filter && styles.filterButtonActive]}
-                            onPress={() => setActiveFilter(filter)}
+                            key={job.id}
+                            style={styles.jobCard}
+                            onPress={() => setSelectedJob(job)}
+                            activeOpacity={0.9}
                         >
-                            <Text style={[styles.filterText, activeFilter === filter && styles.filterTextActive]}>{filter}</Text>
+                            <View style={styles.jobCardHeaderRow}>
+                                <View>
+                                    <Text style={styles.jobCardTitle}>{job.title}</Text>
+                                    <Text style={styles.jobCardCompany}>{job.company}</Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.cardTagsRow}>
+                                {job.skills.slice(0, 3).map(skill => (
+                                    <View key={skill} style={styles.cardTag}>
+                                        <Text style={styles.cardTagText}>{skill}</Text>
+                                    </View>
+                                ))}
+                            </View>
+
+                            <View style={styles.cardFooter}>
+                                <View style={styles.locationWrapper}>
+                                    <Text style={styles.cardFooterText}>📍 {job.location}</Text>
+                                </View>
+                                <Text style={styles.cardSalary}>{job.salary}</Text>
+                            </View>
+
+                            <View style={styles.pipelineBadgeRow}>
+                                <View style={styles.pipelineBadge}>
+                                    <Text style={styles.pipelineBadgeText}>{job.applicantCount || 0} applicants</Text>
+                                </View>
+                                <View style={styles.pipelineBadge}>
+                                    <Text style={styles.pipelineBadgeText}>{job.shortlistedCount || 0} shortlisted</Text>
+                                </View>
+                                <View style={styles.pipelineBadge}>
+                                    <Text style={styles.pipelineBadgeText}>{job.hiredCount || 0} hired</Text>
+                                </View>
+                            </View>
+
+                            <Text style={styles.postedAtText}>Posted {job.postedAt}</Text>
                         </TouchableOpacity>
                     ))}
                 </ScrollView>
-            </View>
-
-            <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
-                {jobs.map((job) => (
-                    <TouchableOpacity
-                        key={job.id}
-                        style={styles.jobCard}
-                        onPress={() => setSelectedJob(job)}
-                        activeOpacity={0.9}
-                    >
-                        <View style={styles.jobCardHeaderRow}>
-                            <View>
-                                <Text style={styles.jobCardTitle}>{job.title}</Text>
-                                <Text style={styles.jobCardCompany}>{job.company}</Text>
-                            </View>
-                        </View>
-
-                        <View style={styles.cardTagsRow}>
-                            {job.skills.slice(0, 3).map(skill => (
-                                <View key={skill} style={styles.cardTag}>
-                                    <Text style={styles.cardTagText}>{skill}</Text>
-                                </View>
-                            ))}
-                        </View>
-
-                        <View style={styles.cardFooter}>
-                            <View style={styles.locationWrapper}>
-                                <Text style={styles.cardFooterText}>📍 {job.location}</Text>
-                            </View>
-                            <Text style={styles.cardSalary}>{job.salary}</Text>
-                        </View>
-
-                        <View style={styles.pipelineBadgeRow}>
-                            <View style={styles.pipelineBadge}>
-                                <Text style={styles.pipelineBadgeText}>{job.applicantCount || 0} applicants</Text>
-                            </View>
-                            <View style={styles.pipelineBadge}>
-                                <Text style={styles.pipelineBadgeText}>{job.shortlistedCount || 0} shortlisted</Text>
-                            </View>
-                            <View style={styles.pipelineBadge}>
-                                <Text style={styles.pipelineBadgeText}>{job.hiredCount || 0} hired</Text>
-                            </View>
-                        </View>
-
-                        <Text style={styles.postedAtText}>Posted {job.postedAt}</Text>
-                    </TouchableOpacity>
-                ))}
-            </ScrollView>
+            )}
 
             <NudgeToast
                 visible={toastVisible}
@@ -379,7 +608,6 @@ export default function EmployerDashboardScreen({ navigation }) {
                 actionLabel="Review"
                 onAction={() => {
                     setToastVisible(false);
-                    setActiveFilter('High Match');
                 }}
                 onDismiss={() => setToastVisible(false)}
             />
@@ -393,81 +621,91 @@ const styles = StyleSheet.create({
         backgroundColor: '#f8fafc',
     },
     header: {
-        backgroundColor: '#fff',
+        backgroundColor: '#7c3aed',
         paddingHorizontal: 16,
-        paddingTop: 16,
-        paddingBottom: 12,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 2,
-        elevation: 2,
+        paddingBottom: 14,
+        shadowColor: '#4c1d95',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 8,
+        elevation: 6,
         zIndex: 10,
     },
     headerTitle: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: '#1e293b',
+        fontSize: 22,
+        fontWeight: '800',
+        color: '#ffffff',
     },
-    headerActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
+    headerSubtitle: {
+        marginTop: 4,
+        color: 'rgba(255,255,255,0.88)',
+        fontSize: 13,
+        fontWeight: '500',
     },
     responseReminder: {
         marginTop: 10,
         borderRadius: 10,
         borderWidth: 1,
-        borderColor: '#fde68a',
-        backgroundColor: '#fffbeb',
+        borderColor: 'rgba(255,255,255,0.28)',
+        backgroundColor: 'rgba(255,255,255,0.14)',
         paddingHorizontal: 10,
         paddingVertical: 8,
     },
     responseReminderText: {
-        color: '#854d0e',
+        color: '#ffffff',
         fontSize: 12,
         fontWeight: '600',
-    },
-    iconActionBtn: {
-        width: 34,
-        height: 34,
-        borderRadius: 17,
-        borderWidth: 1,
-        borderColor: '#e9d5ff',
-        backgroundColor: '#faf5ff',
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    filtersContainer: {
-        marginTop: 12,
-    },
-    filtersContent: {
-        gap: 8,
-        paddingBottom: 4,
-    },
-    filterButton: {
-        paddingHorizontal: 16,
-        paddingVertical: 6,
-        borderRadius: 20,
-        backgroundColor: '#f1f5f9',
-        borderWidth: 1,
-        borderColor: 'transparent',
-    },
-    filterButtonActive: {
-        backgroundColor: '#faf5ff',
-        borderColor: '#e9d5ff',
-    },
-    filterText: {
-        color: '#475569',
-        fontSize: 14,
-        fontWeight: '500',
-    },
-    filterTextActive: {
-        color: '#7c3aed',
     },
     listContent: {
         padding: 16,
         gap: 16,
+    },
+    loadingCenterWrap: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 24,
+    },
+    loadingCenterText: {
+        marginTop: 12,
+        fontSize: 14,
+        color: '#64748b',
+        fontWeight: '600',
+    },
+    emptyJobsCenterWrap: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 22,
+    },
+    emptyJobsWrap: {
+        width: '100%',
+        maxWidth: 360,
+        backgroundColor: '#ffffff',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        paddingVertical: 22,
+        paddingHorizontal: 16,
+        alignItems: 'center',
+        shadowColor: '#0f172a',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05,
+        shadowRadius: 10,
+        elevation: 2,
+    },
+    emptyJobsTitle: {
+        color: '#1e293b',
+        fontSize: 17,
+        fontWeight: '800',
+        textAlign: 'center',
+    },
+    emptyJobsSubtitle: {
+        marginTop: 6,
+        color: '#64748b',
+        fontSize: 13,
+        lineHeight: 18,
+        textAlign: 'center',
     },
     jobCard: {
         backgroundColor: '#fff',
@@ -731,18 +969,31 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: 'bold',
     },
-    duplicateButton: {
-        backgroundColor: '#eef2ff',
+    deleteButton: {
+        backgroundColor: '#fef2f2',
         borderWidth: 1,
-        borderColor: '#c7d2fe',
+        borderColor: '#fecaca',
         paddingVertical: 12,
         borderRadius: 12,
         alignItems: 'center',
     },
-    duplicateButtonText: {
-        color: '#3730a3',
+    deleteButtonText: {
+        color: '#b91c1c',
         fontSize: 14,
         fontWeight: '700',
+    },
+    deleteAllButton: {
+        backgroundColor: '#fee2e2',
+        borderWidth: 1,
+        borderColor: '#ef4444',
+        paddingVertical: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+    },
+    deleteAllButtonText: {
+        color: '#991b1b',
+        fontSize: 14,
+        fontWeight: '800',
     },
 
     // Modal Styles
@@ -797,5 +1048,8 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginTop: 8,
         marginBottom: 40,
+    },
+    actionButtonDisabled: {
+        opacity: 0.7,
     },
 });

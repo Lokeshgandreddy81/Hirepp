@@ -1,44 +1,41 @@
 import React, { memo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { AnimatedCard } from './AnimatedCard';
-import { getDisplayScorePercent, isMatchTier } from '../utils/matchUi';
+import { getDisplayScorePercent, getTierDefaultRatio } from '../utils/matchUi';
 import { RADIUS, SHADOWS, SPACING, theme } from '../theme/theme';
+
+const JOB_ACCENT_DARK = '#6d28d9';
+const JOB_ACCENT_BORDER = '#ddd6fe';
+const JOB_ACCENT_TEXT = '#6d28d9';
 
 const JobCard = ({
     item,
     onPress,
-    onShare,
-    onToggleSave,
-    isSaved,
     onReport,
-    isHistory,
     isReported,
-    showMatchInsights,
-    onReasonPress,
+    showMatchInsights: _showMatchInsights,
 }) => {
-    const tier = String(item?.tier || '').toUpperCase();
     const scorePercent = getDisplayScorePercent(item);
-    const hasMatchScore = Number.isFinite(scorePercent) && scorePercent > 0;
-    const hasMatchSignals = showMatchInsights
-        || typeof item?.matchScore === 'number'
-        || typeof item?.matchProbability === 'number'
-        || typeof item?.finalScore === 'number'
-        || isMatchTier(tier);
-    const shouldShowMatchBadge = hasMatchScore && hasMatchSignals;
-    const trustLabel = item?.trustedCompany || item?.trustBadge || item?.verifiedCompany
-        ? 'Verified Employer'
-        : 'Verified Listing';
+    const fallbackTierPercent = Math.round(getTierDefaultRatio(item?.tier) * 100);
+    const resolvedScorePercent = scorePercent > 0 ? scorePercent : fallbackTierPercent;
+    const shouldShowMatchBadge = Number.isFinite(resolvedScorePercent) && resolvedScorePercent > 0;
     const salaryLabel = String(item?.salaryRange || 'Salary not shared');
-    const hiredCount = Math.max(0, Number(item?.hiredCount || 0));
-    const hiringBadge = item?.urgentHiring ? 'Urgent Hiring' : (item?.activelyHiring ? 'Actively Hiring' : '');
+    const postedMeta = String(item?.postedTime || 'Just now');
+    const postedLabel = postedMeta.toLowerCase().startsWith('posted') ? postedMeta : `Posted ${postedMeta}`;
+    const locationLabel = String(item?.location || item?.distanceLabel || 'Location not shared');
+    const skillTags = Array.isArray(item?.requirements)
+        ? item.requirements
+            .filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
+            .map((entry) => entry.trim())
+            .slice(0, 3)
+        : [];
 
     return (
         <AnimatedCard
             style={[
                 styles.card,
-                isHistory && styles.cardHistory,
                 isReported && styles.cardReported,
             ]}
             onPress={() => onPress?.(item)}
@@ -46,21 +43,14 @@ const JobCard = ({
         >
             {shouldShowMatchBadge ? (
                 <LinearGradient
-                    colors={['#dbeafe', '#eef2ff']}
+                    colors={['#ede9fe', '#f5f3ff']}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                     style={styles.matchCornerBadge}
                 >
-                    <Text style={styles.matchCornerText}>{scorePercent}% Match</Text>
+                    <Text style={styles.matchCornerText}>{resolvedScorePercent}% MATCH</Text>
                 </LinearGradient>
             ) : null}
-
-            <View style={styles.topMetaRow}>
-                <View style={styles.trustBadge}>
-                    <Text style={styles.trustBadgeText}>{trustLabel}</Text>
-                </View>
-                <Text style={styles.postedTimeText}>{item?.postedTime || 'Just now'}</Text>
-            </View>
 
             {isReported ? (
                 <View style={styles.reportedBadge}>
@@ -68,83 +58,36 @@ const JobCard = ({
                 </View>
             ) : null}
 
-            <View style={[styles.heroRow, shouldShowMatchBadge && styles.heroRowWithBadge]}>
-                <View style={styles.heroLeft}>
-                    <Text style={styles.jobTitle} numberOfLines={1}>{item?.title || 'Untitled Job'}</Text>
-                    <Text style={styles.companyName} numberOfLines={1}>{item?.companyName || 'Unknown Company'}</Text>
+            <View style={[styles.contentWrap, shouldShowMatchBadge && styles.contentWrapWithBadge]}>
+                <Text style={styles.jobTitle} numberOfLines={1}>{item?.title || 'Untitled Job'}</Text>
+                <Text style={styles.companyName} numberOfLines={1}>{item?.companyName || 'Unknown Company'}</Text>
+
+                {skillTags.length ? (
+                    <View style={styles.skillsWrap}>
+                        {skillTags.map((skill, index) => (
+                            <View key={`${item?._id || item?.title || 'job'}-skill-${index}`} style={styles.skillChip}>
+                                <Text style={styles.skillChipText} numberOfLines={1}>{skill}</Text>
+                            </View>
+                        ))}
+                    </View>
+                ) : null}
+            </View>
+
+            <View style={styles.divider} />
+
+            <View style={styles.bottomRow}>
+                <View style={styles.locationWrap}>
+                    <Text style={styles.locationPin}>📍</Text>
                     <Text style={styles.locationText} numberOfLines={1}>
-                        {item?.distanceLabel || item?.location || 'Location not shared'}
+                        {locationLabel}
                     </Text>
                 </View>
 
-                <View style={styles.salaryWrap}>
-                    <Text style={styles.salaryLabel}>Salary</Text>
+                <View style={styles.salaryMetaWrap}>
                     <Text style={styles.salaryText} numberOfLines={1}>{salaryLabel}</Text>
+                    <Text style={styles.postedTimeText} numberOfLines={1}>{postedLabel}</Text>
                 </View>
             </View>
-
-            <View style={styles.socialProofRow}>
-                <Text style={styles.socialProofText}>
-                    Hired {hiredCount > 0 ? `${hiredCount}+` : 'new'} candidates
-                </Text>
-                <Text style={styles.socialProofDot}>•</Text>
-                <Text style={styles.socialProofText}>{item?.responseTimeLabel || 'Responds fast'}</Text>
-            </View>
-
-            {hiringBadge ? (
-                <View style={styles.hiringBadgeWrap}>
-                    <View style={[styles.hiringBadge, item?.urgentHiring ? styles.hiringBadgeUrgent : styles.hiringBadgeActive]}>
-                        <Text style={[styles.hiringBadgeText, item?.urgentHiring ? styles.hiringBadgeTextUrgent : styles.hiringBadgeTextActive]}>
-                            {hiringBadge}
-                        </Text>
-                    </View>
-                </View>
-            ) : null}
-
-            <View style={styles.tagsContainer}>
-                {(item?.requirements || []).slice(0, 3).map((requirement, index) => (
-                    <View key={`${item?._id || 'job'}-req-${index}`} style={styles.skillTag}>
-                        <Text style={styles.skillTagText} numberOfLines={1}>{requirement}</Text>
-                    </View>
-                ))}
-            </View>
-
-            {shouldShowMatchBadge ? (
-                <TouchableOpacity
-                    style={styles.matchExplainRow}
-                    activeOpacity={0.85}
-                    onPress={() => onReasonPress?.(item, { id: 'match_explain', label: 'Skills, location and recency drive this score.' })}
-                >
-                    <Text style={styles.matchExplainLabel}>Why this match?</Text>
-                    <Text style={styles.matchExplainValue}>{scorePercent}% fit</Text>
-                </TouchableOpacity>
-            ) : null}
-
-            <View style={styles.cardFooter}>
-                <TouchableOpacity style={styles.footerPill} onPress={() => onShare?.(item)} activeOpacity={0.82}>
-                    <Text style={styles.footerPillText}>Share</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                    style={[styles.footerPill, isSaved && styles.footerPillSaved]}
-                    onPress={() => onToggleSave?.(item?._id)}
-                    activeOpacity={0.82}
-                >
-                    <Text style={[styles.footerPillText, isSaved && styles.footerPillSavedText]}>
-                        {isSaved ? 'Saved' : 'Save'}
-                    </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.quickApplyBtn} onPress={() => onPress?.(item)} activeOpacity={0.9}>
-                    <Text style={styles.quickApplyBtnText}>Quick Apply</Text>
-                </TouchableOpacity>
-            </View>
-
-            {isHistory ? (
-                <TouchableOpacity style={styles.reApplyBtn} onPress={() => onPress?.(item)}>
-                    <Text style={styles.reApplyBtnText}>Re-Apply</Text>
-                </TouchableOpacity>
-            ) : null}
         </AnimatedCard>
     );
 };
@@ -153,263 +96,135 @@ export default memo(JobCard);
 
 const styles = StyleSheet.create({
     card: {
-        backgroundColor: 'rgba(255,255,255,0.985)',
+        backgroundColor: 'rgba(255,255,255,0.99)',
         borderRadius: RADIUS.lg,
-        padding: SPACING.md,
-        marginBottom: SPACING.md,
+        paddingHorizontal: SPACING.sm + 1,
+        paddingVertical: SPACING.sm,
+        marginBottom: SPACING.xs + 1,
         borderWidth: 1,
-        borderColor: '#e6edf8',
+        borderColor: '#e8edf4',
         ...SHADOWS.md,
         position: 'relative',
         overflow: 'visible',
     },
-    cardHistory: { opacity: 0.72 },
     cardReported: { opacity: 0.6 },
     matchCornerBadge: {
         position: 'absolute',
         top: -1,
         right: -1,
         borderTopRightRadius: RADIUS.lg,
-        borderBottomLeftRadius: RADIUS.md,
+        borderBottomLeftRadius: 10,
         borderWidth: 1,
-        borderColor: '#d4ddff',
-        paddingHorizontal: 10,
-        paddingVertical: 6,
+        borderColor: JOB_ACCENT_BORDER,
+        paddingHorizontal: 11,
+        paddingVertical: 5,
         zIndex: 3,
-        shadowColor: '#93c5fd',
+        shadowColor: JOB_ACCENT_DARK,
         shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.3,
+        shadowOpacity: 0.2,
         shadowRadius: 8,
         elevation: 3,
     },
     matchCornerText: {
-        fontSize: 12,
-        fontWeight: '800',
-        color: '#1d4ed8',
-    },
-    topMetaRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: SPACING.sm,
-        paddingRight: 84,
-    },
-    trustBadge: {
-        borderRadius: RADIUS.full,
-        borderWidth: 1,
-        borderColor: '#dbe7ff',
-        backgroundColor: '#f7faff',
-        paddingHorizontal: SPACING.sm,
-        paddingVertical: SPACING.xxs + 1,
-    },
-    trustBadgeText: {
         fontSize: 11,
         fontWeight: '800',
-        color: '#1f46cc',
+        color: JOB_ACCENT_TEXT,
         letterSpacing: 0.2,
     },
     postedTimeText: {
-        fontSize: 11,
+        fontSize: 10,
         color: '#94a3b8',
-        fontWeight: '700',
+        fontWeight: '600',
+        marginTop: 2,
     },
     reportedBadge: {
         position: 'absolute',
-        top: 10,
+        top: 8,
         left: 0,
         backgroundColor: '#fde7e9',
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
         borderBottomRightRadius: 8,
     },
     reportedBadgeText: { fontSize: 10, fontWeight: '600', color: '#b45359' },
-    heroRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        gap: SPACING.sm,
+    contentWrap: {
+        paddingRight: 2,
     },
-    heroRowWithBadge: {
-        paddingRight: 96,
-    },
-    heroLeft: {
-        flex: 1,
+    contentWrapWithBadge: {
+        paddingRight: 108,
     },
     jobTitle: {
-        fontSize: 19,
+        fontSize: 17,
         color: theme.textPrimary,
         fontWeight: '800',
         letterSpacing: -0.2,
     },
     companyName: {
-        marginTop: 4,
-        fontSize: 14,
-        fontWeight: '700',
-        color: '#1e293b',
-    },
-    locationText: {
         marginTop: 2,
-        fontSize: 12,
-        color: '#64748b',
-        fontWeight: '600',
-    },
-    salaryWrap: {
-        alignItems: 'flex-end',
-        maxWidth: '46%',
-    },
-    salaryLabel: {
-        fontSize: 10,
-        fontWeight: '700',
-        color: '#64748b',
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    salaryText: {
-        marginTop: 3,
-        fontSize: 21,
-        fontWeight: '900',
-        color: '#0f172a',
-        textAlign: 'right',
-    },
-    socialProofRow: {
-        marginTop: SPACING.sm,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    socialProofText: {
-        color: '#334155',
         fontSize: 11,
         fontWeight: '700',
+        color: '#586983',
     },
-    socialProofDot: {
-        color: '#94a3b8',
-        fontSize: 10,
-        fontWeight: '700',
-    },
-    hiringBadgeWrap: {
-        marginTop: SPACING.xs + 2,
-        flexDirection: 'row',
-    },
-    hiringBadge: {
-        borderRadius: RADIUS.full,
-        borderWidth: 1,
-        paddingHorizontal: 9,
-        paddingVertical: 4,
-    },
-    hiringBadgeUrgent: {
-        backgroundColor: '#fef3c7',
-        borderColor: '#fcd34d',
-    },
-    hiringBadgeActive: {
-        backgroundColor: '#dbeafe',
-        borderColor: '#bfdbfe',
-    },
-    hiringBadgeText: {
-        fontSize: 10,
-        fontWeight: '900',
-        letterSpacing: 0.2,
-    },
-    hiringBadgeTextUrgent: {
-        color: '#92400e',
-    },
-    hiringBadgeTextActive: {
-        color: '#1e3a8a',
-    },
-    tagsContainer: {
+    skillsWrap: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: SPACING.xs + 2,
-        marginTop: SPACING.sm,
-        marginBottom: SPACING.xs,
+        marginTop: 9,
+        marginBottom: 2,
     },
-    skillTag: {
-        backgroundColor: '#f8fbff',
-        paddingHorizontal: SPACING.sm,
-        paddingVertical: SPACING.xs + 1,
-        borderRadius: RADIUS.sm,
-        borderWidth: 1,
-        borderColor: '#e5ecf8',
-        maxWidth: '47%',
-    },
-    skillTagText: {
-        fontSize: 12,
-        color: '#475569',
-        fontWeight: '700',
-    },
-    matchExplainRow: {
-        marginTop: SPACING.xs + 1,
-        marginBottom: SPACING.sm,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#dbeafe',
-        backgroundColor: '#f8fbff',
+    skillChip: {
+        backgroundColor: '#eef2f7',
+        borderRadius: 10,
         paddingHorizontal: 10,
-        paddingVertical: 8,
+        paddingVertical: 5,
+        marginRight: 7,
+        marginBottom: 7,
+        borderWidth: 1,
+        borderColor: '#e6ebf4',
+    },
+    skillChipText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: '#4f6079',
+    },
+    divider: {
+        height: 1,
+        backgroundColor: '#edf1f5',
+        marginTop: 3,
+        marginBottom: 8,
+    },
+    bottomRow: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-end',
         justifyContent: 'space-between',
+        gap: 8,
     },
-    matchExplainLabel: {
-        color: '#1e3a8a',
-        fontSize: 12,
-        fontWeight: '700',
-    },
-    matchExplainValue: {
-        color: '#1d4ed8',
-        fontSize: 12,
-        fontWeight: '800',
-    },
-    cardFooter: {
+    locationWrap: {
+        flex: 1,
         flexDirection: 'row',
-        justifyContent: 'flex-end',
         alignItems: 'center',
-        gap: SPACING.xs,
-        marginTop: SPACING.xxs,
+        paddingRight: 6,
     },
-    footerPill: {
-        borderRadius: RADIUS.full,
-        borderWidth: 1,
-        borderColor: '#dbe6f8',
-        backgroundColor: '#f7fbff',
-        paddingHorizontal: SPACING.sm + 2,
-        paddingVertical: SPACING.xs + 1,
+    locationPin: {
+        fontSize: 13,
+        lineHeight: 16,
+        marginRight: 5,
     },
-    footerPillSaved: {
-        backgroundColor: '#edf6ff',
-        borderColor: '#b7d4ff',
+    locationText: {
+        fontSize: 12,
+        color: '#5f7190',
+        fontWeight: '600',
+        flexShrink: 1,
     },
-    footerPillText: {
-        fontSize: 11,
-        fontWeight: '700',
-        color: '#475569',
-        letterSpacing: 0.15,
+    salaryMetaWrap: {
+        alignItems: 'flex-end',
+        justifyContent: 'flex-end',
+        minWidth: 120,
+        maxWidth: '54%',
     },
-    footerPillSavedText: {
-        color: '#1d4ed8',
-    },
-    quickApplyBtn: {
-        borderRadius: RADIUS.full,
-        backgroundColor: '#1d4ed8',
-        borderWidth: 1,
-        borderColor: '#1d4ed8',
-        paddingHorizontal: SPACING.smd,
-        paddingVertical: SPACING.xs + 1,
-    },
-    quickApplyBtnText: {
-        color: '#ffffff',
-        fontSize: 11,
+    salaryText: {
+        fontSize: 15,
         fontWeight: '800',
-        letterSpacing: 0.15,
+        color: '#1f2f4a',
+        textAlign: 'right',
     },
-    reApplyBtn: {
-        marginTop: SPACING.sm + 2,
-        backgroundColor: '#e8f0ff',
-        borderRadius: 999,
-        paddingVertical: 9,
-        paddingHorizontal: 16,
-        alignSelf: 'flex-start',
-        borderWidth: 1,
-        borderColor: '#bfd5ff',
-    },
-    reApplyBtnText: { fontSize: 12, fontWeight: '600', color: '#1d4ed8' },
 });

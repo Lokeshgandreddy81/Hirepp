@@ -8,6 +8,7 @@ function ReferModalComponent({
     referringBounty,
     referPhoneInput,
     referPhoneError,
+    isSending,
     onClose,
     onPhoneChange,
     onSendReferral,
@@ -50,8 +51,12 @@ function ReferModalComponent({
 
                     {referPhoneError ? <Text style={styles.errorText}>{referPhoneError}</Text> : null}
 
-                    <TouchableOpacity style={styles.submitButton} onPress={onSendReferral}>
-                        <Text style={styles.submitButtonText}>SEND REFERRAL</Text>
+                    <TouchableOpacity
+                        style={[styles.submitButton, isSending && styles.submitButtonDisabled]}
+                        onPress={onSendReferral}
+                        disabled={isSending}
+                    >
+                        <Text style={styles.submitButtonText}>{isSending ? 'SENDING...' : 'SEND REFERRAL'}</Text>
                     </TouchableOpacity>
                 </View>
             </TouchableOpacity>
@@ -171,6 +176,9 @@ const styles = StyleSheet.create({
         borderRadius: RADIUS.lg,
         alignItems: 'center',
         marginTop: 16,
+    },
+    submitButtonDisabled: {
+        opacity: 0.7,
     },
     submitButtonText: {
         fontSize: 14,

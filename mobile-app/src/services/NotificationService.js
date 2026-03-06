@@ -6,7 +6,10 @@ import client from '../api/client';
 import { logger } from '../utils/logger';
 
 // Configure notification handler
-const isExpoGo = Constants.appOwnership === 'expo';
+const isExpoGo = (
+    Constants.executionEnvironment === 'storeClient'
+    || Constants.appOwnership === 'expo'
+);
 if (!isExpoGo) {
     Notifications.setNotificationHandler({
         handleNotification: async () => ({
@@ -31,11 +34,22 @@ export const registerForPushNotifications = async () => {
 
     if (finalStatus !== 'granted') return null;
 
-    const token = (await Notifications.getExpoPushTokenAsync()).data;
+    let token = null;
+    try {
+        token = (await Notifications.getExpoPushTokenAsync()).data;
+    } catch (error) {
+        logger.warn('Push token unavailable in this runtime:', error?.message || error);
+        return null;
+    }
+    if (!token) return null;
 
     // Register token with backend
     try {
-        await client.post('/api/notifications/register-token', { token, platform: Platform.OS });
+        await client.post(
+            '/api/notifications/register-token',
+            { token, platform: Platform.OS },
+            { __skipApiErrorHandler: true, __skipUnauthorizedHandler: true }
+        );
     } catch (e) {
         logger.warn('Push token registration failed:', e?.message);
     }

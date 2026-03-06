@@ -22,6 +22,38 @@ const normalizeUserInfo = (value = {}) => {
     };
 };
 
+const PERSISTED_USER_FIELDS = [
+    '_id',
+    'name',
+    'email',
+    'phoneNumber',
+    'accountMode',
+    'role',
+    'roles',
+    'activeRole',
+    'primaryRole',
+    'capabilities',
+    'hasSelectedRole',
+    'hasCompletedProfile',
+    'profileComplete',
+    'interviewVerified',
+    'isVerified',
+    'isAdmin',
+    'token',
+    'refreshToken',
+];
+
+const toPersistedUserInfo = (value = {}) => {
+    const normalized = normalizeUserInfo(value);
+    const compact = {};
+    PERSISTED_USER_FIELDS.forEach((key) => {
+        if (normalized[key] !== undefined) {
+            compact[key] = normalized[key];
+        }
+    });
+    return compact;
+};
+
 export const AuthProvider = ({ children }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [userToken, setUserToken] = useState(null);
@@ -65,7 +97,8 @@ export const AuthProvider = ({ children }) => {
         setIsLoading(true);
         try {
             const normalizedUser = normalizeUserInfo(data);
-            await SecureStore.setItemAsync('userInfo', JSON.stringify(normalizedUser));
+            const compactUser = toPersistedUserInfo(normalizedUser);
+            await SecureStore.setItemAsync('userInfo', JSON.stringify(compactUser));
             await SecureStore.setItemAsync('hasCompletedOnboarding', 'true');
             await AsyncStorage.setItem('@onboarding_completed', 'true');
             setHasCompletedOnboarding(true);
@@ -84,7 +117,8 @@ export const AuthProvider = ({ children }) => {
                 ...updates,
             });
 
-            await SecureStore.setItemAsync('userInfo', JSON.stringify(merged));
+            const compactUser = toPersistedUserInfo(merged);
+            await SecureStore.setItemAsync('userInfo', JSON.stringify(compactUser));
             setUserInfo(merged);
             if (merged.token) {
                 setUserToken(merged.token);
@@ -96,7 +130,8 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    const logout = async () => {
+    const logout = async (options = {}) => {
+        const { skipServerCall = false } = options;
         setIsLoading(true);
         try {
             const currentUser = userInfo || JSON.parse(await SecureStore.getItemAsync('userInfo') || 'null');
@@ -104,14 +139,15 @@ export const AuthProvider = ({ children }) => {
             const deviceId = await getOrCreateDeviceId();
             const token = currentUser?.token || null;
 
-            if (token) {
+            if (token && !skipServerCall) {
                 await client.post('/api/users/logout', { refreshToken, deviceId }, {
+                    __skipUnauthorizedHandler: true,
                     headers: {
                         Authorization: `Bearer ${token}`,
                         'x-device-id': deviceId,
                         'x-device-platform': 'mobile',
                     },
-                }).catch(() => {});
+                }).catch(() => { });
             }
             await SecureStore.deleteItemAsync('userInfo');
             await SecureStore.deleteItemAsync('hasCompletedOnboarding');
@@ -138,7 +174,7 @@ export const AuthProvider = ({ children }) => {
                 let user = JSON.parse(userInfoStr);
                 if (isTokenValid(user?.token)) {
                     user = normalizeUserInfo(user);
-                    await SecureStore.setItemAsync('userInfo', JSON.stringify(user));
+                    await SecureStore.setItemAsync('userInfo', JSON.stringify(toPersistedUserInfo(user)));
                     setUserInfo(user);
                     setUserToken(user.token);
 

@@ -1,6 +1,9 @@
 import React, { memo, useMemo } from 'react';
-import { ScrollView, Image, StyleSheet } from 'react-native';
+import { ScrollView, Image, StyleSheet, Dimensions } from 'react-native';
 import { theme, RADIUS } from '../../../theme/theme';
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const IMAGE_WIDTH = Math.max(260, SCREEN_WIDTH - 48);
 
 function GalleryPostComponent({ post }) {
     const images = useMemo(() => {
@@ -28,13 +31,16 @@ export default memo(GalleryPostComponent);
 
 const styles = StyleSheet.create({
     scroller: {
-        marginBottom: 12,
+        marginTop: 8,
+        marginBottom: 8,
     },
     image: {
-        width: 180,
-        height: 120,
-        borderRadius: RADIUS.lg,
+        width: IMAGE_WIDTH,
+        height: IMAGE_WIDTH,
+        borderRadius: 12,
         marginRight: 8,
         backgroundColor: theme.borderMedium,
+        borderWidth: 0,
+        borderColor: 'transparent',
     },
 });

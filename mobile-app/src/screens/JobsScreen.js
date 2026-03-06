@@ -3,14 +3,11 @@ import {
     Alert,
     Animated,
     FlatList,
-    Image,
     Modal,
     Platform,
     RefreshControl,
     ScrollView,
-    Share,
     StyleSheet,
-    Switch,
     Text,
     TextInput,
     TouchableOpacity,
@@ -20,18 +17,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorageLib from '@react-native-async-storage/async-storage';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import Constants from 'expo-constants';
 
 import client from '../api/client';
 import EmptyState from '../components/EmptyState';
 import JobCard from '../components/JobCard';
 import SkeletonLoader from '../components/SkeletonLoader';
 import NudgeToast from '../components/NudgeToast';
-import { DEMO_MODE, FEATURE_MATCH_UI_V1 } from '../config';
+import { FEATURE_MATCH_UI_V1 } from '../config';
 import { useRefreshOnFocus } from '../hooks/useRefreshOnFocus';
 import { trackEvent } from '../services/analytics';
 import { useAppStore } from '../store/AppStore';
-import { logValidationError, validateJobsResponse } from '../utils/apiValidator';
+import { logValidationError } from '../utils/apiValidator';
 import { logger } from '../utils/logger';
 import { AuthContext } from '../context/AuthContext';
 import { RADIUS, SHADOWS, SPACING, theme } from '../theme/theme';
@@ -47,10 +44,20 @@ const DISMISSED_KEY = '@hire_dismissed_jobs';
 const CACHE_KEY = '@cached_jobs';
 const FETCH_DEBOUNCE_MS = 250;
 const MAX_MATCH_API_CALLS_PER_LOAD = 3;
-const DEFAULT_TIER_FILTERS = [MATCH_TIERS.STRONG, MATCH_TIERS.GOOD];
-const ALL_TIERS = [MATCH_TIERS.STRONG, MATCH_TIERS.GOOD, MATCH_TIERS.POSSIBLE];
+const FORCE_EMPTY_FIND_WORK_FEED = false;
+const IS_EXPO_GO = (
+    Constants.executionEnvironment === 'storeClient'
+    || Constants.appOwnership === 'expo'
+);
 
 let hasShownMatchBannerThisSession = false;
+const SEEDED_ROLE_PROFILE_TITLES = new Set([
+    'general worker',
+    'worker',
+    'job seeker',
+    'candidate',
+    'profile',
+]);
 
 const extractSalaryNumber = (salaryStr) => {
     if (!salaryStr) return 0;
@@ -84,6 +91,28 @@ const getReadableError = (error, fallbackMessage) => {
     return fallbackMessage;
 };
 
+const isProfileRoleGateError = (error) => {
+    const status = Number(error?.response?.status || 0);
+    const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+    return status === 403 && (
+        message.includes('worker profile requires at least one role profile')
+        || message.includes('profile_incomplete_role')
+        || message.includes('employer profile incomplete')
+    );
+};
+
+const isMeaningfulRoleProfile = (roleProfile = {}) => {
+    const roleName = String(roleProfile?.roleName || '').trim().toLowerCase();
+    if (!roleName) return false;
+    if (SEEDED_ROLE_PROFILE_TITLES.has(roleName)) return false;
+
+    const skills = Array.isArray(roleProfile?.skills) ? roleProfile.skills.filter(Boolean) : [];
+    const hasExperience = Number(roleProfile?.experienceInRole) > 0;
+    const hasExpectedSalary = Number(roleProfile?.expectedSalary) > 0;
+
+    return Boolean(roleName && (skills.length > 0 || hasExperience || hasExpectedSalary || roleName.length > 2));
+};
+
 const formatDistanceLabel = (rawDistance, fallbackLocation) => {
     const numeric = Number(rawDistance);
     if (Number.isFinite(numeric) && numeric > 0) {
@@ -99,26 +128,135 @@ const formatDistanceLabel = (rawDistance, fallbackLocation) => {
     return `Near ${locationText}`;
 };
 
+const toJobTimestamp = (job) => {
+    const candidateEpochs = [
+        Number(job?.createdAtEpoch),
+        Date.parse(job?.job?.createdAt || ''),
+        Date.parse(job?.createdAt || ''),
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    return candidateEpochs.length ? candidateEpochs[0] : 0;
+};
+
+const isRecentJob = (job, maxAgeMs) => {
+    const epoch = toJobTimestamp(job);
+    if (epoch > 0) {
+        return (Date.now() - epoch) <= maxAgeMs;
+    }
+
+    const postedText = String(job?.postedTime || '').toLowerCase().trim();
+    if (postedText === 'just now') return true;
+
+    const hoursMatch = postedText.match(/(\d+)\s*h\s*ago/);
+    if (hoursMatch) {
+        return Number(hoursMatch[1]) <= Math.round(maxAgeMs / (60 * 60 * 1000));
+    }
+    return false;
+};
+
+const isNearbyJob = (job, radiusKm, referenceCity = '') => {
+    const locationBlob = `${job?.distanceLabel || ''} ${job?.location || ''}`.toLowerCase();
+    if (locationBlob.includes('remote')) return false;
+
+    const rawDistance = Number(job?.job?.distanceKm ?? job?.distanceKm ?? job?.distance);
+    if (Number.isFinite(rawDistance) && rawDistance > 0) {
+        return rawDistance <= radiusKm;
+    }
+
+    const normalizedReferenceCity = String(referenceCity || '').trim().toLowerCase();
+    if (!normalizedReferenceCity) return false;
+    return String(job?.location || '').toLowerCase().includes(normalizedReferenceCity);
+};
+
+const isHighMatchJob = (job) => {
+    const score = getDisplayScorePercent(job);
+    if (score >= 80) return true;
+
+    const tier = String(job?.tier || '').toUpperCase();
+    return tier === MATCH_TIERS.STRONG || tier === MATCH_TIERS.GOOD;
+};
+
+const tierFromProbability = (value) => {
+    const normalized = Number(value);
+    if (!Number.isFinite(normalized)) return '';
+    if (normalized >= 0.82) return MATCH_TIERS.STRONG;
+    if (normalized >= 0.7) return MATCH_TIERS.GOOD;
+    if (normalized >= 0.62) return MATCH_TIERS.POSSIBLE;
+    return '';
+};
+
+const inferredRatioFromTier = (tierValue) => {
+    const normalizedTier = String(tierValue || '').toUpperCase();
+    if (normalizedTier === MATCH_TIERS.STRONG) return 0.9;
+    if (normalizedTier === MATCH_TIERS.GOOD) return 0.78;
+    if (normalizedTier === MATCH_TIERS.POSSIBLE) return 0.65;
+    return 0;
+};
+
+const buildJobsCacheKey = ({ userId = '', roleProfileId = '' } = {}) => {
+    const safeUserId = String(userId || '').trim() || 'anonymous';
+    const safeRoleProfileId = String(roleProfileId || '').trim() || 'none';
+    return `${CACHE_KEY}:${safeUserId}:${safeRoleProfileId}`;
+};
+
+const normalizeJobToken = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const buildJobRowSignature = (job = {}) => {
+    const requirements = Array.isArray(job?.requirements)
+        ? job.requirements.map((item) => normalizeJobToken(item)).filter(Boolean).sort().join('|')
+        : '';
+    return [
+        normalizeJobToken(job?._id),
+        normalizeJobToken(job?.title),
+        normalizeJobToken(job?.companyName),
+        normalizeJobToken(job?.location),
+        normalizeJobToken(job?.salaryRange),
+        requirements,
+    ].join('::');
+};
+
+const dedupeJobRows = (rows = []) => {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const seenKeys = new Set();
+    const deduped = [];
+
+    sourceRows.forEach((row) => {
+        const signature = buildJobRowSignature(row);
+        if (!signature) return;
+        if (seenKeys.has(signature)) return;
+        seenKeys.add(signature);
+        deduped.push(row);
+    });
+
+    return deduped;
+};
+
 export default function JobsScreen() {
     const navigation = useNavigation();
     const route = useRoute();
     const insets = useSafeAreaInsets();
-    const { featureFlags } = useAppStore();
+    const { featureFlags, role: appRole } = useAppStore();
     const { userInfo } = React.useContext(AuthContext);
 
     const listRef = useRef(null);
     const fetchDebounceRef = useRef(null);
     const matchApiCallsRef = useRef(0);
     const retentionPingRef = useRef({ jobsNear: false, dailyMatch: false });
+    const jobsRef = useRef([]);
+    const hasLoadedOnceRef = useRef(false);
+    const fetchInFlightRef = useRef(false);
+    const pendingFetchRef = useRef(false);
+    const fetchRequestIdRef = useRef(0);
     const contentOpacity = useRef(new Animated.Value(0.9)).current;
 
     const [activeFilter, setActiveFilter] = useState('All');
     const [userRole, setUserRole] = useState('candidate');
     const [jobs, setJobs] = useState([]);
-    const [savedJobIds, setSavedJobIds] = useState(new Set());
     const [dismissedJobs, setDismissedJobs] = useState([]);
     const [reportedJobIds, setReportedJobIds] = useState(new Set());
-    const [isLoading, setIsLoading] = useState(!DEMO_MODE);
+    const [isLoading, setIsLoading] = useState(true);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
 
@@ -126,13 +264,12 @@ export default function JobsScreen() {
     const [showRecommendedFallback, setShowRecommendedFallback] = useState(false);
     const [showMatchBanner, setShowMatchBanner] = useState(false);
     const [recommendedCount, setRecommendedCount] = useState(0);
-    const [selectedTierFilters, setSelectedTierFilters] = useState(DEFAULT_TIER_FILTERS);
 
     const [currentWorkerUserId, setCurrentWorkerUserId] = useState('');
     const [currentWorkerProfileId, setCurrentWorkerProfileId] = useState('');
+    const [userBaseCity, setUserBaseCity] = useState('');
 
     const [filterModalVisible, setFilterModalVisible] = useState(false);
-    const [matchInfoModal, setMatchInfoModal] = useState({ visible: false, title: '', detail: '' });
     const [locationFilter, setLocationFilter] = useState('');
     const [minSalaryFilter, setMinSalaryFilter] = useState('');
     const [minMatchFilter, setMinMatchFilter] = useState(0);
@@ -142,10 +279,8 @@ export default function JobsScreen() {
     const [appliedMinMatch, setAppliedMinMatch] = useState(0);
     const [nudgeToast, setNudgeToast] = useState(null);
     const [showInactiveBanner, setShowInactiveBanner] = useState(false);
-
-    // Map View States
-    const [isMapView, setIsMapView] = useState(false);
     const [searchRadiusKm, setSearchRadiusKm] = useState(25);
+    const [isMatchProfileMissing, setIsMatchProfileMissing] = useState(false);
 
     const matchOptions = [
         { label: 'All', value: 0 },
@@ -160,10 +295,17 @@ export default function JobsScreen() {
         && userRole !== 'employer'
         && usingRecommendedFeed
         && !showRecommendedFallback;
+    const isFindWorkLockedEmpty = FORCE_EMPTY_FIND_WORK_FEED && userRole !== 'employer';
 
     const formatJobRow = useCallback((item, source = 'generic') => {
         const job = item?.job || item || {};
-        const normalizedScore = getNormalizedScore(item);
+        let normalizedScore = getNormalizedScore(item);
+        const inferredTier = String(item?.tier || '').toUpperCase();
+        if (normalizedScore <= 0) {
+            if (inferredTier === MATCH_TIERS.STRONG) normalizedScore = 0.9;
+            if (inferredTier === MATCH_TIERS.GOOD) normalizedScore = 0.78;
+            if (inferredTier === MATCH_TIERS.POSSIBLE) normalizedScore = 0.65;
+        }
         const fallbackKey = [
             source,
             String(job?.title || 'untitled'),
@@ -212,41 +354,84 @@ export default function JobsScreen() {
             const userInfoString = await SecureStore.getItemAsync('userInfo');
             userInfo = JSON.parse(userInfoString || '{}');
         } catch (error) {
-            logger.error('Failed to parse userInfo', error);
+            logger.warn('Failed to parse userInfo', error?.message || error);
         }
 
-        const normalizedRole = String(userInfo?.role || userInfo?.primaryRole || '').toLowerCase();
+        const normalizedRole = String(
+            appRole
+            || userInfo?.activeRole
+            || userInfo?.primaryRole
+            || userInfo?.role
+            || ''
+        ).toLowerCase();
         const isEmployerRole = normalizedRole === 'employer' || normalizedRole === 'recruiter';
         setUserRole(isEmployerRole ? 'employer' : 'candidate');
 
         const userId = String(userInfo?._id || '');
-        let workerProfileId = String(currentWorkerProfileId || userInfo?.workerProfileId || '');
+        let workerProfileId = String(userInfo?.workerProfileId || '');
+        let resolvedWorkerProfile = null;
 
-        if (!workerProfileId && !isEmployerRole) {
+        if (!workerProfileId) {
+            workerProfileId = String(await AsyncStorageLib.getItem('@worker_profile_id') || '').trim();
+        }
+
+        if (!isEmployerRole) {
             try {
-                const { data } = await client.get('/api/users/profile');
-                workerProfileId = String(data?.profile?._id || '');
+                const { data } = await client.get('/api/users/profile', {
+                    __skipApiErrorHandler: true,
+                    __allowWhenCircuitOpen: true,
+                    timeout: 4500,
+                    params: { role: 'worker' },
+                });
+                resolvedWorkerProfile = data?.profile || null;
+                workerProfileId = String(resolvedWorkerProfile?._id || workerProfileId || '');
+                if (workerProfileId) {
+                    await AsyncStorageLib.setItem('@worker_profile_id', workerProfileId);
+                }
             } catch (error) {
                 logger.warn('Worker profile lookup failed, using userId fallback for recommendations.', error?.message || error);
             }
         }
 
+        const roleProfiles = Array.isArray(resolvedWorkerProfile?.roleProfiles)
+            ? resolvedWorkerProfile.roleProfiles
+            : [];
+        const meaningfulRoleProfiles = roleProfiles.filter(isMeaningfulRoleProfile);
+        const activeRoleProfile = meaningfulRoleProfiles.find((profile) => Boolean(profile?.activeProfile))
+            || meaningfulRoleProfiles[0]
+            || null;
+        const activeRoleProfileId = String(activeRoleProfile?.profileId || '').trim();
+        const hasRoleProfiles = meaningfulRoleProfiles.length > 0;
+
         return {
             userId,
             workerProfileId,
-            city: String(userInfo?.acquisitionCity || userInfo?.city || appliedLocation || '').trim(),
+            activeRoleProfileId,
+            hasRoleProfiles,
+            city: String(
+                resolvedWorkerProfile?.city
+                || userInfo?.acquisitionCity
+                || userInfo?.city
+                || appliedLocation
+                || ''
+            ).trim(),
             isEmployerRole,
         };
-    }, [appliedLocation, currentWorkerProfileId]);
+    }, [appliedLocation, appRole]);
 
     const fetchGenericJobs = useCallback(async ({ searchRadiusKm }) => {
-        const { data } = await client.get('/api/matches/candidate', {
+        const { data } = await client.get('/api/jobs', {
+            __skipApiErrorHandler: true,
+            __allowWhenCircuitOpen: true,
+            timeout: 6000,
             params: { radiusKm: searchRadiusKm }
         });
-        const matches = validateJobsResponse(data);
+        const rows = Array.isArray(data)
+            ? data
+            : (Array.isArray(data?.data) ? data.data : []);
 
-        return matches
-            .map((row) => formatJobRow(row, 'generic'))
+        return dedupeJobRows(rows
+            .map((row) => formatJobRow(row, 'generic')))
             .sort((left, right) => getNormalizedScore(right) - getNormalizedScore(left));
     }, [formatJobRow]);
 
@@ -259,52 +444,207 @@ export default function JobsScreen() {
 
         matchApiCallsRef.current += 1;
 
-        const params = { workerId, preferences: true };
+        // Keep recommended feed broad-first for stability; strict preference filtering
+        // is applied by client-side filters and detail scoring.
+        const params = { workerId, preferences: false };
         if (city) params.city = city;
         if (searchRadiusKm) params.radiusKm = searchRadiusKm;
 
-        const { data } = await client.get('/api/jobs/recommended', { params });
-        const rows = Array.isArray(data?.recommendedJobs) ? data.recommendedJobs : [];
-        const normalized = sortRecommendedJobsByTierAndScore(rows.map((row) => formatJobRow(row, 'recommended')));
+        const { data } = await client.get('/api/jobs/recommended', {
+            __skipApiErrorHandler: true,
+            __allowWhenCircuitOpen: true,
+            timeout: 6000,
+            params,
+        });
+        const rows = (
+            Array.isArray(data?.recommendedJobs)
+                ? data.recommendedJobs
+                : (Array.isArray(data?.data?.recommendedJobs)
+                    ? data.data.recommendedJobs
+                    : (Array.isArray(data?.matches)
+                        ? data.matches
+                        : (Array.isArray(data?.data)
+                            ? data.data
+                            : (Array.isArray(data) ? data : []))))
+        );
+        const normalized = sortRecommendedJobsByTierAndScore(
+            dedupeJobRows(rows.map((row) => formatJobRow(row, 'recommended')))
+        );
 
         const strongAndGood = normalized.filter((row) => row.tier === MATCH_TIERS.STRONG || row.tier === MATCH_TIERS.GOOD);
         const possible = normalized.filter((row) => row.tier === MATCH_TIERS.POSSIBLE);
         return [...strongAndGood, ...possible].slice(0, 20);
     }, [formatJobRow]);
 
+    const fetchCandidateMatchJobs = useCallback(async ({ searchRadiusKm }) => {
+        const { data } = await client.get('/api/matches/candidate', {
+            __skipApiErrorHandler: true,
+            __allowWhenCircuitOpen: true,
+            timeout: 6000,
+            params: { radiusKm: searchRadiusKm },
+        });
+
+        const rows = Array.isArray(data)
+            ? data
+            : (Array.isArray(data?.matches)
+                ? data.matches
+                : (Array.isArray(data?.data) ? data.data : []));
+        return sortRecommendedJobsByTierAndScore(
+            dedupeJobRows(rows.map((row) => formatJobRow(row, 'candidate_match')))
+        ).slice(0, 20);
+    }, [formatJobRow]);
+
+    const enrichJobsWithMatchScores = useCallback(async ({ rows, workerRefId }) => {
+        if (!Array.isArray(rows) || rows.length === 0 || !workerRefId) {
+            return Array.isArray(rows) ? rows : [];
+        }
+
+        const limitedRows = rows.slice(0, 8);
+        const enrichedRows = await Promise.all(
+            limitedRows.map(async (row) => {
+                const jobId = String(row?.job?._id || row?._id || '').trim();
+                if (!jobId) return row;
+
+                try {
+                    const { data } = await client.get('/api/matches/probability', {
+                        __skipApiErrorHandler: true,
+                        __allowWhenCircuitOpen: true,
+                        timeout: 3500,
+                        params: {
+                            workerId: workerRefId,
+                            jobId,
+                        },
+                    });
+
+                    const probabilityValue = Number(data?.matchProbability);
+                    if (!Number.isFinite(probabilityValue)) return row;
+
+                    const normalizedProbability = Math.max(0, Math.min(1, probabilityValue));
+                    return {
+                        ...row,
+                        matchScore: Math.round(normalizedProbability * 100),
+                        matchProbability: normalizedProbability,
+                        finalScore: normalizedProbability,
+                        tier: String(row?.tier || data?.tier || tierFromProbability(normalizedProbability)).toUpperCase(),
+                        explainability: data?.explainability || row?.explainability || {},
+                    };
+                } catch (_error) {
+                    return row;
+                }
+            })
+        );
+
+        return enrichedRows;
+    }, []);
+
     const fetchJobs = useCallback(async ({ isRefresh = false } = {}) => {
-        if (!DEMO_MODE && !isRefresh) setIsLoading(true);
+        if (fetchInFlightRef.current) {
+            pendingFetchRef.current = true;
+            if (isRefresh) {
+                setIsRefreshing(false);
+            }
+            return;
+        }
+
+        const requestId = fetchRequestIdRef.current + 1;
+        fetchRequestIdRef.current = requestId;
+        fetchInFlightRef.current = true;
+        if (!isRefresh && !hasLoadedOnceRef.current && jobsRef.current.length === 0) {
+            setIsLoading(true);
+        }
         setErrorMsg('');
         matchApiCallsRef.current = 0;
 
         try {
+            const {
+                userId,
+                workerProfileId,
+                activeRoleProfileId,
+                hasRoleProfiles,
+                city,
+                isEmployerRole,
+            } = await resolveWorkerContext();
+            if (requestId !== fetchRequestIdRef.current) return;
+
+            setCurrentWorkerUserId(userId);
+            setCurrentWorkerProfileId(workerProfileId);
+            setUserBaseCity(String(city || '').trim());
+            const jobsCacheKey = buildJobsCacheKey({ userId, roleProfileId: activeRoleProfileId });
+            const shouldUseMatchFeed = !isEmployerRole;
+            if (!shouldUseMatchFeed) {
+                setIsMatchProfileMissing(false);
+            }
+
+            if (FORCE_EMPTY_FIND_WORK_FEED && !isEmployerRole) {
+                setUsingRecommendedFeed(false);
+                setShowRecommendedFallback(false);
+                setRecommendedCount(0);
+                setJobs([]);
+                setErrorMsg('');
+                try {
+                    const allKeys = await AsyncStorageLib.getAllKeys();
+                    const matchKeys = allKeys.filter((key) => key === CACHE_KEY || key.startsWith(`${CACHE_KEY}:`));
+                    if (matchKeys.length > 0) {
+                        await AsyncStorageLib.multiRemove(matchKeys);
+                    }
+                } catch (cacheClearError) {
+                    logger.warn('Could not clear cached jobs while forcing empty feed', cacheClearError?.message || cacheClearError);
+                }
+                return;
+            }
+
+            if (shouldUseMatchFeed && !hasRoleProfiles) {
+                setIsMatchProfileMissing(true);
+                setUsingRecommendedFeed(false);
+                setShowRecommendedFallback(false);
+                setRecommendedCount(0);
+                setJobs([]);
+                setErrorMsg('');
+                try {
+                    const allKeys = await AsyncStorageLib.getAllKeys();
+                    const matchKeys = allKeys.filter((key) => key === CACHE_KEY || key.startsWith(`${CACHE_KEY}:`));
+                    if (matchKeys.length > 0) {
+                        await AsyncStorageLib.multiRemove(matchKeys);
+                    }
+                } catch (cacheClearError) {
+                    logger.warn('Could not clear cached jobs after profile removal', cacheClearError?.message || cacheClearError);
+                }
+                return;
+            }
+            if (shouldUseMatchFeed && hasRoleProfiles) {
+                setIsMatchProfileMissing(false);
+            }
+
             try {
-                const cachedJobs = await AsyncStorageLib.getItem(CACHE_KEY);
+                const cachedJobs = await AsyncStorageLib.getItem(jobsCacheKey);
+                if (requestId !== fetchRequestIdRef.current) return;
                 if (cachedJobs) {
                     const parsed = JSON.parse(cachedJobs);
                     if (Array.isArray(parsed) && parsed.length > 0) {
-                        setJobs(parsed);
+                        const hasScores = parsed.some((row) => getDisplayScorePercent(row) > 0);
+                        if (isEmployerRole || hasScores) {
+                            setJobs(parsed);
+                        }
                     }
                 }
             } catch (cacheReadError) {
-                logger.error('Error loading cached jobs', cacheReadError);
+                logger.warn('Error loading cached jobs', cacheReadError?.message || cacheReadError);
             }
-
-            const { userId, workerProfileId, city, isEmployerRole } = await resolveWorkerContext();
-            setCurrentWorkerUserId(userId);
-            setCurrentWorkerProfileId(workerProfileId);
-
-            const shouldUseMatchUi = isMatchUiEnabled && !isEmployerRole;
             let nextJobs = [];
             let isRecommended = false;
 
-            if (shouldUseMatchUi) {
+            const genericFallbackPromise = (shouldUseMatchFeed && hasRoleProfiles)
+                ? fetchGenericJobs({ searchRadiusKm }).catch(() => [])
+                : null;
+
+            if (shouldUseMatchFeed) {
                 try {
                     const recommendedRows = await fetchRecommendedJobs({
                         workerId: workerProfileId || userId,
                         city,
-                        searchRadiusKm
+                        searchRadiusKm,
                     });
+                    if (requestId !== fetchRequestIdRef.current) return;
                     if (recommendedRows.length > 0) {
                         nextJobs = recommendedRows;
                         isRecommended = true;
@@ -312,9 +652,11 @@ export default function JobsScreen() {
 
                         if (!retentionPingRef.current.dailyMatch) {
                             retentionPingRef.current.dailyMatch = true;
-                            import('../services/NotificationService')
-                                .then(({ triggerLocalNotification }) => triggerLocalNotification('daily_match_alert', { count: recommendedRows.length }))
-                                .catch(() => { });
+                            if (!IS_EXPO_GO) {
+                                import('../services/NotificationService')
+                                    .then(({ triggerLocalNotification }) => triggerLocalNotification('daily_match_alert', { count: recommendedRows.length }))
+                                    .catch(() => { });
+                            }
                         }
 
                         const topJob = recommendedRows[0];
@@ -326,42 +668,118 @@ export default function JobsScreen() {
                             source: String(route.params?.source || 'jobs_screen'),
                         });
                     }
-                } catch (recommendedError) {
-                    logger.error('Recommended jobs fetch failed. Falling back to generic listing.', recommendedError);
+                } catch (_recommendedError) {
+                    // Continue to fallback sources.
                 }
             }
 
-            if (!nextJobs.length) {
-                nextJobs = await fetchGenericJobs({ searchRadiusKm });
+            if (!nextJobs.length && shouldUseMatchFeed) {
+                const [candidateMatchRows, genericRows] = await Promise.all([
+                    fetchCandidateMatchJobs({ searchRadiusKm }).catch(() => []),
+                    genericFallbackPromise || Promise.resolve([]),
+                ]);
+                if (requestId !== fetchRequestIdRef.current) return;
+
+                if (candidateMatchRows.length > 0) {
+                    nextJobs = candidateMatchRows;
+                    isRecommended = true;
+                    setRecommendedCount(candidateMatchRows.length);
+                } else if (genericRows.length > 0) {
+                    nextJobs = genericRows;
+                    isRecommended = false;
+                }
             }
+
+            if (!nextJobs.length && !shouldUseMatchFeed) {
+                nextJobs = await fetchGenericJobs({ searchRadiusKm });
+                if (requestId !== fetchRequestIdRef.current) return;
+            }
+
+            if (shouldUseMatchFeed && nextJobs.length > 0) {
+                const needsScoreEnrichment = nextJobs.some((row) => getDisplayScorePercent(row) <= 0);
+                const workerRefId = String(workerProfileId || userId || '').trim();
+                if (needsScoreEnrichment && workerRefId) {
+                    nextJobs = await enrichJobsWithMatchScores({
+                        rows: nextJobs,
+                        workerRefId,
+                    });
+                    if (requestId !== fetchRequestIdRef.current) return;
+                }
+                nextJobs = nextJobs.map((row) => {
+                    if (getDisplayScorePercent(row) > 0) return row;
+                    const inferredRatio = inferredRatioFromTier(row?.tier)
+                        || (String(row?.source || '').toLowerCase().includes('generic') ? 0.58 : 0.62);
+                    return {
+                        ...row,
+                        matchScore: Math.round(inferredRatio * 100),
+                        matchProbability: inferredRatio,
+                        finalScore: inferredRatio,
+                        tier: String(row?.tier || tierFromProbability(inferredRatio)).toUpperCase(),
+                    };
+                });
+            }
+
+            const finalRows = sortRecommendedJobsByTierAndScore(dedupeJobRows(nextJobs)).slice(0, 20);
 
             setUsingRecommendedFeed(isRecommended);
-            setShowRecommendedFallback(Boolean(shouldUseMatchUi && !isRecommended));
+            setShowRecommendedFallback(Boolean(shouldUseMatchFeed && !isRecommended));
             if (!isRecommended) setRecommendedCount(0);
 
-            setJobs(nextJobs.slice(0, 20));
+            setJobs(finalRows);
 
             try {
-                await AsyncStorageLib.setItem(CACHE_KEY, JSON.stringify(nextJobs.slice(0, 20)));
+                await AsyncStorageLib.setItem(jobsCacheKey, JSON.stringify(finalRows));
             } catch (cacheWriteError) {
-                logger.error('Error saving cached jobs', cacheWriteError);
+                logger.warn('Error saving cached jobs', cacheWriteError?.message || cacheWriteError);
             }
         } catch (error) {
+            if (requestId !== fetchRequestIdRef.current) return;
+            if (isProfileRoleGateError(error)) {
+                setIsMatchProfileMissing(true);
+                setJobs([]);
+                setErrorMsg('');
+                try {
+                    const allKeys = await AsyncStorageLib.getAllKeys();
+                    const matchKeys = allKeys.filter((key) => key === CACHE_KEY || key.startsWith(`${CACHE_KEY}:`));
+                    if (matchKeys.length > 0) {
+                        await AsyncStorageLib.multiRemove(matchKeys);
+                    }
+                } catch (cacheClearError) {
+                    logger.warn('Could not clear cached jobs on profile gate error', cacheClearError?.message || cacheClearError);
+                }
+                return;
+            }
             if (error?.name === 'ApiValidationError') {
-                logValidationError(error, '/api/matches/candidate');
-            } else {
-                logger.error('Failed to fetch jobs', error);
+                logValidationError(error, '/api/jobs');
             }
-            setErrorMsg(getReadableError(error, 'Could not load jobs right now. Please try again.'));
+            setErrorMsg('');
         } finally {
-            if (isRefresh) {
-                setIsRefreshing(false);
-            }
-            if (!DEMO_MODE && !isRefresh) {
-                setIsLoading(false);
+            if (requestId === fetchRequestIdRef.current) {
+                fetchInFlightRef.current = false;
+                if (isRefresh) {
+                    setIsRefreshing(false);
+                }
+                if (!isRefresh) {
+                    setIsLoading(false);
+                    hasLoadedOnceRef.current = true;
+                }
+                if (pendingFetchRef.current) {
+                    pendingFetchRef.current = false;
+                    setTimeout(() => {
+                        fetchJobs({ isRefresh: false });
+                    }, 0);
+                }
             }
         }
-    }, [fetchGenericJobs, fetchRecommendedJobs, resolveWorkerContext, route.params?.source]);
+    }, [
+        fetchGenericJobs,
+        fetchCandidateMatchJobs,
+        enrichJobsWithMatchScores,
+        fetchRecommendedJobs,
+        resolveWorkerContext,
+        searchRadiusKm,
+        route.params?.source,
+    ]);
 
     const scheduleFetchJobs = useCallback(() => {
         if (fetchDebounceRef.current) {
@@ -391,6 +809,10 @@ export default function JobsScreen() {
             logger.warn('Dismissed jobs cache read failed', error?.message || error);
         }
     }, []);
+
+    useEffect(() => {
+        jobsRef.current = jobs;
+    }, [jobs]);
 
     useRefreshOnFocus(scheduleFetchJobs, 'jobs');
 
@@ -461,9 +883,11 @@ export default function JobsScreen() {
                     });
                     if (!retentionPingRef.current.jobsNear) {
                         retentionPingRef.current.jobsNear = true;
-                        import('../services/NotificationService')
-                            .then(({ triggerLocalNotification }) => triggerLocalNotification('jobs_near_you', { city: appliedLocation || undefined }))
-                            .catch(() => { });
+                        if (!IS_EXPO_GO) {
+                            import('../services/NotificationService')
+                                .then(({ triggerLocalNotification }) => triggerLocalNotification('jobs_near_you', { city: appliedLocation || undefined }))
+                                .catch(() => { });
+                        }
                     }
                 }
             } catch (error) {
@@ -476,63 +900,44 @@ export default function JobsScreen() {
     }, [appliedLocation, handleRefresh]);
 
     useEffect(() => {
+        if (route.params?.source !== 'profile_saved') return;
+        setNudgeToast({
+            text: 'Profile saved. Explore your matching jobs below.',
+            actionLabel: 'Refresh',
+            onAction: () => handleRefresh(),
+        });
+    }, [handleRefresh, route.params?.source]);
+
+    useEffect(() => {
         if (userRole === 'employer') return;
-        if (Boolean(userInfo?.hasCompletedProfile)) return;
+        if (Boolean(userInfo?.hasCompletedProfile || userInfo?.profileComplete)) return;
 
         const timeout = setTimeout(() => {
             setNudgeToast({
-                text: 'Complete Smart Interview to unlock better matches.',
-                actionLabel: 'Start',
-                onAction: () => navigation.navigate('SmartInterview'),
+                text: 'Complete your profile form to unlock job matches.',
+                actionLabel: 'Complete',
+                onAction: () => navigation.navigate('Profiles'),
             });
         }, 1000);
 
         return () => clearTimeout(timeout);
-    }, [navigation, userInfo?.hasCompletedProfile, userRole]);
-
-    const toggleTierFilter = useCallback((tier) => {
-        if (tier === 'ALL') {
-            setSelectedTierFilters(ALL_TIERS);
-            return;
-        }
-
-        setSelectedTierFilters((previous) => {
-            const next = new Set(previous);
-            if (next.has(tier)) {
-                next.delete(tier);
-            } else {
-                next.add(tier);
-            }
-
-            if (next.size === 0) {
-                return DEFAULT_TIER_FILTERS;
-            }
-
-            return Array.from(next);
-        });
-    }, []);
+    }, [navigation, userInfo?.hasCompletedProfile, userInfo?.profileComplete, userRole]);
 
     const filteredJobs = useMemo(() => {
         const dayMs = 24 * 60 * 60 * 1000;
+        const maxNewAgeMs = 7 * dayMs;
 
         return jobs
             .filter((job) => !dismissedJobs.some((dismissed) => dismissed._id === job._id))
             .filter((job) => {
-                if (activeFilter === 'High Match') return getDisplayScorePercent(job) > 80;
-                if (activeFilter === 'Nearby') return !String(job?.location || '').toLowerCase().includes('remote');
-                if (activeFilter === 'New') {
-                    if (!job.createdAtEpoch) return true;
-                    return Date.now() - job.createdAtEpoch <= (3 * dayMs);
-                }
+                if (activeFilter === 'High Match') return isHighMatchJob(job);
+                if (activeFilter === 'Nearby') return isNearbyJob(job, searchRadiusKm, userBaseCity);
+                if (activeFilter === 'New') return isRecentJob(job, maxNewAgeMs);
                 return true;
             })
             .filter((job) => !appliedLocation || String(job?.location || '').toLowerCase().includes(appliedLocation.toLowerCase()))
             .filter((job) => !appliedMinSalary || extractSalaryNumber(job?.salaryRange) >= appliedMinSalary)
-            .filter((job) => getDisplayScorePercent(job) >= appliedMinMatch)
-            .filter((job) => {
-                if (!shouldRenderMatchInsights) return true;
-                return selectedTierFilters.includes(String(job?.tier || '').toUpperCase());
-            });
+            .filter((job) => getDisplayScorePercent(job) >= appliedMinMatch);
     }, [
         activeFilter,
         appliedLocation,
@@ -540,21 +945,9 @@ export default function JobsScreen() {
         appliedMinSalary,
         dismissedJobs,
         jobs,
-        selectedTierFilters,
-        shouldRenderMatchInsights,
+        searchRadiusKm,
+        userBaseCity,
     ]);
-
-    const toggleSaveJob = useCallback((id) => {
-        setSavedJobIds((previous) => {
-            const next = new Set(previous);
-            if (next.has(id)) {
-                next.delete(id);
-            } else {
-                next.add(id);
-            }
-            return next;
-        });
-    }, []);
 
     const submitReport = useCallback(async (targetId, reason) => {
         try {
@@ -576,17 +969,6 @@ export default function JobsScreen() {
         ]);
     }, [submitReport]);
 
-    const handleShareJob = useCallback(async (job) => {
-        try {
-            await Share.share({
-                message: `${job?.title || 'Job'} at ${job?.companyName || 'Company'} — ${job?.location || 'Remote'}\nSalary: ${job?.salaryRange || 'Unspecified'}\n\nApply on HireApp`,
-                title: job?.title || 'Job Opportunity',
-            });
-        } catch (error) {
-            logger.error('Error sharing job', error);
-        }
-    }, []);
-
     const handleApplyFilters = useCallback(() => {
         setAppliedLocation(locationFilter);
         setAppliedMinSalary(minSalaryFilter ? parseInt(minSalaryFilter, 10) : 0);
@@ -602,24 +984,6 @@ export default function JobsScreen() {
         setAppliedMinSalary(0);
         setAppliedMinMatch(0);
     }, []);
-
-    const handleReasonPress = useCallback((job, reason) => {
-        const score = getDisplayScorePercent(job);
-        const fallbackDetail = `Match score combines your skills, recent activity, expected salary fit, and location readiness.`;
-        trackEvent('MATCH_REASON_CLICKED', {
-            workerId: currentWorkerProfileId || currentWorkerUserId,
-            jobId: String(job?._id || ''),
-            finalScore: Number(getNormalizedScore(job).toFixed(4)),
-            tier: String(job?.tier || ''),
-            reasonId: String(reason?.id || ''),
-            reasonLabel: String(reason?.label || ''),
-        });
-        setMatchInfoModal({
-            visible: true,
-            title: `${score}% match confidence`,
-            detail: String(reason?.label || fallbackDetail),
-        });
-    }, [currentWorkerProfileId, currentWorkerUserId]);
 
     const handleJobPress = useCallback((job) => {
         const scorePercent = getDisplayScorePercent(job);
@@ -638,160 +1002,99 @@ export default function JobsScreen() {
             finalScore: Number(getNormalizedScore(job).toFixed(4)),
             tier: String(job?.tier || ''),
             explainability: job?.explainability || {},
+            entrySource: 'jobs_tab',
         });
     }, [currentWorkerProfileId, currentWorkerUserId, navigation]);
 
-    const renderJobCard = useCallback(({ item }) => (
-        <JobCard
-            item={item}
-            onPress={handleJobPress}
-            onShare={handleShareJob}
-            onToggleSave={toggleSaveJob}
-            isSaved={savedJobIds.has(item?._id)}
-            onReport={handleReportJob}
-            isHistory={false}
-            isReported={reportedJobIds.has(item?._id)}
-            showMatchInsights={shouldRenderMatchInsights}
-            onReasonPress={handleReasonPress}
-        />
-    ), [
-        handleJobPress,
-        handleReasonPress,
-        handleReportJob,
-        handleShareJob,
-        reportedJobIds,
-        savedJobIds,
-        shouldRenderMatchInsights,
-        toggleSaveJob,
-    ]);
+    const highlightedCount = Number(route.params?.recommendedCount || recommendedCount || 0);
 
-    const bannerCount = Number(route.params?.recommendedCount || recommendedCount || 0);
+    const renderJobCard = useCallback(({ item, index }) => {
+        let contextNote = '';
+        let contextTone = 'info';
+
+        if (index === 0) {
+            if (showRecommendedFallback) {
+                contextTone = 'warning';
+                contextNote = 'Strong signals are limited right now. Showing broader nearby opportunities.';
+            } else if (showInactiveBanner) {
+                contextNote = 'You were inactive for a few days. New roles were queued for you.';
+            } else if (showMatchBanner && shouldRenderMatchInsights && highlightedCount > 0) {
+                contextNote = `${highlightedCount} matched roles ready now.`;
+            }
+        }
+
+        return (
+            <JobCard
+                item={item}
+                onPress={handleJobPress}
+                onReport={handleReportJob}
+                isReported={reportedJobIds.has(item?._id)}
+                showMatchInsights={shouldRenderMatchInsights}
+                contextNote={contextNote}
+                contextTone={contextTone}
+            />
+        );
+    }, [
+        highlightedCount,
+        handleJobPress,
+        handleReportJob,
+        reportedJobIds,
+        showInactiveBanner,
+        showMatchBanner,
+        showRecommendedFallback,
+        shouldRenderMatchInsights,
+    ]);
 
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
             <View style={styles.header}>
                 <View style={styles.headerTopRow}>
                     <View style={styles.headerTitleWrap}>
-                        <Text style={styles.headerTitle}>{userRole === 'employer' ? 'Your Job Postings' : 'Jobs for You'}</Text>
-                        <Text style={styles.headerSubtitle}>
-                            {userRole === 'employer'
-                                ? 'Pipeline visibility and hiring momentum in one place.'
-                                : 'Prioritized by match quality, pay, trust, and urgency.'}
-                        </Text>
+                        <Text style={styles.headerTitle}>{userRole === 'employer' ? 'Your Job Postings' : 'Find Work'}</Text>
                     </View>
 
-                    {userRole !== 'employer' && (
-                        <View style={styles.mapToggleContainer}>
-                            <Text style={styles.mapToggleLabel}>Map</Text>
-                            <Switch
-                                value={isMapView}
-                                onValueChange={setIsMapView}
-                                trackColor={{ false: '#e2e8f0', true: '#bfdbfe' }}
-                                thumbColor={isMapView ? theme.primary : '#94a3b8'}
-                                ios_backgroundColor="#e2e8f0"
-                            />
-                        </View>
-                    )}
-
-                    <TouchableOpacity
-                        style={styles.filtersBtn}
-                        onPress={() => {
-                            setLocationFilter(appliedLocation);
-                            setMinSalaryFilter(appliedMinSalary > 0 ? String(appliedMinSalary) : '');
-                            setMinMatchFilter(appliedMinMatch);
-                            setFilterModalVisible(true);
-                        }}
-                    >
-                        <Text style={styles.filtersBtnText}>Filters</Text>
-                        {activeFilterCount > 0 ? (
-                            <View style={styles.filtersBadge}>
-                                <Text style={styles.filtersBadgeText}>{activeFilterCount}</Text>
-                            </View>
-                        ) : null}
-                    </TouchableOpacity>
+                    {!isFindWorkLockedEmpty ? (
+                        <TouchableOpacity
+                            style={styles.filtersBtn}
+                            onPress={() => {
+                                setLocationFilter(appliedLocation);
+                                setMinSalaryFilter(appliedMinSalary > 0 ? String(appliedMinSalary) : '');
+                                setMinMatchFilter(appliedMinMatch);
+                                setFilterModalVisible(true);
+                            }}
+                        >
+                            <Text style={styles.filtersBtnText}>Filters</Text>
+                            {activeFilterCount > 0 ? (
+                                <View style={styles.filtersBadge}>
+                                    <Text style={styles.filtersBadgeText}>{activeFilterCount}</Text>
+                                </View>
+                            ) : null}
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
 
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    style={styles.filtersRow}
-                    contentContainerStyle={styles.filtersRowContent}
-                >
-                    {FILTERS.map((filter) => (
-                        <TouchableOpacity
-                            key={filter}
-                            style={[styles.filterChip, activeFilter === filter && styles.filterChipActive]}
-                            onPress={() => setActiveFilter(filter)}
-                            activeOpacity={0.85}
-                        >
-                            <Text style={[styles.filterChipText, activeFilter === filter && styles.filterChipTextActive]}>{filter}</Text>
-                        </TouchableOpacity>
-                    ))}
-                </ScrollView>
-
-                {shouldRenderMatchInsights ? (
-                    <View style={styles.tierChipsRow}>
-                        {ALL_TIERS.map((tier) => (
+                {!isFindWorkLockedEmpty ? (
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.filtersRow}
+                        contentContainerStyle={styles.filtersRowContent}
+                    >
+                        {FILTERS.map((filter) => (
                             <TouchableOpacity
-                                key={tier}
-                                style={[
-                                    styles.tierChip,
-                                    selectedTierFilters.includes(tier) && styles.tierChipActive,
-                                ]}
-                                onPress={() => toggleTierFilter(tier)}
+                                key={filter}
+                                style={[styles.filterChip, activeFilter === filter && styles.filterChipActive]}
+                                onPress={() => setActiveFilter(filter)}
                                 activeOpacity={0.85}
                             >
-                                <Text
-                                    style={[
-                                        styles.tierChipText,
-                                        selectedTierFilters.includes(tier) && styles.tierChipTextActive,
-                                    ]}
-                                >
-                                    {tier}
-                                </Text>
+                                <Text style={[styles.filterChipText, activeFilter === filter && styles.filterChipTextActive]}>{filter}</Text>
                             </TouchableOpacity>
                         ))}
-                        <TouchableOpacity
-                            style={[
-                                styles.tierChip,
-                                selectedTierFilters.length === ALL_TIERS.length && styles.tierChipActive,
-                            ]}
-                            onPress={() => toggleTierFilter('ALL')}
-                            activeOpacity={0.85}
-                        >
-                            <Text
-                                style={[
-                                    styles.tierChipText,
-                                    selectedTierFilters.length === ALL_TIERS.length && styles.tierChipTextActive,
-                                ]}
-                            >
-                                ALL
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : null}
-
-                {showMatchBanner && shouldRenderMatchInsights ? (
-                    <View style={styles.matchBanner}>
-                        <Text style={styles.matchBannerTitle}>Refreshed for your profile</Text>
-                        <Text style={styles.matchBannerSubtitle}>{bannerCount || recommendedCount || 0} matched roles ready now</Text>
-                    </View>
-                ) : null}
-
-                {showRecommendedFallback ? (
-                    <View style={styles.fallbackBanner}>
-                        <Text style={styles.fallbackBannerText}>Strong signals are limited right now. Showing broader nearby opportunities.</Text>
-                    </View>
-                ) : null}
-
-                {showInactiveBanner ? (
-                    <View style={styles.inactiveBanner}>
-                        <Text style={styles.inactiveBannerText}>You were inactive for a few days. New roles were queued for you.</Text>
-                    </View>
+                    </ScrollView>
                 ) : null}
             </View>
 
-            {isLoading && jobs.length === 0 ? (
+            {isLoading && jobs.length === 0 && !isFindWorkLockedEmpty ? (
                 <View style={styles.loadingWrap}>
                     <SkeletonLoader height={132} style={styles.loadingCard} tone="tint" />
                     <SkeletonLoader height={132} style={styles.loadingCard} tone="tint" />
@@ -799,99 +1102,64 @@ export default function JobsScreen() {
                 </View>
             ) : null}
 
-            {errorMsg && filteredJobs.length > 0 ? (
-                <View style={styles.errorBanner}>
-                    <Text style={styles.errorBannerText}>Couldn’t load data. Pull down to refresh.</Text>
-                    <TouchableOpacity onPress={handleRetry} style={styles.errorRetryBtn}>
-                        <Text style={styles.errorRetryText}>Retry</Text>
-                    </TouchableOpacity>
-                </View>
-            ) : null}
-
             <View style={{ flex: 1 }}>
-                {isMapView ? (
-                    <View style={styles.mapContainer}>
-                        <MapView
-                            provider={PROVIDER_GOOGLE}
-                            style={styles.map}
-                            initialRegion={{
-                                latitude: 20.5937,
-                                longitude: 78.9629,
-                                latitudeDelta: 15,
-                                longitudeDelta: 15,
-                            }}
-                        >
-                            {filteredJobs.map((job) => {
-                                const lat = job?.job?.geo?.coordinates?.[1];
-                                const lng = job?.job?.geo?.coordinates?.[0];
-
-                                if (!lat || !lng || (lat === 0 && lng === 0)) return null;
-
-                                return (
-                                    <Marker
-                                        key={`marker-${job._id}`}
-                                        coordinate={{ latitude: lat, longitude: lng }}
-                                        title={job.title}
-                                        description={job.companyName}
-                                        pinColor={job.matchScore > 80 ? theme.primary : '#94a3b8'}
-                                    />
-                                );
-                            })}
-                        </MapView>
-                    </View>
-                ) : (
-                    <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
-                        <FlatList
-                            ref={listRef}
-                            data={filteredJobs}
-                            keyExtractor={(item) => String(item?._id || 'job')}
-                            renderItem={renderJobCard}
-                            contentContainerStyle={styles.listContent}
-                            showsVerticalScrollIndicator={false}
-                            maxToRenderPerBatch={10}
-                            windowSize={10}
-                            removeClippedSubviews={Platform.OS === 'android'}
-                            initialNumToRender={10}
-                            refreshControl={(
-                                <RefreshControl
-                                    refreshing={isRefreshing}
-                                    onRefresh={handleRefresh}
-                                    tintColor={theme.textSecondary}
-                                />
-                            )}
-                            ListEmptyComponent={
-                                errorMsg ? (
-                                    <EmptyState
-                                        icon="⚠️"
-                                        title="Couldn’t load data"
-                                        subtitle="Pull down to refresh."
-                                        actionLabel="Retry"
-                                        onAction={handleRetry}
-                                    />
-                                ) : (
-                                    <EmptyState
-                                        icon={showRecommendedFallback ? '🔍' : '💼'}
-                                        title={showRecommendedFallback ? 'No matches yet' : 'No jobs yet'}
-                                        subtitle={
-                                            showRecommendedFallback
-                                                ? 'Update your profile to get better matches'
-                                                : 'Try adjusting your search or filters.'
+                <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
+                    <FlatList
+                        ref={listRef}
+                        data={filteredJobs}
+                        keyExtractor={(item) => String(item?._id || 'job')}
+                        renderItem={renderJobCard}
+                        contentContainerStyle={styles.listContent}
+                        showsVerticalScrollIndicator={false}
+                        maxToRenderPerBatch={10}
+                        windowSize={10}
+                        removeClippedSubviews={Platform.OS === 'android'}
+                        initialNumToRender={10}
+                        refreshControl={(
+                            <RefreshControl
+                                refreshing={isRefreshing}
+                                onRefresh={handleRefresh}
+                                tintColor={theme.textSecondary}
+                            />
+                        )}
+                        ListEmptyComponent={(
+                            <EmptyState
+                                icon={isFindWorkLockedEmpty ? '📭' : (showRecommendedFallback ? '🔍' : '💼')}
+                                title={
+                                    isFindWorkLockedEmpty
+                                        ? 'No jobs yet'
+                                        : isMatchProfileMissing
+                                            ? 'Create a profile to see matches'
+                                            : (showRecommendedFallback ? 'No matches yet' : 'No jobs yet')
+                                }
+                                subtitle={
+                                    isFindWorkLockedEmpty
+                                        ? 'Opportunities will appear here when listings are ready.'
+                                        : isMatchProfileMissing
+                                        ? 'Add at least one active role profile in My Profile to unlock matched jobs.'
+                                        : showRecommendedFallback
+                                        ? 'No matching jobs right now. New opportunities will appear shortly.'
+                                        : 'Try adjusting your search or filters.'
+                                }
+                                actionLabel={
+                                    !isFindWorkLockedEmpty && isMatchProfileMissing
+                                        ? 'Create Profile'
+                                        : (!isFindWorkLockedEmpty && activeFilter !== 'All' ? 'Clear Filters' : null)
+                                }
+                                onAction={
+                                    !isFindWorkLockedEmpty && isMatchProfileMissing
+                                        ? () => navigation.navigate('Profiles')
+                                        : (!isFindWorkLockedEmpty && activeFilter !== 'All'
+                                        ? () => {
+                                            setActiveFilter('All');
+                                            handleClearFilters();
                                         }
-                                        actionLabel={activeFilter !== 'All' ? 'Clear Filters' : null}
-                                        onAction={
-                                            activeFilter !== 'All'
-                                                ? () => {
-                                                    setActiveFilter('All');
-                                                    handleClearFilters();
-                                                }
-                                                : null
-                                        }
-                                    />
-                                )
-                            }
-                        />
-                    </Animated.View>
-                )}
+                                        : null)
+                                }
+                            />
+                        )}
+                    />
+                </Animated.View>
             </View>
 
             <Modal
@@ -1003,26 +1271,6 @@ export default function JobsScreen() {
                 onAction={nudgeToast?.onAction}
                 onDismiss={() => setNudgeToast(null)}
             />
-
-            <Modal
-                visible={matchInfoModal.visible}
-                transparent
-                animationType="fade"
-                onRequestClose={() => setMatchInfoModal({ visible: false, title: '', detail: '' })}
-            >
-                <View style={styles.matchInfoOverlay}>
-                    <View style={styles.matchInfoCard}>
-                        <Text style={styles.matchInfoTitle}>{matchInfoModal.title || 'Match details'}</Text>
-                        <Text style={styles.matchInfoText}>{matchInfoModal.detail || 'Match scoring detail unavailable right now.'}</Text>
-                        <TouchableOpacity
-                            style={styles.matchInfoBtn}
-                            onPress={() => setMatchInfoModal({ visible: false, title: '', detail: '' })}
-                        >
-                            <Text style={styles.matchInfoBtnText}>Close</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </Modal>
         </View>
     );
 }
@@ -1045,8 +1293,8 @@ const styles = StyleSheet.create({
     headerTopRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        alignItems: 'flex-start',
-        marginBottom: 10,
+        alignItems: 'center',
+        marginBottom: 8,
         gap: 12,
     },
     headerTitleWrap: {
@@ -1057,12 +1305,6 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         color: theme.textPrimary,
         letterSpacing: -0.2,
-    },
-    headerSubtitle: {
-        marginTop: 2,
-        fontSize: 14,
-        color: '#64748b',
-        fontWeight: '400',
     },
     filtersBtn: {
         alignItems: 'center',
@@ -1124,78 +1366,6 @@ const styles = StyleSheet.create({
         color: '#1f2937',
         fontWeight: '600',
     },
-    tierChipsRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-        marginTop: 10,
-    },
-    tierChip: {
-        borderRadius: RADIUS.full,
-        borderWidth: 1,
-        borderColor: '#d1dbe7',
-        paddingHorizontal: SPACING.smd,
-        paddingVertical: SPACING.xs + 2,
-        backgroundColor: '#f8fafd',
-    },
-    tierChipActive: {
-        borderColor: '#1d4ed8',
-        backgroundColor: '#e8f0ff',
-    },
-    tierChipText: {
-        fontSize: 12,
-        color: '#475569',
-        fontWeight: '500',
-    },
-    tierChipTextActive: {
-        color: '#1d4ed8',
-        fontWeight: '600',
-    },
-    matchBanner: {
-        marginTop: SPACING.smd,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#d9e7ff',
-        backgroundColor: '#f4f8ff',
-        padding: SPACING.smd + 1,
-    },
-    matchBannerTitle: {
-        color: '#1e3a8a',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    matchBannerSubtitle: {
-        marginTop: 4,
-        color: '#1d4ed8',
-        fontSize: 13,
-        fontWeight: '500',
-    },
-    fallbackBanner: {
-        marginTop: SPACING.smd,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#f6deb0',
-        backgroundColor: '#fff9ee',
-        padding: SPACING.smd,
-    },
-    fallbackBannerText: {
-        color: '#9a6a14',
-        fontSize: 12,
-        fontWeight: '500',
-    },
-    inactiveBanner: {
-        marginTop: 10,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#bfdbfe',
-        backgroundColor: '#eff6ff',
-        padding: SPACING.smd,
-    },
-    inactiveBannerText: {
-        color: '#1e40af',
-        fontSize: 12,
-        fontWeight: '600',
-    },
     loadingWrap: {
         paddingHorizontal: SPACING.md,
         paddingTop: SPACING.smd,
@@ -1205,9 +1375,9 @@ const styles = StyleSheet.create({
         marginBottom: 20,
     },
     listContent: {
-        paddingHorizontal: SPACING.md,
-        paddingTop: SPACING.smd,
-        paddingBottom: 40,
+        paddingHorizontal: SPACING.sm + 1,
+        paddingTop: SPACING.xs,
+        paddingBottom: 12,
     },
     emptyEmoji: {
         fontSize: 48,
@@ -1362,78 +1532,5 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '600',
         color: '#ffffff',
-    },
-    matchInfoOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(15, 23, 42, 0.42)',
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 20,
-    },
-    matchInfoCard: {
-        width: '100%',
-        maxWidth: 360,
-        borderRadius: RADIUS.lg,
-        backgroundColor: '#ffffff',
-        borderWidth: 1,
-        borderColor: '#dbe3ec',
-        paddingHorizontal: 16,
-        paddingVertical: 16,
-    },
-    matchInfoTitle: {
-        color: '#0f172a',
-        fontSize: 16,
-        fontWeight: '800',
-        marginBottom: 8,
-    },
-    matchInfoText: {
-        color: '#475569',
-        fontSize: 13,
-        lineHeight: 19,
-        fontWeight: '500',
-    },
-    matchInfoBtn: {
-        alignSelf: 'flex-end',
-        marginTop: 14,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#cfe0ff',
-        backgroundColor: '#eef4ff',
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-    },
-    matchInfoBtnText: {
-        color: '#1d4ed8',
-        fontSize: 12,
-        fontWeight: '800',
-    },
-    mapToggleContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingVertical: 2,
-        paddingHorizontal: 8,
-        backgroundColor: 'rgba(255,255,255,0.92)',
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: '#e6ebf4',
-    },
-    mapToggleLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: '#334155',
-        marginRight: 6,
-    },
-    mapContainer: {
-        flex: 1,
-        borderRadius: RADIUS.md,
-        overflow: 'hidden',
-        margin: SPACING.md,
-        borderWidth: 1,
-        borderColor: '#e2e8f0',
-        ...SHADOWS.sm,
-    },
-    map: {
-        width: '100%',
-        height: '100%',
     },
 });

@@ -3,6 +3,7 @@ import {
     ActivityIndicator,
     Image,
     KeyboardAvoidingView,
+    LayoutAnimation,
     Platform,
     ScrollView,
     StyleSheet,
@@ -10,9 +11,11 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
+    UIManager,
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Localization from 'expo-localization';
 import client from '../api/client';
@@ -26,8 +29,113 @@ const WORKER_SKILL_SUGGESTIONS = [
     'Inventory',
     'Driving',
     'Food handling',
+    'Electrical troubleshooting',
+    'Pipe fitting',
+    'Welding basics',
+    'Machine handling',
 ];
+const WORKER_ROLE_TYPES = [
+    'Student',
+    'Fresher',
+    'Delivery / Logistics',
+    'Skilled Trades',
+    'Construction / Civil',
+    'Manufacturing / Factory',
+    'Retail / Hospitality',
+    'Healthcare / Care',
+    'Security / Facility',
+    'Software / Tech',
+    'Finance / Admin',
+    'Sales / Marketing',
+    'Support / Service',
+    'Other',
+];
+const PRIORITY_WORKER_ROLE_TYPES = [
+    'Fresher',
+    'Delivery / Logistics',
+    'Skilled Trades',
+    'Retail / Hospitality',
+    'Software / Tech',
+    'Support / Service',
+];
+const WORKER_ROLE_TEMPLATES = {
+    Student: {
+        roleNames: ['Intern', 'Campus Trainee', 'Lab Assistant', 'Part-time Associate'],
+        skills: ['Communication', 'Basic computer use', 'Teamwork', 'Documentation'],
+    },
+    Fresher: {
+        roleNames: ['Junior Associate', 'Trainee', 'Assistant', 'Data Entry Operator'],
+        skills: ['Documentation', 'Customer handling', 'Problem solving', 'Follow-through'],
+    },
+    'Delivery / Logistics': {
+        roleNames: ['Delivery Executive', 'Warehouse Associate', 'Inventory Assistant', 'Dispatch Coordinator', 'Fleet Associate'],
+        skills: ['Delivery support', 'Inventory checks', 'Packing', 'Route knowledge', 'Scanner usage'],
+    },
+    'Skilled Trades': {
+        roleNames: ['Plumber', 'Electrician', 'Carpenter', 'Welder', 'HVAC Technician'],
+        skills: ['Troubleshooting', 'Repair work', 'Installation', 'Safety compliance', 'Tool handling'],
+    },
+    'Construction / Civil': {
+        roleNames: ['Site Supervisor', 'Civil Technician', 'Mason', 'Bar Bender', 'Survey Assistant'],
+        skills: ['Blueprint reading', 'Site safety', 'Concrete work', 'Material planning'],
+    },
+    'Manufacturing / Factory': {
+        roleNames: ['Machine Operator', 'Production Associate', 'Quality Inspector', 'Assembly Technician'],
+        skills: ['Machine handling', 'Quality checks', 'SOP compliance', 'Line discipline'],
+    },
+    'Retail / Hospitality': {
+        roleNames: ['Retail Associate', 'Cashier', 'Store Supervisor', 'Steward', 'Barista'],
+        skills: ['POS billing', 'Customer interaction', 'Stock handling', 'Service etiquette'],
+    },
+    'Healthcare / Care': {
+        roleNames: ['Nursing Assistant', 'Patient Care Assistant', 'Pharmacy Assistant', 'Lab Technician'],
+        skills: ['Patient support', 'Hygiene protocol', 'Record handling', 'Vitals support'],
+    },
+    'Security / Facility': {
+        roleNames: ['Security Guard', 'CCTV Operator', 'Facility Executive', 'Housekeeping Supervisor'],
+        skills: ['Access control', 'Incident reporting', 'Patrolling', 'Emergency response'],
+    },
+    'Software / Tech': {
+        roleNames: ['Frontend Developer', 'Backend Developer', 'QA Engineer', 'DevOps Engineer', 'Data Analyst'],
+        skills: ['JavaScript', 'React', 'Node.js', 'Testing', 'SQL'],
+    },
+    'Finance / Admin': {
+        roleNames: ['Account Assistant', 'MIS Executive', 'Back Office Executive', 'Office Administrator'],
+        skills: ['Excel', 'Data validation', 'Documentation', 'Payroll support'],
+    },
+    'Sales / Marketing': {
+        roleNames: ['Sales Executive', 'Field Sales Associate', 'Inside Sales Executive', 'Marketing Associate'],
+        skills: ['Lead generation', 'Client communication', 'Negotiation', 'CRM updates'],
+    },
+    'Support / Service': {
+        roleNames: ['Customer Support Executive', 'Service Coordinator', 'Operations Associate', 'Helpdesk Executive'],
+        skills: ['Ticket handling', 'Escalation handling', 'Communication', 'SLA adherence'],
+    },
+    Other: {
+        roleNames: [],
+        skills: [],
+    },
+};
 const EXPERIENCE_OPTIONS = [0, 1, 2, 3, 5, 8, 10];
+const WORKER_CITY_OPTIONS = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Delhi NCR', 'Chennai', 'Pune'];
+const WORKER_LANGUAGE_OPTIONS = ['English', 'Hindi', 'Telugu', 'Tamil', 'Kannada'];
+const WORKER_SALARY_OPTIONS = [15000, 20000, 25000, 30000, 40000, 50000, 65000];
+const PRIORITY_WORKER_CITIES = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Delhi NCR'];
+const PRIORITY_WORKER_LANGUAGES = ['English', 'Hindi', 'Telugu'];
+const PRIORITY_WORKER_SALARY_OPTIONS = [20000, 25000, 30000, 40000];
+const EMPLOYER_INDUSTRY_OPTIONS = [
+    'Logistics',
+    'Construction',
+    'Manufacturing',
+    'Retail',
+    'Hospitality',
+    'Healthcare',
+    'Security Services',
+    'Technology',
+    'Finance',
+    'Staffing',
+];
+const EMPLOYER_LOCATION_OPTIONS = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Delhi NCR', 'Chennai', 'Pune', 'Remote / Pan India'];
 const AVAILABILITY_OPTIONS = [
     { label: 'Immediate', value: 0 },
     { label: '15 days', value: 15 },
@@ -52,6 +160,61 @@ const normalizeSkills = (value = '') => (
         .slice(0, 25)
 );
 
+const normalizeToken = (value = '') => String(value || '').trim().toLowerCase();
+
+const buildTypeaheadSuggestions = (query = '', options = [], limit = 6) => {
+    const normalizedQuery = normalizeToken(query);
+    const safeOptions = [...new Set((Array.isArray(options) ? options : []).map((item) => String(item || '').trim()).filter(Boolean))];
+    if (!safeOptions.length) return [];
+    if (!normalizedQuery) return safeOptions.slice(0, limit);
+
+    const startsWith = safeOptions.filter((item) => normalizeToken(item).startsWith(normalizedQuery));
+    const contains = safeOptions.filter((item) => {
+        const normalized = normalizeToken(item);
+        return normalized.includes(normalizedQuery) && !startsWith.includes(item);
+    });
+    return [...startsWith, ...contains].slice(0, limit);
+};
+
+const focusChoices = (options = [], selected = [], limit = 6) => {
+    const normalized = [...new Set((Array.isArray(options) ? options : []).filter(Boolean))];
+    if (normalized.length <= limit) return normalized;
+    const selectedSet = new Set((Array.isArray(selected) ? selected : [selected]).map(normalizeToken).filter(Boolean));
+    const selectedItems = normalized.filter((item) => selectedSet.has(normalizeToken(item)));
+    const topItems = normalized.slice(0, limit);
+    return [...new Set([...selectedItems, ...topItems])];
+};
+
+const inferRoleCategory = (roleName = '') => {
+    const normalizedRole = normalizeToken(roleName);
+    if (!normalizedRole) return '';
+    return WORKER_ROLE_TYPES.find((category) => (
+        (WORKER_ROLE_TEMPLATES[category]?.roleNames || []).some((item) => normalizeToken(item) === normalizedRole)
+    )) || '';
+};
+
+const toggleSkillToken = (currentSkillsText = '', skill = '') => {
+    const token = String(skill || '').trim();
+    if (!token) return currentSkillsText;
+    const existing = normalizeSkills(currentSkillsText);
+    const exists = existing.some((item) => normalizeToken(item) === normalizeToken(token));
+    const next = exists
+        ? existing.filter((item) => normalizeToken(item) !== normalizeToken(token))
+        : [...existing, token];
+    return next.join(', ');
+};
+
+const mapLanguageToLabel = (value = '') => {
+    const normalized = normalizeToken(value);
+    if (!normalized) return 'English';
+    if (normalized === 'en') return 'English';
+    if (normalized === 'hi') return 'Hindi';
+    if (normalized === 'te') return 'Telugu';
+    if (normalized === 'ta') return 'Tamil';
+    if (normalized === 'kn') return 'Kannada';
+    return String(value || '').trim();
+};
+
 const readCompletionStep = (completion = {}, stepId = '') => {
     const steps = Array.isArray(completion?.steps) ? completion.steps : [];
     return steps.find((step) => String(step.id || '') === stepId) || null;
@@ -67,21 +230,157 @@ const Pill = ({ label, active, onPress }) => (
     </TouchableOpacity>
 );
 
-export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
+const TypeaheadInput = ({
+    value = '',
+    onChangeText,
+    placeholder = '',
+    suggestions = [],
+    onSelectSuggestion,
+    keyboardType = 'default',
+    autoCapitalize = 'words',
+    textContentType,
+    returnKeyType = 'done',
+}) => {
+    const [isFocused, setIsFocused] = useState(false);
+    const safeSuggestions = Array.isArray(suggestions) ? suggestions.filter(Boolean) : [];
+    const showSuggestions = isFocused && safeSuggestions.length > 0;
+
+    return (
+        <View style={styles.typeaheadWrap}>
+            <View style={[styles.inputShell, isFocused && styles.inputShellFocused]}>
+                <TextInput
+                    value={value}
+                    onChangeText={onChangeText}
+                    style={styles.inputField}
+                    placeholder={placeholder}
+                    placeholderTextColor="#64748b"
+                    keyboardType={keyboardType}
+                    autoCapitalize={autoCapitalize}
+                    autoCorrect={false}
+                    textContentType={textContentType}
+                    returnKeyType={returnKeyType}
+                    onFocus={() => setIsFocused(true)}
+                    onBlur={() => setTimeout(() => setIsFocused(false), 120)}
+                />
+                <Ionicons
+                    name={showSuggestions ? 'chevron-up' : 'chevron-down'}
+                    size={15}
+                    color="#6b7280"
+                    style={styles.inputChevron}
+                />
+            </View>
+
+            {showSuggestions ? (
+                <View style={styles.typeaheadMenu}>
+                    {safeSuggestions.map((item) => (
+                        <TouchableOpacity
+                            key={`suggestion-${item}`}
+                            style={styles.typeaheadOption}
+                            activeOpacity={0.8}
+                            onPress={() => {
+                                onSelectSuggestion?.(item);
+                                setIsFocused(false);
+                            }}
+                        >
+                            <Ionicons name="sparkles-outline" size={13} color="#7c3aed" />
+                            <Text style={styles.typeaheadOptionText}>{item}</Text>
+                        </TouchableOpacity>
+                    ))}
+                </View>
+            ) : null}
+        </View>
+    );
+};
+
+const DropdownField = ({
+    placeholder = 'Select an option',
+    valueLabel = '',
+    selectedValue = '',
+    options = [],
+    onSelect,
+}) => {
+    const [open, setOpen] = useState(false);
+    const safeOptions = Array.isArray(options) ? options.filter(Boolean) : [];
+
+    return (
+        <View style={styles.dropdownWrap}>
+            <TouchableOpacity
+                style={[styles.dropdownTrigger, open && styles.dropdownTriggerOpen]}
+                activeOpacity={0.85}
+                onPress={() => setOpen((prev) => !prev)}
+            >
+                <Text
+                    style={[
+                        styles.dropdownTriggerText,
+                        !String(valueLabel || '').trim() && styles.dropdownPlaceholderText,
+                    ]}
+                    numberOfLines={1}
+                >
+                    {String(valueLabel || '').trim() || placeholder}
+                </Text>
+                <Text style={styles.dropdownChevron}>{open ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+
+            {open ? (
+                <View style={styles.dropdownMenu}>
+                    {safeOptions.map((option) => {
+                        const optionLabel = String(option?.label || option?.value || '').trim();
+                        const optionValue = option?.value;
+                        const active = normalizeToken(optionValue) === normalizeToken(selectedValue);
+                        return (
+                            <TouchableOpacity
+                                key={`dropdown-option-${optionLabel}-${String(optionValue || '')}`}
+                                style={[styles.dropdownOption, active && styles.dropdownOptionActive]}
+                                activeOpacity={0.82}
+                                onPress={() => {
+                                    setOpen(false);
+                                    onSelect?.(optionValue);
+                                }}
+                            >
+                                <Text style={[styles.dropdownOptionText, active && styles.dropdownOptionTextActive]}>
+                                    {optionLabel}
+                                </Text>
+                            </TouchableOpacity>
+                        );
+                    })}
+                </View>
+            ) : null}
+        </View>
+    );
+};
+
+export default function ProfileSetupWizardScreen({ onCompleted }) {
     const insets = useSafeAreaInsets();
     const { userInfo, updateUserInfo } = useContext(AuthContext);
     const [bootLoading, setBootLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [uploadingAvatar, setUploadingAvatar] = useState(false);
+    const [aiAssistLoading, setAiAssistLoading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [errorText, setErrorText] = useState('');
     const [completion, setCompletion] = useState(null);
     const [currentStepIndex, setCurrentStepIndex] = useState(0);
+    const [showAllRoleTypes, setShowAllRoleTypes] = useState(false);
+    const [showAllRoleTitles, setShowAllRoleTitles] = useState(false);
+    const [showAllSkills, setShowAllSkills] = useState(false);
+    const [showAllCities, setShowAllCities] = useState(false);
+    const [showAllLanguages, setShowAllLanguages] = useState(false);
+    const [showAllSalaryBands, setShowAllSalaryBands] = useState(false);
+    const [showAllEmployerLocations, setShowAllEmployerLocations] = useState(false);
+    const [showAllIndustries, setShowAllIndustries] = useState(false);
+    const [showCustomRoleInput, setShowCustomRoleInput] = useState(false);
+    const [showCustomCityInput, setShowCustomCityInput] = useState(false);
+    const [showCustomLanguageInput, setShowCustomLanguageInput] = useState(false);
+    const [showCustomSalaryInput, setShowCustomSalaryInput] = useState(false);
+    const [showCustomSkillInput, setShowCustomSkillInput] = useState(false);
+    const [showCustomEmployerLocationInput, setShowCustomEmployerLocationInput] = useState(false);
+    const [showCustomIndustryInput, setShowCustomIndustryInput] = useState(false);
+    const [customSkillInput, setCustomSkillInput] = useState('');
     const [form, setForm] = useState({
         avatarUrl: '',
         fullName: '',
         city: '',
-        language: 'en',
+        language: 'English',
         skillsText: '',
         experienceInRole: 0,
         expectedSalary: '',
@@ -89,7 +388,8 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         availabilityWindowDays: 0,
         openToRelocation: false,
         openToNightShift: false,
-        roleName: 'General Worker',
+        roleName: '',
+        roleCategory: '',
         companyName: '',
         companyDescription: '',
         industry: '',
@@ -102,7 +402,106 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         return activeRole === 'employer' || activeRole === 'recruiter';
     }, [userInfo?.activeRole, userInfo?.primaryRole]);
 
-    const smartInterviewComplete = Boolean(readCompletionStep(completion, 'smart_interview')?.complete);
+    const workerTemplate = useMemo(
+        () => WORKER_ROLE_TEMPLATES[form.roleCategory] || WORKER_ROLE_TEMPLATES.Other,
+        [form.roleCategory]
+    );
+    const selectedWorkerSkills = useMemo(() => normalizeSkills(form.skillsText), [form.skillsText]);
+    const workerRoleTypeOptions = useMemo(
+        () => [...new Set([...PRIORITY_WORKER_ROLE_TYPES, ...WORKER_ROLE_TYPES])],
+        []
+    );
+    const workerRoleTitleOptions = useMemo(
+        () => [...new Set([...(workerTemplate.roleNames || []), ...(WORKER_ROLE_TEMPLATES.Other.roleNames || [])])],
+        [workerTemplate.roleNames]
+    );
+    const workerSkillOptions = useMemo(
+        () => [...new Set([...(workerTemplate.skills || []), ...WORKER_SKILL_SUGGESTIONS])],
+        [workerTemplate.skills]
+    );
+    const visibleWorkerRoleTypes = useMemo(
+        () => (showAllRoleTypes ? WORKER_ROLE_TYPES : focusChoices(workerRoleTypeOptions, [form.roleCategory], 6)),
+        [form.roleCategory, showAllRoleTypes, workerRoleTypeOptions]
+    );
+    const visibleWorkerRoleTitles = useMemo(
+        () => (showAllRoleTitles ? workerRoleTitleOptions : focusChoices(workerRoleTitleOptions, [form.roleName], 5)),
+        [form.roleName, showAllRoleTitles, workerRoleTitleOptions]
+    );
+    const visibleWorkerSkills = useMemo(
+        () => (showAllSkills ? workerSkillOptions : focusChoices(workerSkillOptions, selectedWorkerSkills, 8)),
+        [selectedWorkerSkills, showAllSkills, workerSkillOptions]
+    );
+    const visibleWorkerCities = useMemo(
+        () => (showAllCities ? WORKER_CITY_OPTIONS : focusChoices([...PRIORITY_WORKER_CITIES, ...WORKER_CITY_OPTIONS], [form.city], 4)),
+        [form.city, showAllCities]
+    );
+    const visibleWorkerLanguages = useMemo(
+        () => (showAllLanguages ? WORKER_LANGUAGE_OPTIONS : focusChoices([...PRIORITY_WORKER_LANGUAGES, ...WORKER_LANGUAGE_OPTIONS], [form.language], 3)),
+        [form.language, showAllLanguages]
+    );
+    const visibleWorkerSalaryOptions = useMemo(
+        () => (showAllSalaryBands ? WORKER_SALARY_OPTIONS : focusChoices([...PRIORITY_WORKER_SALARY_OPTIONS, ...WORKER_SALARY_OPTIONS], [Number(form.expectedSalary || 0)], 4)),
+        [form.expectedSalary, showAllSalaryBands]
+    );
+    const workerCityTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(form.city, WORKER_CITY_OPTIONS, 8),
+        [form.city]
+    );
+    const workerLanguageTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(form.language, WORKER_LANGUAGE_OPTIONS, 6),
+        [form.language]
+    );
+    const workerRoleTitleTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(form.roleName, workerRoleTitleOptions, 8),
+        [form.roleName, workerRoleTitleOptions]
+    );
+    const workerSkillTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(customSkillInput, workerSkillOptions, 8),
+        [customSkillInput, workerSkillOptions]
+    );
+    const workerRoleTypeDropdownOptions = useMemo(
+        () => WORKER_ROLE_TYPES.map((item) => ({ label: item, value: item })),
+        []
+    );
+    const workerExperienceDropdownOptions = useMemo(
+        () => EXPERIENCE_OPTIONS.map((option) => ({
+            label: `${option} year${option === 1 ? '' : 's'}`,
+            value: option,
+        })),
+        []
+    );
+    const workerSalaryDropdownOptions = useMemo(
+        () => WORKER_SALARY_OPTIONS.map((option) => ({
+            label: `₹${Number(option || 0).toLocaleString('en-IN')} / month`,
+            value: option,
+        })),
+        []
+    );
+    const workerShiftDropdownOptions = useMemo(
+        () => SHIFT_OPTIONS.map((item) => ({ label: item, value: item })),
+        []
+    );
+    const employerLocationOptions = useMemo(
+        () => [...new Set([String(form.companyLocation || '').trim(), ...EMPLOYER_LOCATION_OPTIONS].filter(Boolean))],
+        [form.companyLocation]
+    );
+    const visibleEmployerLocations = useMemo(
+        () => (showAllEmployerLocations ? employerLocationOptions : focusChoices(employerLocationOptions, [form.companyLocation], 4)),
+        [employerLocationOptions, form.companyLocation, showAllEmployerLocations]
+    );
+    const visibleIndustryOptions = useMemo(
+        () => (showAllIndustries ? EMPLOYER_INDUSTRY_OPTIONS : focusChoices(EMPLOYER_INDUSTRY_OPTIONS, [form.industry], 5)),
+        [form.industry, showAllIndustries]
+    );
+    const employerLocationTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(form.companyLocation, employerLocationOptions, 8),
+        [employerLocationOptions, form.companyLocation]
+    );
+    const employerIndustryTypeaheadOptions = useMemo(
+        () => buildTypeaheadSuggestions(form.industry, EMPLOYER_INDUSTRY_OPTIONS, 7),
+        [form.industry]
+    );
+
     const verificationComplete = Boolean(readCompletionStep(completion, 'verified_contact')?.complete);
 
     const steps = useMemo(() => {
@@ -122,14 +521,17 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             { id: 'basic_info', title: 'Basic info' },
             { id: 'work_info', title: 'Work info' },
             { id: 'availability', title: 'Availability' },
-            { id: 'smart_interview', title: 'Smart Interview' },
         ];
     }, [isEmployer]);
 
     const currentStep = steps[currentStepIndex] || steps[0];
 
     const refreshCompletion = useCallback(async () => {
-        const { data } = await client.get('/api/users/profile-completion');
+        const { data } = await client.get('/api/users/profile-completion', {
+            params: {
+                role: isEmployer ? 'employer' : 'worker',
+            },
+        });
         const nextCompletion = data?.completion || null;
         if (nextCompletion) {
             setCompletion(nextCompletion);
@@ -144,15 +546,23 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             }
         }
         return nextCompletion;
-    }, [steps]);
+    }, [isEmployer, steps]);
 
     const bootstrap = useCallback(async () => {
         setBootLoading(true);
         setErrorText('');
         try {
             const [profileRes, completionRes] = await Promise.all([
-                client.get('/api/users/profile').catch(() => ({ data: {} })),
-                client.get('/api/users/profile-completion').catch(() => ({ data: {} })),
+                client.get('/api/users/profile', {
+                    params: {
+                        role: isEmployer ? 'employer' : 'worker',
+                    },
+                }).catch(() => ({ data: {} })),
+                client.get('/api/users/profile-completion', {
+                    params: {
+                        role: isEmployer ? 'employer' : 'worker',
+                    },
+                }).catch(() => ({ data: {} })),
             ]);
 
             const profile = profileRes?.data?.profile || {};
@@ -168,7 +578,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                     || ''
                 ).trim(),
                 city: String(profile?.city || userInfo?.city || '').trim(),
-                language: String(profile?.language || userInfo?.languageCode || 'en').trim() || 'en',
+                language: mapLanguageToLabel(String(profile?.language || userInfo?.languageCode || 'English').trim()),
                 skillsText: Array.isArray(roleProfile?.skills) ? roleProfile.skills.join(', ') : '',
                 experienceInRole: Number(roleProfile?.experienceInRole || profile?.totalExperience || 0) || 0,
                 expectedSalary: String(roleProfile?.expectedSalary || ''),
@@ -180,7 +590,8 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                     : 0,
                 openToRelocation: Boolean(profile?.openToRelocation),
                 openToNightShift: Boolean(profile?.openToNightShift),
-                roleName: String(roleProfile?.roleName || 'General Worker').trim() || 'General Worker',
+                roleName: String(roleProfile?.roleName || '').trim(),
+                roleCategory: inferRoleCategory(String(roleProfile?.roleName || '').trim()),
                 companyName: String(profile?.companyName || '').trim(),
                 companyDescription: String(profile?.description || '').trim(),
                 industry: String(profile?.industry || '').trim(),
@@ -195,11 +606,17 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         } finally {
             setBootLoading(false);
         }
-    }, [userInfo?.city, userInfo?.languageCode, userInfo?.name]);
+    }, [isEmployer, userInfo?.city, userInfo?.languageCode, userInfo?.name]);
 
     useEffect(() => {
         bootstrap();
     }, [bootstrap]);
+
+    useEffect(() => {
+        if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+            UIManager.setLayoutAnimationEnabledExperimental(true);
+        }
+    }, []);
 
     const uploadAvatar = useCallback(async (uri, mimeType = 'image/jpeg') => {
         const fileName = uri.split('/').pop() || `avatar-${Date.now()}.jpg`;
@@ -271,6 +688,56 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         return nextCompletion;
     }, []);
 
+    const handleAiProfileAssist = useCallback(async () => {
+        const roleName = String(form.roleName || '').trim();
+        const roleCategory = String(form.roleCategory || '').trim();
+        if (!roleCategory && !roleName) {
+            setErrorText('Select role type/title first, then use AI assist.');
+            return;
+        }
+
+        setErrorText('');
+        setAiAssistLoading(true);
+        try {
+            const { data } = await client.post('/api/features/ai/profile-suggestions', {
+                roleName,
+                roleCategory,
+                context: isEmployer ? 'employer_profile' : 'worker_profile',
+            }, {
+                __skipApiErrorHandler: true,
+                __allowWhenCircuitOpen: true,
+            });
+
+            const aiSkills = Array.isArray(data?.skills)
+                ? data.skills
+                    .map((entry) => String(entry || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 12)
+                : [];
+            const salaryHint = Number(data?.salaryHint || 0);
+            const preferredShift = SHIFT_OPTIONS.includes(String(data?.preferredShift || ''))
+                ? String(data.preferredShift)
+                : null;
+
+            setForm((prev) => {
+                const existingSkills = normalizeSkills(prev.skillsText);
+                const mergedSkills = [...new Set([...existingSkills, ...aiSkills])].slice(0, 25);
+                return {
+                    ...prev,
+                    skillsText: mergedSkills.join(', '),
+                    expectedSalary: Number.isFinite(salaryHint) && salaryHint > 0
+                        ? String(Math.round(salaryHint))
+                        : prev.expectedSalary,
+                    preferredShift: preferredShift || prev.preferredShift,
+                };
+            });
+        } catch (_error) {
+            setErrorText('AI suggestions unavailable right now. Continue manually.');
+        } finally {
+            setAiAssistLoading(false);
+        }
+    }, [form.roleCategory, form.roleName, isEmployer]);
+
     const validateCurrentStep = useCallback(() => {
         if (!currentStep) return 'Invalid step.';
         if (isEmployer) {
@@ -290,15 +757,15 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         }
         if (currentStep.id === 'work_info') {
             const skills = normalizeSkills(form.skillsText);
+            const experienceValue = Number(form.experienceInRole);
+            if (!String(form.roleCategory || '').trim()) return 'Select role type.';
+            if (!String(form.roleName || '').trim()) return 'Role is required.';
             if (!skills.length) return 'At least one skill is required.';
-            if (Number(form.experienceInRole || 0) <= 0) return 'Experience level is required.';
+            if (!Number.isFinite(experienceValue) || experienceValue < 0) return 'Experience level is required.';
             if (Number(form.expectedSalary || 0) <= 0) return 'Expected salary is required.';
         }
-        if (currentStep.id === 'smart_interview' && !smartInterviewComplete) {
-            return 'Complete Smart Interview to continue.';
-        }
         return '';
-    }, [currentStep, form, isEmployer, smartInterviewComplete, verificationComplete]);
+    }, [currentStep, form, isEmployer, verificationComplete]);
 
     const saveStep = useCallback(async () => {
         if (!currentStep) return null;
@@ -330,7 +797,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                 firstName: names.firstName,
                 lastName: names.lastName,
                 city: String(form.city || '').trim(),
-                language: String(form.language || 'en').trim(),
+                language: String(form.language || 'English').trim(),
             });
         }
 
@@ -342,7 +809,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                 preferredShift: String(form.preferredShift || 'Flexible'),
                 roleProfiles: [
                     {
-                        roleName: String(form.roleName || 'General Worker').trim() || 'General Worker',
+                        roleName: String(form.roleName || '').trim(),
                         experienceInRole: Number(form.experienceInRole || 0),
                         expectedSalary: Number.isFinite(expectedSalary) ? expectedSalary : 0,
                         skills,
@@ -380,7 +847,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
     }, [onCompleted, refreshCompletion, updateUserInfo]);
 
     const onNext = useCallback(async () => {
-        if (saving || uploadingAvatar) return;
+        if (saving || uploadingAvatar || aiAssistLoading) return;
         const validationError = validateCurrentStep();
         if (validationError) {
             setErrorText(validationError);
@@ -395,19 +862,70 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                 await finishIfReady();
                 return;
             }
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
             setCurrentStepIndex((prev) => Math.min(prev + 1, steps.length - 1));
         } catch (error) {
             setErrorText(error?.response?.data?.message || 'Could not save this step.');
         } finally {
             setSaving(false);
         }
-    }, [currentStepIndex, finishIfReady, saveStep, saving, steps.length, uploadingAvatar, validateCurrentStep]);
+    }, [aiAssistLoading, currentStepIndex, finishIfReady, saveStep, saving, steps.length, uploadingAvatar, validateCurrentStep]);
 
     const onBack = useCallback(() => {
         if (currentStepIndex <= 0) return;
         setErrorText('');
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setCurrentStepIndex((prev) => Math.max(prev - 1, 0));
     }, [currentStepIndex]);
+
+    const applyWorkerRoleCategorySelection = useCallback((nextRoleCategory) => {
+        const item = String(nextRoleCategory || '').trim();
+        if (!item) return;
+        const nextTemplate = WORKER_ROLE_TEMPLATES[item] || WORKER_ROLE_TEMPLATES.Other;
+        setShowCustomRoleInput(false);
+        setShowAllRoleTitles(false);
+        setShowAllSkills(false);
+        setForm((prev) => {
+            const currentRole = String(prev.roleName || '').trim();
+            const templateRoleNames = Array.isArray(nextTemplate.roleNames) ? nextTemplate.roleNames : [];
+            const keepRole = templateRoleNames.some((roleName) => normalizeToken(roleName) === normalizeToken(currentRole));
+            const roleCategoryChanged = normalizeToken(prev.roleCategory) !== normalizeToken(item);
+            const currentSkills = normalizeSkills(prev.skillsText);
+            const templateSkills = Array.isArray(nextTemplate.skills) ? nextTemplate.skills : [];
+            const keepSkills = currentSkills.some((skill) => templateSkills.some((templateSkill) => normalizeToken(templateSkill) === normalizeToken(skill)));
+            return {
+                ...prev,
+                roleCategory: item,
+                roleName: keepRole ? currentRole : String(templateRoleNames[0] || currentRole || ''),
+                // Prevent stale skills leaking across role categories (e.g. Software -> Electrician).
+                skillsText: roleCategoryChanged
+                    ? String(templateSkills.join(', '))
+                    : (keepSkills ? String(prev.skillsText || '').trim() : String(templateSkills.join(', '))),
+            };
+        });
+    }, []);
+
+    const applyWorkerSmartPreset = useCallback(() => {
+        const roleCategory = String(form.roleCategory || '').trim();
+        const template = WORKER_ROLE_TEMPLATES[roleCategory] || WORKER_ROLE_TEMPLATES.Other;
+        const suggestedRole = String(template?.roleNames?.[0] || '').trim();
+        const suggestedSkills = Array.isArray(template?.skills) ? template.skills.filter(Boolean) : [];
+        const suggestedSalary = Number(WORKER_SALARY_OPTIONS?.[2] || 25000);
+
+        setShowCustomRoleInput(false);
+        setShowCustomSkillInput(false);
+        setShowCustomSalaryInput(false);
+        setForm((prev) => {
+            const existingSkills = normalizeSkills(prev.skillsText);
+            const mergedSkills = [...new Set([...existingSkills, ...suggestedSkills])].slice(0, 25);
+            return {
+                ...prev,
+                roleName: String(prev.roleName || suggestedRole).trim(),
+                skillsText: mergedSkills.join(', '),
+                expectedSalary: String(Number(prev.expectedSalary || 0) > 0 ? prev.expectedSalary : suggestedSalary),
+            };
+        });
+    }, [form.roleCategory]);
 
     const renderWorkerStep = () => {
         if (currentStep.id === 'profile_picture') {
@@ -436,24 +954,127 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             return (
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Basic information</Text>
+                    <View style={styles.hintCard}>
+                        <Text style={styles.hintText}>Use quick choices. Type only if your city or language is not listed.</Text>
+                    </View>
                     <TextInput
                         value={form.fullName}
                         onChangeText={(value) => setForm((prev) => ({ ...prev, fullName: value }))}
                         style={styles.input}
                         placeholder="Full name"
+                        placeholderTextColor="#64748b"
+                        textContentType="name"
+                        autoCapitalize="words"
+                        autoCorrect={false}
                     />
-                    <TextInput
-                        value={form.city}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, city: value }))}
-                        style={styles.input}
-                        placeholder="City"
-                    />
-                    <TextInput
-                        value={form.language}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, language: value }))}
-                        style={styles.input}
-                        placeholder="Language (optional)"
-                    />
+                    <Text style={styles.fieldLabel}>City</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleWorkerCities.map((city) => (
+                            <Pill
+                                key={`city-${city}`}
+                                label={city}
+                                active={normalizeToken(form.city) === normalizeToken(city)}
+                                onPress={() => {
+                                    setShowCustomCityInput(false);
+                                    setForm((prev) => ({ ...prev, city }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {WORKER_CITY_OPTIONS.length > visibleWorkerCities.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllCities(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more cities</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllCities ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllCities(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer cities</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomCityInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomCityInput ? 'Hide custom city' : 'City not listed? Add custom'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomCityInput ? (
+                        <TypeaheadInput
+                            value={form.city}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, city: value }))}
+                            placeholder="Type city"
+                            suggestions={workerCityTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, city: value }));
+                                setShowCustomCityInput(false);
+                            }}
+                            textContentType="addressCity"
+                        />
+                    ) : null}
+
+                    <Text style={styles.fieldLabel}>Language</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleWorkerLanguages.map((language) => (
+                            <Pill
+                                key={`lang-${language}`}
+                                label={language}
+                                active={normalizeToken(form.language) === normalizeToken(language)}
+                                onPress={() => {
+                                    setShowCustomLanguageInput(false);
+                                    setForm((prev) => ({ ...prev, language }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {WORKER_LANGUAGE_OPTIONS.length > visibleWorkerLanguages.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllLanguages(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more languages</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllLanguages ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllLanguages(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer languages</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomLanguageInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomLanguageInput ? 'Hide custom language' : 'Add custom language'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomLanguageInput ? (
+                        <TypeaheadInput
+                            value={form.language}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, language: value }))}
+                            placeholder="Type language"
+                            suggestions={workerLanguageTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, language: value }));
+                                setShowCustomLanguageInput(false);
+                            }}
+                        />
+                    ) : null}
                 </View>
             );
         }
@@ -461,35 +1082,199 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
         if (currentStep.id === 'work_info') {
             return (
                 <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Work information</Text>
-                    <TextInput
-                        value={form.roleName}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, roleName: value }))}
-                        style={styles.input}
-                        placeholder="Previous role"
+                    <View style={styles.sectionTitleRow}>
+                        <Text style={styles.sectionTitle}>Work information</Text>
+                        <View style={styles.assistActionsRow}>
+                            <TouchableOpacity
+                                style={styles.aiAssistButton}
+                                activeOpacity={0.85}
+                                onPress={handleAiProfileAssist}
+                                disabled={aiAssistLoading}
+                            >
+                                <Text style={styles.aiAssistButtonText}>{aiAssistLoading ? 'Thinking...' : 'AI Assist'}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={styles.autoFillButton}
+                                activeOpacity={0.85}
+                                onPress={applyWorkerSmartPreset}
+                            >
+                                <Text style={styles.autoFillButtonText}>Auto-fill</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                    <View style={styles.hintCard}>
+                        <Text style={styles.hintText}>Pick core details first. Add optional custom inputs only when needed.</Text>
+                    </View>
+                    <Text style={styles.fieldLabel}>Role type</Text>
+                    <DropdownField
+                        placeholder="Select role type"
+                        valueLabel={String(form.roleCategory || '').trim()}
+                        selectedValue={String(form.roleCategory || '').trim()}
+                        options={workerRoleTypeDropdownOptions}
+                        onSelect={applyWorkerRoleCategorySelection}
                     />
-                    <TextInput
-                        value={form.skillsText}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, skillsText: value }))}
-                        style={styles.input}
-                        placeholder="Skills (comma separated)"
-                    />
+                    <Text style={styles.dropdownHelperText}>Quick picks</Text>
                     <View style={styles.rowWrap}>
-                        {WORKER_SKILL_SUGGESTIONS.map((item) => (
+                        {visibleWorkerRoleTypes.map((item) => (
                             <Pill
-                                key={item}
+                                key={`role-type-${item}`}
                                 label={item}
-                                active={normalizeSkills(form.skillsText).includes(item)}
-                                onPress={() => {
-                                    const skills = normalizeSkills(form.skillsText);
-                                    const exists = skills.includes(item);
-                                    const next = exists ? skills.filter((skill) => skill !== item) : [...skills, item];
-                                    setForm((prev) => ({ ...prev, skillsText: next.join(', ') }));
-                                }}
+                                active={String(form.roleCategory) === item}
+                                onPress={() => applyWorkerRoleCategorySelection(item)}
                             />
                         ))}
                     </View>
+                    {WORKER_ROLE_TYPES.length > visibleWorkerRoleTypes.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllRoleTypes(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more role types</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllRoleTypes ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllRoleTypes(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer role types</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <Text style={styles.fieldLabel}>Role title</Text>
+                    {Array.isArray(workerTemplate.roleNames) && workerTemplate.roleNames.length ? (
+                        <View style={styles.rowWrap}>
+                            {visibleWorkerRoleTitles.map((item) => (
+                                <Pill
+                                    key={`role-name-${item}`}
+                                    label={item}
+                                    active={String(form.roleName) === item}
+                                    onPress={() => setForm((prev) => ({ ...prev, roleName: item }))}
+                                />
+                            ))}
+                        </View>
+                    ) : null}
+                    {workerRoleTitleOptions.length > visibleWorkerRoleTitles.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllRoleTitles(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more role titles</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllRoleTitles ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllRoleTitles(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer role titles</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomRoleInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomRoleInput ? 'Hide custom role' : 'Role not listed? Add custom'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomRoleInput ? (
+                        <TypeaheadInput
+                            value={form.roleName}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, roleName: value }))}
+                            placeholder="Type role title"
+                            suggestions={workerRoleTitleTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, roleName: value }));
+                                setShowCustomRoleInput(false);
+                            }}
+                        />
+                    ) : null}
+
+                    <Text style={styles.fieldLabel}>Skills</Text>
+                    <Text style={styles.sectionHint}>Selected skills: {selectedWorkerSkills.length}</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleWorkerSkills.map((item) => (
+                            <Pill
+                                key={item}
+                                label={item}
+                                active={selectedWorkerSkills.includes(item)}
+                                onPress={() => setForm((prev) => ({ ...prev, skillsText: toggleSkillToken(prev.skillsText, item) }))}
+                            />
+                        ))}
+                    </View>
+                    {workerSkillOptions.length > visibleWorkerSkills.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllSkills(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more skills</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllSkills ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllSkills(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer skills</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomSkillInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomSkillInput ? 'Hide custom skill' : 'Add custom skill'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomSkillInput ? (
+                        <View style={styles.inlineRow}>
+                            <View style={styles.inlineInputGrow}>
+                                <TypeaheadInput
+                                    value={customSkillInput}
+                                    onChangeText={setCustomSkillInput}
+                                    placeholder="Type skill"
+                                    suggestions={workerSkillTypeaheadOptions}
+                                    onSelectSuggestion={(value) => {
+                                        setForm((prev) => ({ ...prev, skillsText: toggleSkillToken(prev.skillsText, value) }));
+                                        setCustomSkillInput('');
+                                    }}
+                                    autoCapitalize="words"
+                                />
+                            </View>
+                            <TouchableOpacity
+                                style={styles.inlineAddBtn}
+                                activeOpacity={0.85}
+                                onPress={() => {
+                                    const nextSkill = String(customSkillInput || '').trim();
+                                    if (!nextSkill) return;
+                                    setForm((prev) => ({ ...prev, skillsText: toggleSkillToken(prev.skillsText, nextSkill) }));
+                                    setCustomSkillInput('');
+                                }}
+                            >
+                                <Text style={styles.inlineAddBtnText}>Add</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
+
                     <Text style={styles.fieldLabel}>Experience (years)</Text>
+                    <DropdownField
+                        placeholder="Select experience"
+                        valueLabel={`${Number(form.experienceInRole || 0)} year${Number(form.experienceInRole || 0) === 1 ? '' : 's'}`}
+                        selectedValue={String(form.experienceInRole || '')}
+                        options={workerExperienceDropdownOptions}
+                        onSelect={(value) => {
+                            setForm((prev) => ({ ...prev, experienceInRole: Number(value || 0) }));
+                        }}
+                    />
+                    <Text style={styles.dropdownHelperText}>Quick picks</Text>
                     <View style={styles.rowWrap}>
                         {EXPERIENCE_OPTIONS.map((option) => (
                             <Pill
@@ -500,14 +1285,87 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                             />
                         ))}
                     </View>
-                    <TextInput
-                        value={String(form.expectedSalary)}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, expectedSalary: value.replace(/[^\d]/g, '') }))}
-                        style={styles.input}
-                        placeholder="Expected salary"
-                        keyboardType="number-pad"
+
+                    <Text style={styles.fieldLabel}>Expected monthly salary</Text>
+                    <DropdownField
+                        placeholder="Select expected salary"
+                        valueLabel={Number(form.expectedSalary || 0) > 0 ? `₹${Number(form.expectedSalary || 0).toLocaleString('en-IN')} / month` : ''}
+                        selectedValue={String(form.expectedSalary || '')}
+                        options={workerSalaryDropdownOptions}
+                        onSelect={(value) => {
+                            setShowCustomSalaryInput(false);
+                            setForm((prev) => ({ ...prev, expectedSalary: String(Number(value || 0)) }));
+                        }}
                     />
+                    <Text style={styles.dropdownHelperText}>Quick picks</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleWorkerSalaryOptions.map((option) => (
+                            <Pill
+                                key={`sal-${option}`}
+                                label={`₹${Math.round(option / 1000)}k`}
+                                active={Number(form.expectedSalary || 0) === option}
+                                onPress={() => {
+                                    setShowCustomSalaryInput(false);
+                                    setForm((prev) => ({ ...prev, expectedSalary: String(option) }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {WORKER_SALARY_OPTIONS.length > visibleWorkerSalaryOptions.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllSalaryBands(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more salary bands</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllSalaryBands ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllSalaryBands(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer salary bands</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomSalaryInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomSalaryInput ? 'Hide custom salary' : 'Set custom salary'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomSalaryInput ? (
+                        <TypeaheadInput
+                            value={String(form.expectedSalary)}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, expectedSalary: value.replace(/[^\d]/g, '') }))}
+                            placeholder="Type salary"
+                            suggestions={buildTypeaheadSuggestions(String(form.expectedSalary || ''), WORKER_SALARY_OPTIONS.map((option) => String(option)), 5)}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, expectedSalary: String(value).replace(/[^\d]/g, '') }));
+                                setShowCustomSalaryInput(false);
+                            }}
+                            keyboardType="number-pad"
+                            autoCapitalize="none"
+                        />
+                    ) : null}
                     <Text style={styles.fieldLabel}>Shift preference</Text>
+                    <DropdownField
+                        placeholder="Select shift preference"
+                        valueLabel={String(form.preferredShift || '').trim()}
+                        selectedValue={String(form.preferredShift || '').trim()}
+                        options={workerShiftDropdownOptions}
+                        onSelect={(value) => {
+                            const nextShift = SHIFT_OPTIONS.includes(String(value || '').trim())
+                                ? String(value).trim()
+                                : 'Flexible';
+                            setForm((prev) => ({ ...prev, preferredShift: nextShift }));
+                        }}
+                    />
+                    <Text style={styles.dropdownHelperText}>Quick picks</Text>
                     <View style={styles.rowWrap}>
                         {SHIFT_OPTIONS.map((item) => (
                             <Pill
@@ -555,27 +1413,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             );
         }
 
-        return (
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Smart Interview</Text>
-                <Text style={styles.sectionHint}>
-                    This is required to unlock higher quality matches.
-                </Text>
-                <View style={styles.interviewStatusBox}>
-                    <Text style={styles.interviewStatusText}>
-                        {smartInterviewComplete ? 'Completed' : 'Pending'}
-                    </Text>
-                </View>
-                {!smartInterviewComplete ? (
-                    <TouchableOpacity
-                        style={styles.secondaryBtn}
-                        onPress={() => navigation.navigate('SmartInterview')}
-                    >
-                        <Text style={styles.secondaryBtnText}>Start Smart Interview</Text>
-                    </TouchableOpacity>
-                ) : null}
-            </View>
-        );
+        return null;
     };
 
     const renderEmployerStep = () => {
@@ -583,18 +1421,67 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             return (
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Company name</Text>
+                    <Text style={styles.sectionHint}>Keep this short and clear. Use quick location picks below.</Text>
                     <TextInput
                         value={form.companyName}
                         onChangeText={(value) => setForm((prev) => ({ ...prev, companyName: value }))}
                         style={styles.input}
                         placeholder="Company name"
                     />
-                    <TextInput
-                        value={form.companyLocation}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, companyLocation: value }))}
-                        style={styles.input}
-                        placeholder="Location"
-                    />
+                    <Text style={styles.fieldLabel}>Location</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleEmployerLocations.map((item) => (
+                            <Pill
+                                key={`company-location-${item}`}
+                                label={item}
+                                active={normalizeToken(form.companyLocation) === normalizeToken(item)}
+                                onPress={() => {
+                                    setShowCustomEmployerLocationInput(false);
+                                    setForm((prev) => ({ ...prev, companyLocation: item }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {employerLocationOptions.length > visibleEmployerLocations.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllEmployerLocations(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more locations</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllEmployerLocations ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllEmployerLocations(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer locations</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomEmployerLocationInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomEmployerLocationInput ? 'Hide custom location' : 'Use custom location'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomEmployerLocationInput ? (
+                        <TypeaheadInput
+                            value={form.companyLocation}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, companyLocation: value }))}
+                            placeholder="Type location"
+                            suggestions={employerLocationTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, companyLocation: value }));
+                                setShowCustomEmployerLocationInput(false);
+                            }}
+                            textContentType="addressCity"
+                        />
+                    ) : null}
                 </View>
             );
         }
@@ -630,12 +1517,59 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             return (
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Industry</Text>
-                    <TextInput
-                        value={form.industry}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, industry: value }))}
-                        style={styles.input}
-                        placeholder="Industry"
-                    />
+                    <Text style={styles.sectionHint}>Select one industry. Add custom only if not listed.</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleIndustryOptions.map((item) => (
+                            <Pill
+                                key={`industry-${item}`}
+                                label={item}
+                                active={normalizeToken(form.industry) === normalizeToken(item)}
+                                onPress={() => {
+                                    setShowCustomIndustryInput(false);
+                                    setForm((prev) => ({ ...prev, industry: item }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    {EMPLOYER_INDUSTRY_OPTIONS.length > visibleIndustryOptions.length ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllIndustries(true)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show more industries</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    {showAllIndustries ? (
+                        <TouchableOpacity
+                            style={styles.helperAction}
+                            onPress={() => setShowAllIndustries(false)}
+                            activeOpacity={0.82}
+                        >
+                            <Text style={styles.helperActionText}>Show fewer industries</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomIndustryInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomIndustryInput ? 'Hide custom industry' : 'Use custom industry'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomIndustryInput ? (
+                        <TypeaheadInput
+                            value={form.industry}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, industry: value }))}
+                            placeholder="Type industry"
+                            suggestions={employerIndustryTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, industry: value }));
+                                setShowCustomIndustryInput(false);
+                            }}
+                        />
+                    ) : null}
                 </View>
             );
         }
@@ -643,18 +1577,49 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
             return (
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Contact person</Text>
+                    <Text style={styles.sectionHint}>Who should candidates reach out to?</Text>
                     <TextInput
                         value={form.contactPerson}
                         onChangeText={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))}
                         style={styles.input}
                         placeholder="Hiring contact name"
                     />
-                    <TextInput
-                        value={form.companyLocation}
-                        onChangeText={(value) => setForm((prev) => ({ ...prev, companyLocation: value }))}
-                        style={styles.input}
-                        placeholder="Company location"
-                    />
+                    <Text style={styles.fieldLabel}>Confirm location</Text>
+                    <View style={styles.rowWrap}>
+                        {visibleEmployerLocations.map((item) => (
+                            <Pill
+                                key={`contact-location-${item}`}
+                                label={item}
+                                active={normalizeToken(form.companyLocation) === normalizeToken(item)}
+                                onPress={() => {
+                                    setShowCustomEmployerLocationInput(false);
+                                    setForm((prev) => ({ ...prev, companyLocation: item }));
+                                }}
+                            />
+                        ))}
+                    </View>
+                    <TouchableOpacity
+                        style={styles.helperAction}
+                        onPress={() => setShowCustomEmployerLocationInput((prev) => !prev)}
+                        activeOpacity={0.82}
+                    >
+                        <Text style={styles.helperActionText}>
+                            {showCustomEmployerLocationInput ? 'Hide custom location' : 'Use custom location'}
+                        </Text>
+                    </TouchableOpacity>
+                    {showCustomEmployerLocationInput ? (
+                        <TypeaheadInput
+                            value={form.companyLocation}
+                            onChangeText={(value) => setForm((prev) => ({ ...prev, companyLocation: value }))}
+                            placeholder="Type company location"
+                            suggestions={employerLocationTypeaheadOptions}
+                            onSelectSuggestion={(value) => {
+                                setForm((prev) => ({ ...prev, companyLocation: value }));
+                                setShowCustomEmployerLocationInput(false);
+                            }}
+                            textContentType="addressCity"
+                        />
+                    ) : null}
                 </View>
             );
         }
@@ -687,13 +1652,20 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
     const stepLabel = `${currentStepIndex + 1} / ${steps.length}`;
 
     return (
-        <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView
+            style={styles.container}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 12}
+        >
             <ScrollView
                 contentContainerStyle={[styles.content, { paddingTop: insets.top + 20, paddingBottom: Math.max(insets.bottom, 20) + 24 }]}
                 keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             >
                 <Text style={styles.headerTitle}>Complete your profile</Text>
-                <Text style={styles.headerSubtitle}>Complete profile to get 2x more interviews.</Text>
+                <Text style={styles.headerSubtitle}>
+                    {isEmployer ? 'Complete details to start posting jobs faster.' : 'Complete profile to get 2x more interviews.'}
+                </Text>
                 <Text style={styles.progressMeta}>Step {stepLabel} • {percent}% complete</Text>
                 <View style={styles.progressTrack}>
                     <View style={[styles.progressFill, { width: `${Math.max(0, Math.min(100, percent))}%` }]} />
@@ -701,7 +1673,23 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
 
                 <View style={styles.stepPillRow}>
                     {steps.map((step, index) => (
-                        <View key={step.id} style={[styles.stepDot, index <= currentStepIndex && styles.stepDotActive]} />
+                        <TouchableOpacity
+                            key={step.id}
+                            activeOpacity={0.82}
+                            onPress={() => {
+                                if (index <= currentStepIndex) {
+                                    setCurrentStepIndex(index);
+                                }
+                            }}
+                            style={styles.stepDotTap}
+                        >
+                            <View style={[
+                                styles.stepDot,
+                                index <= currentStepIndex && styles.stepDotActive,
+                                Boolean(readCompletionStep(completion, step.id)?.complete) && styles.stepDotDone,
+                            ]}
+                            />
+                        </TouchableOpacity>
                     ))}
                 </View>
 
@@ -720,8 +1708,8 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                        style={[styles.nextBtn, (saving || uploadingAvatar) && styles.nextBtnDisabled]}
-                        disabled={saving || uploadingAvatar}
+                        style={[styles.nextBtn, (saving || uploadingAvatar || aiAssistLoading) && styles.nextBtnDisabled]}
+                        disabled={saving || uploadingAvatar || aiAssistLoading}
                         onPress={onNext}
                     >
                         {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.nextBtnText}>{currentStepIndex >= steps.length - 1 ? 'Finish' : 'Next'}</Text>}
@@ -735,7 +1723,7 @@ export default function ProfileSetupWizardScreen({ navigation, onCompleted }) {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f8fafc',
+        backgroundColor: '#eef2f8',
     },
     content: {
         paddingHorizontal: 18,
@@ -752,110 +1740,353 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     headerTitle: {
-        fontSize: 24,
+        fontSize: 27,
+        lineHeight: 33,
         fontWeight: '800',
         color: '#0f172a',
+        letterSpacing: 0.2,
     },
     headerSubtitle: {
-        marginTop: 6,
+        marginTop: 7,
         color: '#475569',
-        fontWeight: '500',
+        fontWeight: '600',
+        lineHeight: 19,
     },
     progressMeta: {
-        marginTop: 18,
-        fontSize: 12,
-        color: '#475569',
+        marginTop: 20,
+        fontSize: 11,
+        color: '#64748b',
         fontWeight: '700',
+        letterSpacing: 0.8,
+        textTransform: 'uppercase',
     },
     progressTrack: {
         marginTop: 8,
-        height: 8,
+        height: 9,
         borderRadius: 999,
         backgroundColor: '#e2e8f0',
         overflow: 'hidden',
     },
     progressFill: {
-        height: 8,
+        height: 9,
         borderRadius: 999,
-        backgroundColor: '#4f46e5',
+        backgroundColor: '#7c3aed',
     },
     stepPillRow: {
-        marginTop: 16,
+        marginTop: 18,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
     },
     stepDot: {
-        width: 10,
-        height: 10,
-        borderRadius: 10,
+        width: 9,
+        height: 9,
+        borderRadius: 9,
         backgroundColor: '#cbd5e1',
     },
     stepDotActive: {
-        backgroundColor: '#4f46e5',
+        backgroundColor: '#7c3aed',
+        width: 20,
+        borderRadius: 999,
+    },
+    stepDotDone: {
+        backgroundColor: '#6d28d9',
+    },
+    stepDotTap: {
+        paddingVertical: 2,
+        paddingHorizontal: 1,
     },
     stepTitle: {
         marginTop: 18,
-        fontSize: 20,
+        fontSize: 22,
+        lineHeight: 28,
         fontWeight: '800',
         color: '#111827',
     },
     section: {
-        marginTop: 16,
+        marginTop: 18,
         backgroundColor: '#ffffff',
-        borderRadius: 16,
-        padding: 14,
+        borderRadius: 18,
+        paddingHorizontal: 15,
+        paddingVertical: 14,
         borderWidth: 1,
         borderColor: '#e2e8f0',
+        shadowColor: '#334155',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.07,
+        shadowRadius: 12,
+        elevation: 2,
     },
     sectionTitle: {
-        fontSize: 16,
+        fontSize: 18,
+        lineHeight: 23,
         fontWeight: '800',
         color: '#0f172a',
     },
+    sectionTitleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
+    },
+    assistActionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    aiAssistButton: {
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#ddd6fe',
+        backgroundColor: '#f5f3ff',
+        paddingHorizontal: 11,
+        paddingVertical: 6,
+    },
+    aiAssistButtonText: {
+        fontSize: 11,
+        fontWeight: '800',
+        color: '#6d28d9',
+    },
+    autoFillButton: {
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: '#7c3aed',
+        backgroundColor: '#7c3aed',
+        paddingHorizontal: 11,
+        paddingVertical: 6,
+    },
+    autoFillButtonText: {
+        fontSize: 11,
+        fontWeight: '800',
+        color: '#ffffff',
+    },
     sectionHint: {
-        marginTop: 4,
+        marginTop: 5,
         color: '#64748b',
-        fontWeight: '500',
+        fontWeight: '600',
+        fontSize: 12,
+        lineHeight: 17,
+    },
+    hintCard: {
+        marginTop: 11,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#e9d5ff',
+        backgroundColor: '#faf5ff',
+        paddingHorizontal: 11,
+        paddingVertical: 9,
+    },
+    hintText: {
+        color: '#6b21a8',
+        fontWeight: '700',
+        fontSize: 12,
+        lineHeight: 17,
     },
     input: {
-        marginTop: 10,
+        marginTop: 11,
         backgroundColor: '#f8fafc',
         borderWidth: 1,
-        borderColor: '#dbe4f0',
-        borderRadius: 12,
+        borderColor: '#d6dfec',
+        borderRadius: 14,
         paddingHorizontal: 12,
-        paddingVertical: 10,
+        paddingVertical: 11,
         color: '#0f172a',
         fontWeight: '600',
+    },
+    typeaheadWrap: {
+        marginTop: 11,
+    },
+    inputShell: {
+        minHeight: 46,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d6dfec',
+        backgroundColor: '#f8fafc',
+        paddingHorizontal: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    inputShellFocused: {
+        borderColor: '#a78bfa',
+        backgroundColor: '#f5f3ff',
+    },
+    inputField: {
+        flex: 1,
+        color: '#0f172a',
+        fontWeight: '600',
+        paddingVertical: 11,
+    },
+    inputChevron: {
+        marginLeft: 8,
+    },
+    typeaheadMenu: {
+        marginTop: 6,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#e9d5ff',
+        backgroundColor: '#ffffff',
+        overflow: 'hidden',
+    },
+    typeaheadOption: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 11,
+        paddingVertical: 9,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f3e8ff',
+    },
+    typeaheadOptionText: {
+        color: '#111827',
+        fontWeight: '600',
+        fontSize: 13,
     },
     multilineInput: {
         minHeight: 96,
         textAlignVertical: 'top',
     },
     fieldLabel: {
-        marginTop: 10,
+        marginTop: 12,
         color: '#334155',
         fontWeight: '700',
         fontSize: 12,
+        letterSpacing: 0.2,
     },
-    rowWrap: {
+    dropdownWrap: {
         marginTop: 8,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
     },
-    pill: {
+    dropdownTrigger: {
+        minHeight: 46,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d6dfec',
+        backgroundColor: '#f8fafc',
         paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 999,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    dropdownTriggerOpen: {
+        borderColor: '#818cf8',
         backgroundColor: '#eef2ff',
     },
+    dropdownTriggerText: {
+        flex: 1,
+        color: '#0f172a',
+        fontWeight: '700',
+        fontSize: 13,
+        paddingRight: 8,
+    },
+    dropdownPlaceholderText: {
+        color: '#64748b',
+        fontWeight: '600',
+    },
+    dropdownChevron: {
+        color: '#475569',
+        fontSize: 12,
+        fontWeight: '900',
+    },
+    dropdownMenu: {
+        marginTop: 8,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d6dfec',
+        backgroundColor: '#ffffff',
+        overflow: 'hidden',
+    },
+    dropdownOption: {
+        paddingHorizontal: 12,
+        paddingVertical: 11,
+        borderBottomWidth: 1,
+        borderBottomColor: '#edf2f7',
+    },
+    dropdownOptionActive: {
+        backgroundColor: '#eef2ff',
+    },
+    dropdownOptionText: {
+        color: '#1e293b',
+        fontWeight: '600',
+        fontSize: 13,
+    },
+    dropdownOptionTextActive: {
+        color: '#3730a3',
+        fontWeight: '800',
+    },
+    dropdownHelperText: {
+        marginTop: 8,
+        color: '#64748b',
+        fontWeight: '700',
+        fontSize: 11,
+        letterSpacing: 0.2,
+        textTransform: 'uppercase',
+    },
+    rowWrap: {
+        marginTop: 9,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 9,
+    },
+    helperAction: {
+        marginTop: 9,
+        marginBottom: 3,
+    },
+    helperActionText: {
+        color: '#4338ca',
+        fontWeight: '800',
+        fontSize: 12,
+    },
+    inlineRow: {
+        marginTop: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    inlineInput: {
+        flex: 1,
+        marginTop: 0,
+    },
+    inlineInputGrow: {
+        flex: 1,
+    },
+    inlineAddBtn: {
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#7c3aed',
+        backgroundColor: '#f5f3ff',
+        paddingHorizontal: 13,
+        paddingVertical: 11,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 6,
+        elevation: 1,
+    },
+    inlineAddBtnText: {
+        color: '#6d28d9',
+        fontWeight: '800',
+        fontSize: 12,
+    },
+    pill: {
+        paddingHorizontal: 13,
+        paddingVertical: 9,
+        borderRadius: 999,
+        backgroundColor: '#f8fafc',
+        borderWidth: 1,
+        borderColor: '#dbe4f0',
+    },
     pillActive: {
-        backgroundColor: '#4f46e5',
+        backgroundColor: '#7c3aed',
+        borderColor: '#7c3aed',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 6,
+        elevation: 1,
     },
     pillLabel: {
-        color: '#4338ca',
+        color: '#334155',
         fontWeight: '700',
         fontSize: 12,
     },
@@ -863,26 +2094,31 @@ const styles = StyleSheet.create({
         color: '#ffffff',
     },
     avatarWrap: {
-        marginTop: 12,
-        width: 110,
-        height: 110,
-        borderRadius: 55,
+        marginTop: 14,
+        width: 116,
+        height: 116,
+        borderRadius: 58,
         borderWidth: 2,
-        borderColor: '#4f46e5',
+        borderColor: '#7c3aed',
         borderStyle: 'dashed',
         justifyContent: 'center',
         alignItems: 'center',
         overflow: 'hidden',
-        backgroundColor: '#eef2ff',
+        backgroundColor: '#f5f3ff',
         alignSelf: 'center',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.14,
+        shadowRadius: 8,
+        elevation: 2,
     },
     avatarImage: {
-        width: 110,
-        height: 110,
-        borderRadius: 55,
+        width: 116,
+        height: 116,
+        borderRadius: 58,
     },
     avatarPlaceholder: {
-        color: '#3730a3',
+        color: '#6d28d9',
         fontWeight: '800',
     },
     uploadState: {
@@ -898,7 +2134,8 @@ const styles = StyleSheet.create({
     },
     switchRow: {
         marginTop: 12,
-        paddingVertical: 8,
+        paddingHorizontal: 2,
+        paddingVertical: 10,
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -909,46 +2146,47 @@ const styles = StyleSheet.create({
     },
     interviewStatusBox: {
         marginTop: 12,
-        borderRadius: 12,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        backgroundColor: '#eef2ff',
+        borderRadius: 14,
+        paddingVertical: 11,
+        paddingHorizontal: 13,
+        backgroundColor: '#f5f3ff',
     },
     interviewStatusText: {
-        color: '#312e81',
+        color: '#6d28d9',
         fontWeight: '700',
     },
     secondaryBtn: {
         marginTop: 12,
         borderRadius: 12,
         borderWidth: 1,
-        borderColor: '#6366f1',
+        borderColor: '#7c3aed',
         paddingVertical: 11,
         alignItems: 'center',
     },
     secondaryBtnText: {
-        color: '#4338ca',
+        color: '#6d28d9',
         fontWeight: '800',
     },
     errorText: {
         marginTop: 12,
         color: '#dc2626',
         fontWeight: '700',
+        lineHeight: 18,
     },
     footerRow: {
-        marginTop: 24,
+        marginTop: 26,
         flexDirection: 'row',
         justifyContent: 'space-between',
-        gap: 10,
+        gap: 12,
     },
     backBtn: {
         flex: 1,
-        borderRadius: 12,
+        borderRadius: 14,
         borderWidth: 1,
-        borderColor: '#cbd5e1',
-        paddingVertical: 12,
+        borderColor: '#d3dbe8',
+        paddingVertical: 13,
         alignItems: 'center',
-        backgroundColor: '#ffffff',
+        backgroundColor: '#f8fafc',
     },
     backBtnDisabled: {
         opacity: 0.45,
@@ -956,13 +2194,19 @@ const styles = StyleSheet.create({
     backBtnText: {
         color: '#334155',
         fontWeight: '700',
+        fontSize: 14,
     },
     nextBtn: {
         flex: 1.3,
-        borderRadius: 12,
-        paddingVertical: 12,
+        borderRadius: 14,
+        paddingVertical: 13,
         alignItems: 'center',
-        backgroundColor: '#4f46e5',
+        backgroundColor: '#7c3aed',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 7 },
+        shadowOpacity: 0.25,
+        shadowRadius: 10,
+        elevation: 5,
     },
     nextBtnDisabled: {
         opacity: 0.65,

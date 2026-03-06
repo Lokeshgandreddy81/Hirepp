@@ -92,7 +92,7 @@ export default function VideoRecordScreen({ navigation, route }) {
         });
 
         try {
-            const { data } = await client.post('/api/upload/video', formData, {
+            const { data } = await client.post('/api/v2/upload/video', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 transformRequest: (data) => data,
                 timeout: 60000, // Extend timeout to 60s for large video files

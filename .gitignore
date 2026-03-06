@@ -6,12 +6,16 @@ package-lock.json
 
 # Environment variables
 .env
+.env.*
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 **/.env
-**/.env.*
+**/.env*
+**/*.env
+config/*.env
+config/.env*
 
 # Logs
 npm-debug.log*
@@ -41,5 +45,14 @@ pids
 build/
 dist/
 
-# Uploads and Media
+# Uploads and Media (binary user files — never commit)
 backend/uploads/
+**/uploads/
+
+# Local MongoDB data (never commit — local DB storage)
+.mongo-data/
+
+# Log files at root
+*.log
+LOCALHOST_FLOW_RAW*.log
+ABSOLUTE_REPRO_LOG.log

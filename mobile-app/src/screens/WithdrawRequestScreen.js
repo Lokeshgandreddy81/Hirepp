@@ -1,5 +1,17 @@
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+    ActivityIndicator,
+    Alert,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+    KeyboardAvoidingView,
+    Platform,
+} from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getMyWithdrawals, requestWithdrawal } from '../services/FinancialService';
 
@@ -64,37 +76,41 @@ export default function WithdrawRequestScreen() {
     }
 
     return (
-        <ScrollView
-            style={styles.container}
-            contentContainerStyle={styles.content}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        >
-            <Text style={styles.title}>Withdraw Request</Text>
-            <View style={styles.card}>
-                <Text style={styles.label}>Amount (INR)</Text>
-                <TextInput
-                    style={styles.input}
-                    value={amount}
-                    onChangeText={setAmount}
-                    keyboardType="decimal-pad"
-                />
-                <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
-                    <Text style={styles.buttonText}>{submitting ? 'Submitting...' : 'Submit Request'}</Text>
-                </TouchableOpacity>
-            </View>
+        <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+            <ScrollView
+                style={styles.container}
+                contentContainerStyle={styles.content}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            >
+                <Text style={styles.title}>Withdraw Request</Text>
+                <View style={styles.card}>
+                    <Text style={styles.label}>Amount (INR)</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={amount}
+                        onChangeText={setAmount}
+                        keyboardType="decimal-pad"
+                    />
+                    <TouchableOpacity style={styles.button} onPress={submit} disabled={submitting}>
+                        <Text style={styles.buttonText}>{submitting ? 'Submitting...' : 'Submit Request'}</Text>
+                    </TouchableOpacity>
+                </View>
 
-            <View style={styles.card}>
-                <Text style={styles.sectionTitle}>My Requests</Text>
-                {withdrawals.length === 0 ? (
-                    <Text style={styles.emptyText}>No withdrawal requests yet.</Text>
-                ) : withdrawals.map((item) => (
-                    <View key={String(item._id)} style={styles.row}>
-                        <Text style={styles.rowTitle}>{item.currency} {Number(item.amount || 0).toFixed(2)}</Text>
-                        <Text style={styles.rowMeta}>{String(item.status || '').toUpperCase()}</Text>
-                    </View>
-                ))}
-            </View>
-        </ScrollView>
+                <View style={styles.card}>
+                    <Text style={styles.sectionTitle}>My Requests</Text>
+                    {withdrawals.length === 0 ? (
+                        <Text style={styles.emptyText}>No withdrawal requests yet.</Text>
+                    ) : withdrawals.map((item) => (
+                        <View key={String(item._id)} style={styles.row}>
+                            <Text style={styles.rowTitle}>{item.currency} {Number(item.amount || 0).toFixed(2)}</Text>
+                            <Text style={styles.rowMeta}>{String(item.status || '').toUpperCase()}</Text>
+                        </View>
+                    ))}
+                </View>
+            </ScrollView>
+        </KeyboardAvoidingView>
     );
 }
 

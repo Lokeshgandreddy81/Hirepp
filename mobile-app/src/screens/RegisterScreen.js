@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -9,136 +9,87 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    Pressable,
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import client from '../api/client';
-import UnifiedIdentityInput from '../components/UnifiedIdentityInput';
-import { navigateToWelcomeFallback } from '../utils/authNavigation';
 
-const DEFAULT_ACQUISITION_SOURCE = 'organic';
-
-export default function RegisterScreen({ navigation }) {
+export default function RegisterScreen({ navigation, route }) {
     const insets = useSafeAreaInsets();
+    const passedRole = String(route?.params?.selectedRole || 'worker').toLowerCase();
+    const selectedRole = ['employer', 'hybrid'].includes(passedRole) ? passedRole : 'worker';
 
-    const identityRef = useRef(null);
-    const nameInputRef = useRef(null);
-    const passwordInputRef = useRef(null);
-    const confirmPasswordInputRef = useRef(null);
-    const nameRef = useRef('');
-    const passwordRef = useRef('');
-    const confirmPasswordRef = useRef('');
-
-    const [showPassword, setShowPassword] = useState(false);
-    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+    const [authMode, setAuthMode] = useState('phone');
+    const [phoneNumber, setPhoneNumber] = useState('');
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
     const [loading, setLoading] = useState(false);
-    const [focusedField, setFocusedField] = useState('');
-    const [identityError, setIdentityError] = useState('');
-    const [formError, setFormError] = useState('');
 
-    const handleBackPress = useCallback(() => {
+    const subtitleText = useMemo(
+        () => `Create your ${selectedRole === 'hybrid' ? 'Hybrid' : (selectedRole === 'employer' ? 'Employer' : 'Job Seeker')} account`,
+        [selectedRole]
+    );
+
+    const canSubmit = useMemo(() => {
+        if (!String(password || '').trim()) return false;
+        if (!String(confirmPassword || '').trim()) return false;
+        if (authMode === 'phone' && !String(phoneNumber || '').trim()) return false;
+        if (authMode === 'email' && !String(email || '').trim()) return false;
+        return true;
+    }, [authMode, confirmPassword, email, password, phoneNumber]);
+
+    const handleBack = useCallback(() => {
         if (navigation.canGoBack()) {
             navigation.goBack();
-            return;
         }
-
-        navigateToWelcomeFallback(navigation);
     }, [navigation]);
 
-    const handleIdentityDetection = useCallback(() => {
-        if (identityError) setIdentityError('');
-        if (formError) setFormError('');
-    }, [formError, identityError]);
+    const openSignIn = useCallback(() => {
+        navigation.navigate('Login', { selectedRole });
+    }, [navigation, selectedRole]);
 
-    const handleRegister = useCallback(async () => {
-        const snapshot = identityRef.current?.getSnapshot?.();
-        const name = String(nameRef.current || '').trim();
-        const password = String(passwordRef.current || '').trim();
-        const confirmPassword = String(confirmPasswordRef.current || '').trim();
+    const handleCreateAccount = useCallback(async () => {
+        if (loading || !canSubmit) return;
 
-        if (!name) {
-            setFormError('Enter your full name to continue.');
+        const safePassword = String(password || '').trim();
+        const safeConfirmPassword = String(confirmPassword || '').trim();
+        if (safePassword.length < 6) {
+            Alert.alert('Invalid password', 'Password should be at least 6 characters.');
+            return;
+        }
+        if (safePassword !== safeConfirmPassword) {
+            Alert.alert('Password mismatch', 'Password and confirm password should match.');
             return;
         }
 
-        if (!snapshot?.raw) {
-            setIdentityError('Enter your email or phone to continue.');
-            return;
-        }
-
-        if (!snapshot.isValid) {
-            setIdentityError(snapshot.type === 'phone'
-                ? 'Enter a valid phone number (10-15 digits).'
-                : 'Enter a valid email address.');
-            return;
-        }
-
-        if (!password) {
-            setFormError('Create a password to continue.');
-            return;
-        }
-
-        if (password.length < 6) {
-            setFormError('Use at least 6 characters for password.');
-            return;
-        }
-
-        if (password !== confirmPassword) {
-            setFormError('Passwords do not match.');
-            return;
-        }
-
-        setIdentityError('');
-        setFormError('');
         setLoading(true);
-
         try {
-            const registerPayload = {
-                name,
-                email: snapshot.backendEmail,
-                phoneNumber: snapshot.type === 'phone' ? snapshot.phoneE164 : '',
-                password,
-                acquisitionSource: DEFAULT_ACQUISITION_SOURCE,
-            };
-
-            await client.post('/api/users/register', registerPayload);
-
-            const otpIdentity = snapshot.type === 'phone'
-                ? { kind: 'phone', value: snapshot.phoneE164, label: snapshot.raw }
-                : { kind: 'email', value: snapshot.backendEmail, label: snapshot.backendEmail };
-            const otpPayload = otpIdentity.kind === 'phone'
-                ? { phone: otpIdentity.value }
-                : { email: otpIdentity.value };
-
-            let otpDispatchError = '';
-            let initialOtpDispatched = true;
-            try {
-                await client.post('/api/auth/send-otp', otpPayload);
-            } catch (otpError) {
-                initialOtpDispatched = false;
-                otpDispatchError = otpError?.response?.data?.message || otpError?.message || 'Could not send OTP right now. Try resend.';
-            }
-
-            navigation.replace('OTPVerification', {
-                identity: otpIdentity,
-                intent: 'signup',
-                initialOtpDispatched,
-                initialError: otpDispatchError || '',
+            await new Promise((resolve) => setTimeout(resolve, 450));
+            navigation.navigate('BasicProfileSetup', {
+                selectedRole,
+                authMode,
+                email: authMode === 'email' ? String(email || '').trim() : '',
+                phoneNumber: authMode === 'phone' ? String(phoneNumber || '').trim() : '',
+                password: safePassword,
             });
-        } catch (error) {
-            const message = error?.response?.data?.message || error?.message || 'Registration failed';
-            setFormError(message);
-            Alert.alert('Sign-up Failed', message);
+        } catch (_error) {
+            Alert.alert('Sign up unavailable', 'Unable to continue right now. Please try again.');
         } finally {
             setLoading(false);
         }
-    }, [navigation]);
-
-    const navigateToLogin = useCallback(() => {
-        navigation.navigate('Login');
-    }, [navigation]);
+    }, [
+        authMode,
+        canSubmit,
+        confirmPassword,
+        email,
+        loading,
+        password,
+        phoneNumber,
+        navigation,
+        selectedRole,
+    ]);
 
     return (
         <KeyboardAvoidingView
@@ -146,162 +97,123 @@ export default function RegisterScreen({ navigation }) {
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
             <ScrollView
-                contentContainerStyle={[
-                    styles.scrollContent,
-                    { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 },
-                ]}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="always"
-                keyboardDismissMode="none"
+                contentContainerStyle={[
+                    styles.scrollContent,
+                    { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 24 },
+                ]}
             >
-                <TouchableOpacity style={styles.backBtn} onPress={handleBackPress} activeOpacity={0.75}>
-                    <Ionicons name="arrow-back" size={18} color="#334155" />
+                <TouchableOpacity style={styles.backBtn} onPress={handleBack} activeOpacity={0.8}>
+                    <Ionicons name="chevron-back" size={18} color="#94a3b8" />
                     <Text style={styles.backBtnText}>Back</Text>
                 </TouchableOpacity>
 
                 <View style={styles.headerBlock}>
-                    <View style={styles.brandMark}>
-                        <Ionicons name="sparkles-outline" size={14} color="#1d4ed8" />
-                    </View>
-                    <Text style={styles.title}>Create Your Account</Text>
-                    <Text style={styles.subtitle}>Takes about 30 seconds. You can preview jobs right after OTP.</Text>
-                    <View style={styles.speedHint}>
-                        <Text style={styles.speedHintText}>Step 1 of 2</Text>
-                    </View>
+                    <Text style={styles.title}>Create Account</Text>
+                    <Text style={styles.subtitle}>{subtitleText}</Text>
+                </View>
+
+                <View style={styles.segmentWrap}>
+                    <TouchableOpacity
+                        style={[styles.segmentButton, authMode === 'phone' && styles.segmentButtonActive]}
+                        activeOpacity={0.9}
+                        onPress={() => setAuthMode('phone')}
+                    >
+                        <Text style={[styles.segmentText, authMode === 'phone' && styles.segmentTextActive]}>PHONE</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.segmentButton, authMode === 'email' && styles.segmentButtonActive]}
+                        activeOpacity={0.9}
+                        onPress={() => setAuthMode('email')}
+                    >
+                        <Text style={[styles.segmentText, authMode === 'email' && styles.segmentTextActive]}>EMAIL</Text>
+                    </TouchableOpacity>
                 </View>
 
                 <View style={styles.formBlock}>
-                    <View style={styles.fieldGroup}>
-                        <Text style={styles.fieldLabel}>Full name</Text>
+                    {authMode === 'phone' ? (
+                        <View>
+                            <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
+                            <View style={styles.phoneRow}>
+                                <View style={styles.countryCodeWrap}>
+                                    <Text style={styles.countryCodeText}>+91</Text>
+                                </View>
+                                <TextInput
+                                    style={styles.phoneInput}
+                                    value={phoneNumber}
+                                    onChangeText={setPhoneNumber}
+                                    keyboardType="phone-pad"
+                                    placeholder="98765 43210"
+                                    placeholderTextColor="#94a3b8"
+                                    maxLength={15}
+                                />
+                            </View>
+                        </View>
+                    ) : (
+                        <View>
+                            <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
+                            <TextInput
+                                style={styles.input}
+                                value={email}
+                                onChangeText={setEmail}
+                                autoCapitalize="none"
+                                keyboardType="email-address"
+                                placeholder="user@example.com"
+                                placeholderTextColor="#94a3b8"
+                            />
+                        </View>
+                    )}
+
+                    <View>
+                        <Text style={styles.fieldLabel}>PASSWORD</Text>
                         <TextInput
-                            ref={nameInputRef}
-                            style={[styles.textField, focusedField === 'name' && styles.textFieldFocused]}
-                            placeholder="Enter your full name"
-                            placeholderTextColor="rgba(71, 85, 105, 0.6)"
-                            autoCapitalize="words"
-                            autoCorrect={false}
-                            editable={!loading}
-                            onChangeText={(value) => {
-                                nameRef.current = value;
-                                if (formError) setFormError('');
-                            }}
-                            onFocus={() => setFocusedField('name')}
-                            onBlur={() => setFocusedField('')}
-                            returnKeyType="next"
-                            blurOnSubmit={false}
-                            onSubmitEditing={() => identityRef.current?.focus?.()}
+                            style={styles.input}
+                            value={password}
+                            onChangeText={setPassword}
+                            secureTextEntry
+                            placeholder="At least 6 characters"
+                            placeholderTextColor="#94a3b8"
                         />
                     </View>
 
-                    <UnifiedIdentityInput
-                        ref={identityRef}
-                        editable={!loading}
-                        errorText={identityError}
-                        onDetectionChange={handleIdentityDetection}
-                        inputProps={{
-                            returnKeyType: 'next',
-                            blurOnSubmit: false,
-                            onSubmitEditing: () => passwordInputRef.current?.focus(),
-                        }}
-                    />
-
-                    <View style={styles.fieldGroup}>
-                        <Text style={styles.fieldLabel}>Password</Text>
-                        <Pressable
-                            style={[styles.passwordShell, focusedField === 'password' && styles.passwordShellFocused]}
-                            onPress={() => passwordInputRef.current?.focus()}
-                        >
-                            <TextInput
-                                ref={passwordInputRef}
-                                style={styles.passwordInput}
-                                placeholder="Create a password"
-                                placeholderTextColor="rgba(71, 85, 105, 0.6)"
-                                secureTextEntry={!showPassword}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                editable={!loading}
-                                onChangeText={(value) => {
-                                    passwordRef.current = value;
-                                    if (formError) setFormError('');
-                                }}
-                                onFocus={() => setFocusedField('password')}
-                                onBlur={() => setFocusedField('')}
-                                returnKeyType="next"
-                                blurOnSubmit={false}
-                                onSubmitEditing={() => confirmPasswordInputRef.current?.focus()}
-                            />
-                            <TouchableOpacity
-                                style={styles.eyeTap}
-                                onPress={() => setShowPassword((current) => !current)}
-                                activeOpacity={0.8}
-                            >
-                                <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color="#64748b" />
-                            </TouchableOpacity>
-                        </Pressable>
+                    <View>
+                        <Text style={styles.fieldLabel}>CONFIRM PASSWORD</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={confirmPassword}
+                            onChangeText={setConfirmPassword}
+                            secureTextEntry
+                            placeholder="Re-enter password"
+                            placeholderTextColor="#94a3b8"
+                        />
                     </View>
-
-                    <View style={styles.fieldGroup}>
-                        <Text style={styles.fieldLabel}>Confirm password</Text>
-                        <Pressable
-                            style={[styles.passwordShell, focusedField === 'confirm' && styles.passwordShellFocused]}
-                            onPress={() => confirmPasswordInputRef.current?.focus()}
-                        >
-                            <TextInput
-                                ref={confirmPasswordInputRef}
-                                style={styles.passwordInput}
-                                placeholder="Re-enter your password"
-                                placeholderTextColor="rgba(71, 85, 105, 0.6)"
-                                secureTextEntry={!showConfirmPassword}
-                                autoCapitalize="none"
-                                autoCorrect={false}
-                                editable={!loading}
-                                onChangeText={(value) => {
-                                    confirmPasswordRef.current = value;
-                                    if (formError) setFormError('');
-                                }}
-                                onFocus={() => setFocusedField('confirm')}
-                                onBlur={() => setFocusedField('')}
-                                returnKeyType="done"
-                                onSubmitEditing={handleRegister}
-                            />
-                            <TouchableOpacity
-                                style={styles.eyeTap}
-                                onPress={() => setShowConfirmPassword((current) => !current)}
-                                activeOpacity={0.8}
-                            >
-                                <Ionicons
-                                    name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
-                                    size={18}
-                                    color="#64748b"
-                                />
-                            </TouchableOpacity>
-                        </Pressable>
-                    </View>
-
-                    {formError ? (
-                        <View style={styles.errorBox}>
-                            <Text style={styles.errorText}>{formError}</Text>
-                        </View>
-                    ) : null}
 
                     <TouchableOpacity
-                        style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
-                        onPress={handleRegister}
-                        disabled={loading}
+                        style={[styles.submitWrap, (!canSubmit || loading) && styles.submitWrapDisabled]}
                         activeOpacity={0.9}
+                        onPress={handleCreateAccount}
+                        disabled={!canSubmit || loading}
                     >
-                        {loading ? (
-                            <ActivityIndicator color="#ffffff" />
-                        ) : (
-                            <Text style={styles.primaryButtonText}>Continue</Text>
-                        )}
+                        <LinearGradient
+                            colors={['#7c3aed', '#9333ea']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.submitGradient}
+                        >
+                            {loading ? (
+                                <ActivityIndicator size="small" color="#ffffff" />
+                            ) : (
+                                <Text style={styles.submitText}>Create Account</Text>
+                            )}
+                        </LinearGradient>
                     </TouchableOpacity>
                 </View>
 
                 <View style={styles.footerRow}>
-                    <Text style={styles.footerText}>Already have an account?</Text>
-                    <TouchableOpacity style={styles.footerLinkTap} onPress={navigateToLogin} activeOpacity={0.8}>
-                        <Text style={styles.footerLink}>Sign in</Text>
+                    <Text style={styles.footerText}>Already have an account? </Text>
+                    <TouchableOpacity activeOpacity={0.8} onPress={openSignIn}>
+                        <Text style={styles.footerLink}>Sign In</Text>
                     </TouchableOpacity>
                 </View>
             </ScrollView>
@@ -312,7 +224,7 @@ export default function RegisterScreen({ navigation }) {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f7fa',
+        backgroundColor: '#f4f5f7',
     },
     scrollContent: {
         flexGrow: 1,
@@ -323,167 +235,159 @@ const styles = StyleSheet.create({
         alignSelf: 'flex-start',
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
-        marginBottom: 28,
+        gap: 4,
+        marginBottom: 22,
     },
     backBtnText: {
-        fontSize: 14,
-        fontWeight: '500',
-        color: '#334155',
+        fontSize: 13,
+        lineHeight: 18,
+        color: '#94a3b8',
+        fontWeight: '600',
     },
     headerBlock: {
-        marginBottom: 32,
-    },
-    brandMark: {
-        width: 28,
-        height: 28,
-        borderRadius: 9,
-        borderWidth: 1,
-        borderColor: '#dbe3ec',
-        backgroundColor: '#edf3ff',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 10,
+        marginBottom: 18,
     },
     title: {
-        fontSize: 26,
-        fontWeight: '700',
+        fontSize: 27,
+        lineHeight: 32,
+        fontWeight: '800',
         color: '#0f172a',
         letterSpacing: -0.2,
     },
     subtitle: {
-        marginTop: 6,
-        color: '#64748b',
+        marginTop: 8,
         fontSize: 13,
         lineHeight: 18,
-        fontWeight: '500',
-        maxWidth: 320,
-    },
-    speedHint: {
-        marginTop: 10,
-        alignSelf: 'flex-start',
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#d7e2fb',
-        backgroundColor: '#eef4ff',
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-    },
-    speedHintText: {
-        color: '#1e40af',
-        fontSize: 11,
-        fontWeight: '700',
-    },
-    formBlock: {
-        gap: 16,
-    },
-    fieldGroup: {
-        gap: 6,
-    },
-    fieldLabel: {
-        fontSize: 14,
-        fontWeight: '500',
-        color: '#334155',
-    },
-    textField: {
-        minHeight: 52,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: '#d1d9e4',
-        backgroundColor: '#ffffff',
-        paddingHorizontal: 14,
-        paddingVertical: 14,
-        fontSize: 15,
-        fontWeight: '400',
-        color: '#0f172a',
-    },
-    textFieldFocused: {
-        borderColor: '#1d4ed8',
-        shadowColor: '#1d4ed8',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-        elevation: 1,
-    },
-    passwordShell: {
-        minHeight: 52,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: '#d1d9e4',
-        backgroundColor: '#ffffff',
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingLeft: 14,
-        paddingRight: 10,
-    },
-    passwordShellFocused: {
-        borderColor: '#1d4ed8',
-        shadowColor: '#1d4ed8',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-        elevation: 1,
-    },
-    passwordInput: {
-        flex: 1,
-        fontSize: 15,
-        fontWeight: '400',
-        color: '#0f172a',
-        paddingVertical: 14,
-    },
-    eyeTap: {
-        minWidth: 32,
-        minHeight: 32,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    errorBox: {
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#e8c7cb',
-        backgroundColor: '#fcf3f4',
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    errorText: {
-        color: '#8f4b53',
-        fontSize: 12,
-        fontWeight: '400',
-    },
-    primaryButton: {
-        minHeight: 52,
-        borderRadius: 14,
-        backgroundColor: '#1d4ed8',
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    primaryButtonDisabled: {
-        opacity: 0.72,
-    },
-    primaryButtonText: {
-        color: '#ffffff',
-        fontSize: 15,
         fontWeight: '600',
-    },
-    footerRow: {
-        marginTop: 32,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 6,
-    },
-    footerText: {
-        fontSize: 14,
-        fontWeight: '400',
         color: '#64748b',
     },
-    footerLinkTap: {
-        minHeight: 44,
+    segmentWrap: {
+        flexDirection: 'row',
+        backgroundColor: '#e2e8f0',
+        borderRadius: 14,
+        padding: 4,
+        marginTop: 6,
+    },
+    segmentButton: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 46,
+        borderRadius: 10,
+    },
+    segmentButtonActive: {
+        backgroundColor: '#ffffff',
+    },
+    segmentText: {
+        fontSize: 12,
+        lineHeight: 16,
+        fontWeight: '700',
+        color: '#64748b',
+    },
+    segmentTextActive: {
+        color: '#0f172a',
+    },
+    formBlock: {
+        marginTop: 20,
+        gap: 14,
+    },
+    fieldLabel: {
+        marginBottom: 8,
+        fontSize: 11,
+        lineHeight: 14,
+        fontWeight: '700',
+        color: '#94a3b8',
+        letterSpacing: 0.9,
+    },
+    phoneRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d5dee8',
+        backgroundColor: '#f3f6f9',
+        minHeight: 54,
+        overflow: 'hidden',
+    },
+    countryCodeWrap: {
+        minWidth: 64,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 10,
+        paddingVertical: 14,
+        borderRightWidth: 1,
+        borderRightColor: '#d5dee8',
+        backgroundColor: '#f8fafc',
+    },
+    countryCodeText: {
+        fontSize: 14,
+        lineHeight: 18,
+        fontWeight: '700',
+        color: '#64748b',
+    },
+    phoneInput: {
+        flex: 1,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        fontSize: 14,
+        lineHeight: 19,
+        fontWeight: '500',
+        color: '#0f172a',
+    },
+    input: {
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: '#d5dee8',
+        backgroundColor: '#f3f6f9',
+        minHeight: 54,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        fontSize: 14,
+        lineHeight: 19,
+        fontWeight: '500',
+        color: '#0f172a',
+    },
+    submitWrap: {
+        marginTop: 10,
+        borderRadius: 14,
+        overflow: 'hidden',
+        shadowColor: '#7c3aed',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.22,
+        shadowRadius: 10,
+        elevation: 4,
+    },
+    submitWrapDisabled: {
+        opacity: 0.55,
+    },
+    submitGradient: {
+        minHeight: 54,
+        alignItems: 'center',
         justifyContent: 'center',
     },
+    submitText: {
+        fontSize: 17,
+        lineHeight: 22,
+        fontWeight: '800',
+        color: '#ffffff',
+    },
+    footerRow: {
+        marginTop: 24,
+        marginBottom: 8,
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    footerText: {
+        fontSize: 12,
+        lineHeight: 16,
+        color: '#94a3b8',
+        fontWeight: '600',
+    },
     footerLink: {
-        fontSize: 14,
-        fontWeight: '500',
-        color: '#1d4ed8',
+        fontSize: 12,
+        lineHeight: 16,
+        color: '#7c3aed',
+        fontWeight: '700',
     },
 });

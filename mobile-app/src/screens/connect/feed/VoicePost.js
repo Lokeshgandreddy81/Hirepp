@@ -1,18 +1,97 @@
-import React, { memo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Audio } from 'expo-av';
 import { RADIUS } from '../../../theme/theme';
-import { connectPalette } from '../connectPalette';
 
-function VoicePostComponent({ duration }) {
+const formatDuration = (millis = 0) => {
+    const totalSeconds = Math.max(0, Math.floor(Number(millis || 0) / 1000));
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+};
+
+function VoicePostComponent({ duration, mediaUrl }) {
+    const sourceUri = String(mediaUrl || '').trim();
+    const soundRef = useRef(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    const [durationMillis, setDurationMillis] = useState(0);
+
+    const statusDuration = useMemo(() => {
+        if (durationMillis > 0) {
+            return formatDuration(durationMillis);
+        }
+        return String(duration || '0:15');
+    }, [duration, durationMillis]);
+
+    useEffect(() => {
+        return () => {
+            const activeSound = soundRef.current;
+            if (activeSound) {
+                soundRef.current = null;
+                activeSound.unloadAsync().catch(() => {});
+            }
+        };
+    }, []);
+
+    const handlePlaybackStatus = useCallback((status) => {
+        if (!status || !status.isLoaded) {
+            setIsPlaying(false);
+            return;
+        }
+        setIsPlaying(Boolean(status.isPlaying));
+        if (Number.isFinite(Number(status.durationMillis)) && Number(status.durationMillis) > 0) {
+            setDurationMillis(Number(status.durationMillis));
+        }
+    }, []);
+
+    const togglePlayback = useCallback(async () => {
+        if (!sourceUri) return;
+        try {
+            setIsLoading(true);
+            if (!soundRef.current) {
+                const created = await Audio.Sound.createAsync(
+                    { uri: sourceUri },
+                    { shouldPlay: true },
+                    handlePlaybackStatus
+                );
+                soundRef.current = created.sound;
+                setIsPlaying(true);
+            } else {
+                const status = await soundRef.current.getStatusAsync();
+                if (status?.isLoaded && status.isPlaying) {
+                    await soundRef.current.pauseAsync();
+                    setIsPlaying(false);
+                } else {
+                    await soundRef.current.playAsync();
+                    setIsPlaying(true);
+                }
+            }
+        } catch (_error) {
+            setIsPlaying(false);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [handlePlaybackStatus, sourceUri]);
+
     return (
         <View style={styles.container}>
-            <View style={styles.playButton}>
-                <Text style={styles.playText}>▶</Text>
-            </View>
+            <TouchableOpacity
+                style={[styles.playButton, !sourceUri && styles.playButtonDisabled]}
+                onPress={togglePlayback}
+                activeOpacity={0.85}
+                disabled={!sourceUri || isLoading}
+            >
+                {isLoading ? (
+                    <ActivityIndicator color="#ffffff" size="small" />
+                ) : (
+                    <Text style={styles.playText}>{isPlaying ? '❚❚' : '▶'}</Text>
+                )}
+            </TouchableOpacity>
             <View style={styles.progressTrack}>
-                <View style={styles.progressFill} />
+                <View style={[styles.progressFill, isPlaying && styles.progressFillActive]} />
             </View>
-            <Text style={styles.durationText}>{duration || '0:15'}</Text>
+            <Text style={styles.durationText}>{statusDuration}</Text>
         </View>
     );
 }
@@ -23,46 +102,54 @@ const styles = StyleSheet.create({
     container: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: connectPalette.accentSoft,
-        borderRadius: RADIUS.lg,
+        backgroundColor: '#faf8ff',
+        borderRadius: 12,
         borderWidth: 1,
-        borderColor: connectPalette.accentSoftAlt,
+        borderColor: '#e9ddff',
         padding: 12,
-        marginBottom: 16,
+        marginBottom: 8,
     },
     playButton: {
         width: 40,
         height: 40,
         borderRadius: RADIUS.full,
-        backgroundColor: connectPalette.accent,
+        backgroundColor: '#6d28d9',
         alignItems: 'center',
         justifyContent: 'center',
-        shadowColor: connectPalette.accentDark,
+        shadowColor: '#000000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.16,
-        shadowRadius: 6,
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+    },
+    playButtonDisabled: {
+        opacity: 0.45,
     },
     playText: {
-        color: connectPalette.surface,
+        color: '#ffffff',
         fontSize: 14,
         marginLeft: 2,
+        fontWeight: '800',
     },
     progressTrack: {
         flex: 1,
         height: 6,
         borderRadius: RADIUS.full,
-        backgroundColor: '#dfccff',
+        backgroundColor: '#e9ddff',
         marginHorizontal: 12,
         overflow: 'hidden',
     },
     progressFill: {
         width: '35%',
         height: '100%',
-        backgroundColor: connectPalette.accent,
+        backgroundColor: '#6d28d9',
+        opacity: 0.55,
+    },
+    progressFillActive: {
+        opacity: 1,
     },
     durationText: {
-        color: connectPalette.accentDark,
+        color: '#6b7280',
         fontSize: 11,
-        fontWeight: '900',
+        fontWeight: '700',
     },
 });

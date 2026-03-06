@@ -1,24 +1,26 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import './src/i18n'; // Load translations
 
 // Screens
-import OnboardingScreen from './src/screens/OnboardingScreen';
 import RoleSelectionScreen from './src/screens/RoleSelectionScreen';
-import RegisterScreen from './src/screens/RegisterScreen';
 import LoginScreen from './src/screens/LoginScreen';
+import RegisterScreen from './src/screens/RegisterScreen';
+import BasicProfileSetupScreen from './src/screens/BasicProfileSetupScreen';
+import AccountSetupDetailsScreen from './src/screens/AccountSetupDetailsScreen';
+import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 import VideoRecordScreen from './src/screens/VideoRecordScreen';
-import SmartInterviewScreen from './src/screens/SmartInterviewScreen';
+import SmartInterviewContainer from './src/containers/SmartInterviewContainer';
 import VideoCallScreen from './src/screens/VideoCallScreen';
 import EmployerAnalyticsScreen from './src/screens/EmployerAnalyticsScreen';
 import AdminDashboardScreen from './src/screens/AdminDashboardScreen';
 import PostJobScreen from './src/screens/PostJobScreen';
 import JobDetailsScreen from './src/screens/JobDetailsScreen';
-import ChatScreen from './src/screens/ChatScreen';
+import ChatContainer from './src/containers/ChatContainer';
 import CompanyDetailsScreen from './src/screens/CompanyDetailsScreen';
 import EmployerProfileCreateScreen from './src/screens/EmployerProfileCreateScreen';
 import ProfileSetupWizardScreen from './src/screens/ProfileSetupWizardScreen';
@@ -26,17 +28,14 @@ import ApplicantTimelineScreen from './src/screens/ApplicantTimelineScreen';
 import SubscriptionScreen from './src/screens/SubscriptionScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 
-import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
-import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
-import VerificationRequiredScreen from './src/screens/VerificationRequiredScreen';
-import OTPVerificationScreen from './src/screens/OTPVerificationScreen';
 
 import { AuthProvider, AuthContext } from './src/context/AuthContext';
-import { View, Alert, Platform, StatusBar as RNStatusBar } from 'react-native';
+import { Alert, Platform, StatusBar as RNStatusBar } from 'react-native';
 
 import ErrorBoundary from './src/components/ErrorBoundary';
 import OfflineBanner from './src/components/OfflineBanner';
 import AppBootSplash from './src/components/AppBootSplash';
+import NetworkRetryBanner from './src/components/NetworkRetryBanner';
 import { AppStateProvider } from './src/context/AppStateContext';
 import SocketService from './src/services/socket';
 import Constants from 'expo-constants';
@@ -44,51 +43,108 @@ import { navigationRef, navigate } from './src/navigation/navigationRef';
 import { answerCall, endCall } from './src/services/WebRTCService';
 import { logger } from './src/utils/logger';
 import { AppStoreProvider, useAppStore } from './src/store/AppStore';
-import { logDemoAnalyticsSummary, trackEvent } from './src/services/analytics';
-import { DEMO_MODE } from './src/config';
-import client from './src/api/client';
-
-if (!__DEV__) {
-  const noop = () => {};
-  console.log = noop;
-  console.warn = noop;
-  console.info = noop;
-  console.debug = noop;
-}
+import { trackEvent } from './src/services/analytics';
+import client, { setApiErrorHandler, setUnauthorizedHandler } from './src/api/client';
+import { ThemeProvider } from './src/theme/ThemeProvider';
 
 let SplashScreenApi = {
-  preventAutoHideAsync: async () => {},
-  hideAsync: async () => {},
+  preventAutoHideAsync: async () => { },
+  hideAsync: async () => { },
 };
 try {
-  // Optional at build-time in offline/local environments.
-  // When available, native splash hold/hide is fully enabled.
   SplashScreenApi = require('expo-splash-screen');
 } catch {
-  // noop fallback
+  // expo-splash-screen is optional in this workspace
 }
 
-SplashScreenApi.preventAutoHideAsync().catch(() => {});
+SplashScreenApi.preventAutoHideAsync().catch(() => { });
 
 const Stack = createStackNavigator();
+const APP_BACKGROUND = '#f8fafc';
+const APP_STATUS_PURPLE = '#7c3aed';
+const AUTH_BYPASS_FOR_QA = true;
+const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
+const APP_NAV_THEME = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    background: APP_BACKGROUND,
+    card: APP_BACKGROUND,
+    border: '#e2e8f0',
+  },
+};
+
+const normalizeObjectId = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return OBJECT_ID_PATTERN.test(normalized) ? normalized : '';
+  }
+  if (typeof value === 'object') {
+    const nested = normalizeObjectId(value._id || value.id || value.$oid || '');
+    return nested || '';
+  }
+  return '';
+};
 
 const AppNav = () => {
-  const { isLoading, userToken, userInfo, updateUserInfo, hasCompletedOnboarding } = useContext(AuthContext);
+  const { isLoading, userToken, userInfo, updateUserInfo, logout } = useContext(AuthContext);
   const { role, setSocketStatus, incrementNotificationsCount, setNotificationsCount } = useAppStore();
   const notificationListener = useRef();
   const responseListener = useRef();
   const hasRunInterviewResumeCheckRef = useRef(false);
   const hasHiddenNativeSplashRef = useRef(false);
+  const qaSessionBootstrapRef = useRef(false);
   const [showBootSplash, setShowBootSplash] = useState(true);
   const [profileGateState, setProfileGateState] = useState({
     checking: false,
     requiresSetup: false,
     completion: null,
   });
+  const [networkRetryState, setNetworkRetryState] = useState({
+    visible: false,
+    message: '',
+    retry: null,
+  });
+  const hasActiveSession = AUTH_BYPASS_FOR_QA ? true : Boolean(userToken);
+  const requiresRoleSelection = AUTH_BYPASS_FOR_QA
+    ? !Boolean(userInfo?.hasSelectedRole)
+    : !Boolean(userInfo?.hasSelectedRole);
+  const shouldShowProfileSetup = !AUTH_BYPASS_FOR_QA && profileGateState.requiresSetup;
+
+  const resolveBootstrapRole = useCallback(() => {
+    const roleFromStore = String(role || '').trim().toLowerCase();
+    if (roleFromStore === 'employer' || roleFromStore === 'recruiter') return 'employer';
+    if (roleFromStore === 'worker' || roleFromStore === 'candidate') return 'worker';
+    const roleFromUser = String(userInfo?.primaryRole || userInfo?.activeRole || '').trim().toLowerCase();
+    if (roleFromUser === 'employer' || roleFromUser === 'recruiter') return 'employer';
+    return 'worker';
+  }, [role, userInfo?.activeRole, userInfo?.primaryRole]);
+
+  const syncUnreadNotificationsCount = useCallback(async () => {
+    if (!userToken) {
+      setNotificationsCount(0);
+      return;
+    }
+
+    try {
+      const { data } = await client.get('/api/notifications', {
+        params: { page: 1, limit: 1 },
+        __skipApiErrorHandler: true,
+        __allowWhenCircuitOpen: true,
+      });
+      const unreadCount = Number(data?.unreadCount);
+      if (Number.isFinite(unreadCount)) {
+        setNotificationsCount(unreadCount);
+      }
+    } catch (error) {
+      logger.warn('Failed to sync notifications count:', error?.message || error);
+    }
+  }, [setNotificationsCount, userToken]);
 
   useEffect(() => {
     if (Platform.OS === 'android') {
-      RNStatusBar.setBackgroundColor('#5b21b6');
+      RNStatusBar.setBackgroundColor(APP_STATUS_PURPLE);
       RNStatusBar.setBarStyle('light-content');
       RNStatusBar.setTranslucent(false);
     }
@@ -101,40 +157,115 @@ const AppNav = () => {
   }, []);
 
   useEffect(() => {
-    if (!DEMO_MODE || !__DEV__) return undefined;
+    setUnauthorizedHandler(async () => {
+      if (AUTH_BYPASS_FOR_QA) {
+        try {
+          const { data } = await client.post('/api/auth/dev-bootstrap', {
+            role: resolveBootstrapRole(),
+          }, {
+            __skipUnauthorizedHandler: true,
+          });
 
-    let mounted = true;
-    const logSnapshot = async () => {
+          if (data?.token) {
+            await updateUserInfo?.(data);
+            return;
+          }
+        } catch (_error) {
+          // Fall through to logout if recovery fails.
+        }
+      }
+      await logout({ skipServerCall: true });
+    });
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, [logout, resolveBootstrapRole, updateUserInfo]);
+
+  useEffect(() => {
+    if (!AUTH_BYPASS_FOR_QA) return;
+
+    if (!userToken || !userInfo?.hasSelectedRole) {
+      qaSessionBootstrapRef.current = false;
+      return;
+    }
+
+    if (qaSessionBootstrapRef.current) return;
+    qaSessionBootstrapRef.current = true;
+
+    let cancelled = false;
+    const syncQaSession = async () => {
       try {
-        const { getMockDatasetSummary } = await import('./src/demo/mockApi');
-        if (!mounted) return;
-        const datasetSummary = getMockDatasetSummary();
-        logDemoAnalyticsSummary(datasetSummary);
-      } catch (error) {
-        logger.warn('Demo metrics snapshot unavailable:', error?.message || error);
+        const { data } = await client.post('/api/auth/dev-bootstrap', {
+          role: resolveBootstrapRole(),
+        }, {
+          __skipUnauthorizedHandler: true,
+          __skipApiErrorHandler: true,
+        });
+
+        if (!cancelled && data?.token) {
+          await updateUserInfo?.(data);
+        }
+      } catch (_error) {
+        // Keep current session if bootstrap refresh fails.
       }
     };
 
-    logSnapshot();
-    const interval = setInterval(logSnapshot, 30000);
+    void syncQaSession();
     return () => {
-      mounted = false;
-      clearInterval(interval);
+      cancelled = true;
+    };
+  }, [resolveBootstrapRole, updateUserInfo, userInfo?.hasSelectedRole, userToken]);
+
+  useEffect(() => {
+    const onApiError = (apiError) => {
+      const errorMessage = String(apiError?.message || '').toLowerCase();
+      const isProfileRoleGateError = (
+        errorMessage.includes('worker profile requires at least one role profile')
+        || errorMessage.includes('role profile')
+        || errorMessage.includes('profile requires')
+        || errorMessage.includes('profile_incomplete_role')
+        || errorMessage.includes('employer profile incomplete')
+      );
+
+      if (apiError?.type === 'network') {
+        // Keep UI clean in QA/launch-preview mode; feature screens already provide empty states.
+        return;
+      }
+
+      if (apiError?.type === 'permission') {
+        // Role/profile gate errors are handled at screen-level with empty-state UX.
+        if (isProfileRoleGateError || AUTH_BYPASS_FOR_QA) return;
+        return;
+      }
+
+      if (apiError?.type === 'validation') {
+        // Feature screens already handle validation errors locally with contextual UI.
+        return;
+      }
+
+      if (apiError?.type === 'server') {
+        if (AUTH_BYPASS_FOR_QA) return;
+        Alert.alert('Server error', String(apiError?.message || 'Something went wrong on the server. Please retry.'));
+      }
+    };
+
+    setApiErrorHandler(onApiError);
+    return () => {
+      setApiErrorHandler(null);
     };
   }, []);
 
   useEffect(() => {
-    if (userToken) {
-      if (DEMO_MODE) {
-        setSocketStatus('connected');
-      } else {
-        setSocketStatus('connecting');
-        SocketService.connect();
-      }
+    const shouldAutoConnectSocket = Boolean(userToken);
+    if (shouldAutoConnectSocket) {
+      setSocketStatus('connecting');
+      SocketService.connect();
     } else {
       setSocketStatus('disconnected');
       SocketService.disconnect();
-      setNotificationsCount(0);
+      if (!userToken) {
+        setNotificationsCount(0);
+      }
     }
     return () => {
       SocketService.disconnect();
@@ -142,10 +273,52 @@ const AppNav = () => {
   }, [userToken, setNotificationsCount, setSocketStatus]);
 
   useEffect(() => {
-    if (DEMO_MODE) return;
+    void syncUnreadNotificationsCount();
+  }, [syncUnreadNotificationsCount, userInfo?._id]);
+
+  useEffect(() => {
+    if (!userToken) return undefined;
+
+    const handleRealtimeNotificationCreated = (payload = {}) => {
+      const unreadCount = Number(payload?.unreadCount);
+      if (Number.isFinite(unreadCount)) {
+        setNotificationsCount(unreadCount);
+        return;
+      }
+      incrementNotificationsCount(1);
+    };
+
+    const handleRealtimeNotificationRead = (payload = {}) => {
+      const unreadCount = Number(payload?.unreadCount);
+      if (Number.isFinite(unreadCount)) {
+        setNotificationsCount(unreadCount);
+        return;
+      }
+      if (payload?.all) {
+        setNotificationsCount(0);
+      }
+    };
+
+    SocketService.on('notification_created', handleRealtimeNotificationCreated);
+    SocketService.on('NOTIFICATION_CREATED', handleRealtimeNotificationCreated);
+    SocketService.on('notification_read', handleRealtimeNotificationRead);
+    SocketService.on('NOTIFICATION_READ', handleRealtimeNotificationRead);
+
+    return () => {
+      SocketService.off('notification_created', handleRealtimeNotificationCreated);
+      SocketService.off('NOTIFICATION_CREATED', handleRealtimeNotificationCreated);
+      SocketService.off('notification_read', handleRealtimeNotificationRead);
+      SocketService.off('NOTIFICATION_READ', handleRealtimeNotificationRead);
+    };
+  }, [incrementNotificationsCount, setNotificationsCount, userToken]);
+
+  useEffect(() => {
     if (!userToken) return;
 
-    const isExpoGo = Constants.appOwnership === 'expo';
+    const isExpoGo = (
+      Constants.executionEnvironment === 'storeClient'
+      || Constants.appOwnership === 'expo'
+    );
     if (isExpoGo) {
       logger.log('Push notifications disabled in Expo Go (SDK 53+).');
       return;
@@ -172,9 +345,10 @@ const AppNav = () => {
 
       responseSub = Notifications.addNotificationResponseReceivedListener(response => {
         const data = response?.notification?.request?.content?.data || {};
-        if (data.type === 'message' && data.applicationId) {
-          navigate('Chat', { applicationId: data.applicationId });
-        } else if (data.type === 'application' && data.applicationId) {
+        const applicationId = normalizeObjectId(data?.applicationId || data?.chatId);
+        if (data.type === 'message' && applicationId) {
+          navigate('Chat', { applicationId });
+        } else if (data.type === 'application' && applicationId) {
           navigate('MainTab', { screen: role === 'employer' ? 'My Jobs' : 'Applications' });
         } else if ((data.type === 'INTERVIEW_READY' || data.type === 'interview_ready') && data.processingId) {
           navigate('SmartInterview', { processingId: data.processingId, fromNotification: true });
@@ -203,7 +377,6 @@ const AppNav = () => {
   }, [userToken, role, incrementNotificationsCount]);
 
   useEffect(() => {
-    if (DEMO_MODE) return;
     if (!userToken) {
       hasRunInterviewResumeCheckRef.current = false;
       return;
@@ -237,7 +410,7 @@ const AppNav = () => {
   }, [userToken]);
 
   useEffect(() => {
-    if (DEMO_MODE) {
+    if (AUTH_BYPASS_FOR_QA) {
       setProfileGateState({
         checking: false,
         requiresSetup: false,
@@ -245,6 +418,7 @@ const AppNav = () => {
       });
       return;
     }
+
     if (!userToken) {
       setProfileGateState({
         checking: false,
@@ -277,10 +451,9 @@ const AppNav = () => {
         }
       } catch (error) {
         if (cancelled) return;
-        const fallbackRequiresSetup = !Boolean(userInfo?.hasCompletedProfile);
         setProfileGateState({
           checking: false,
-          requiresSetup: fallbackRequiresSetup,
+          requiresSetup: true,
           completion: null,
         });
       }
@@ -308,10 +481,12 @@ const AppNav = () => {
 
   useEffect(() => {
     let active = true;
+    let releaseTimer = null;
     if (isLoading) {
       setShowBootSplash(true);
       return () => {
         active = false;
+        if (releaseTimer) clearTimeout(releaseTimer);
       };
     }
 
@@ -325,21 +500,20 @@ const AppNav = () => {
         hasHiddenNativeSplashRef.current = true;
       }
 
-      setTimeout(() => {
-        if (active) {
-          setShowBootSplash(false);
-        }
-      }, 520);
+      if (!active) return;
+      releaseTimer = setTimeout(() => {
+        if (active) setShowBootSplash(false);
+      }, 2500);
     };
 
     void finalizeBoot();
     return () => {
       active = false;
+      if (releaseTimer) clearTimeout(releaseTimer);
     };
-  }, [isLoading, userToken, hasCompletedOnboarding]);
+  }, [hasActiveSession, isLoading]);
 
   useEffect(() => {
-    if (DEMO_MODE) return;
     if (!userToken) return;
 
     const handleIncomingCall = (payload = {}) => {
@@ -368,79 +542,86 @@ const AppNav = () => {
     };
   }, [userToken]);
 
-  if (showBootSplash || isLoading || (Boolean(userToken) && profileGateState.checking)) {
-    return <AppBootSplash showProgress={isLoading} />;
+  if (showBootSplash || isLoading) {
+    return <AppBootSplash showProgress />;
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} theme={APP_NAV_THEME}>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,
-          cardStyle: { backgroundColor: '#F9FAFB' }
+          cardStyle: { backgroundColor: APP_BACKGROUND }
         }}
       >
-        {userToken !== null ? (
-          // Authenticated Stack
-          profileGateState.requiresSetup ? (
-            <>
-              <Stack.Screen name="ProfileSetupWizard">
-                {(props) => (
-                  <ProfileSetupWizardScreen
-                    {...props}
-                    completionSnapshot={profileGateState.completion}
-                    onCompleted={handleProfileWizardCompleted}
-                  />
-                )}
-              </Stack.Screen>
-              <Stack.Screen name="SmartInterview" component={SmartInterviewScreen} />
-              <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
-              <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
-            </>
-          ) : (
-            <>
-              <Stack.Screen name="MainTab" component={MainTabNavigator} />
-              <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
-              <Stack.Screen name="SmartInterview" component={SmartInterviewScreen} />
-              <Stack.Screen name="VideoCall" component={VideoCallScreen} />
-              <Stack.Screen name="EmployerAnalytics" component={EmployerAnalyticsScreen} />
-              <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
-              <Stack.Screen name="PostJob" component={PostJobScreen} />
-              <Stack.Screen name="JobDetails" component={JobDetailsScreen} />
-              <Stack.Screen name="Chat" component={ChatScreen} />
-              <Stack.Screen name="ContactInfo" component={CompanyDetailsScreen} />
-              <Stack.Screen name="EmployerProfileCreate" component={EmployerProfileCreateScreen} />
-              <Stack.Screen name="ApplicantTimeline" component={ApplicantTimelineScreen} />
-              <Stack.Screen name="Subscription" component={SubscriptionScreen} />
-              <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ title: 'Notifications', headerBackTitle: 'Back' }} />
-              <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-              <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
-            </>
-          )
+        {requiresRoleSelection ? (
+          <>
+            <Stack.Screen name="RoleSelection" component={RoleSelectionScreen} />
+            <Stack.Screen name="Login" component={LoginScreen} />
+            <Stack.Screen name="Register" component={RegisterScreen} />
+            <Stack.Screen name="BasicProfileSetup" component={BasicProfileSetupScreen} />
+            <Stack.Screen name="AccountSetupDetails" component={AccountSetupDetailsScreen} />
+            <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+          </>
+        ) : shouldShowProfileSetup ? (
+          <>
+            <Stack.Screen name="ProfileSetupWizard">
+              {(props) => (
+                <ProfileSetupWizardScreen
+                  {...props}
+                  completionSnapshot={profileGateState.completion}
+                  onCompleted={handleProfileWizardCompleted}
+                />
+              )}
+            </Stack.Screen>
+            <Stack.Screen name="SmartInterview">
+              {(props) => (
+                <ErrorBoundary>
+                  <SmartInterviewContainer {...props} />
+                </ErrorBoundary>
+              )}
+            </Stack.Screen>
+            <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
+          </>
         ) : (
-          // Unauthenticated Stack
-          hasCompletedOnboarding ? (
-            <>
-              <Stack.Screen name="Login" component={LoginScreen} />
-              <Stack.Screen name="Register" component={RegisterScreen} />
-              <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-              <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
-              <Stack.Screen name="VerificationRequired" component={VerificationRequiredScreen} />
-            </>
-          ) : (
-            <>
-              <Stack.Screen name="Onboarding" component={OnboardingScreen} />
-              <Stack.Screen name="RoleSelection" component={RoleSelectionScreen} />
-              <Stack.Screen name="Register" component={RegisterScreen} />
-              <Stack.Screen name="Login" component={LoginScreen} />
-              <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-              <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
-              <Stack.Screen name="VerificationRequired" component={VerificationRequiredScreen} />
-            </>
-          )
+          <>
+            <Stack.Screen name="MainTab" component={MainTabNavigator} />
+            <Stack.Screen name="VideoRecord" component={VideoRecordScreen} />
+            <Stack.Screen name="SmartInterview">
+              {(props) => (
+                <ErrorBoundary>
+                  <SmartInterviewContainer {...props} />
+                </ErrorBoundary>
+              )}
+            </Stack.Screen>
+            <Stack.Screen name="VideoCall" component={VideoCallScreen} />
+            <Stack.Screen name="EmployerAnalytics" component={EmployerAnalyticsScreen} />
+            <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
+            <Stack.Screen name="PostJob" component={PostJobScreen} />
+            <Stack.Screen name="JobDetails" component={JobDetailsScreen} />
+            <Stack.Screen name="Chat" component={ChatContainer} />
+            <Stack.Screen name="ContactInfo" component={CompanyDetailsScreen} />
+            <Stack.Screen name="EmployerProfileCreate" component={EmployerProfileCreateScreen} />
+            <Stack.Screen name="ApplicantTimeline" component={ApplicantTimelineScreen} />
+            <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ title: 'Notifications', headerBackTitle: 'Back' }} />
+          </>
         )}
       </Stack.Navigator>
-      <StatusBar style="light" backgroundColor="#5b21b6" translucent={false} />
+      <StatusBar style="light" backgroundColor={APP_STATUS_PURPLE} translucent={false} />
+      <NetworkRetryBanner
+        visible={networkRetryState.visible}
+        message={networkRetryState.message}
+        onRetry={async () => {
+          if (typeof networkRetryState.retry === 'function') {
+            try {
+              await networkRetryState.retry();
+              setNetworkRetryState({ visible: false, message: '', retry: null });
+            } catch (_error) { }
+          }
+        }}
+        onDismiss={() => setNetworkRetryState({ visible: false, message: '', retry: null })}
+      />
     </NavigationContainer>
   );
 };
@@ -449,14 +630,16 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
-        <AppStateProvider>
-          <AuthProvider>
-            <AppStoreProvider>
-              <OfflineBanner />
-              <AppNav />
-            </AppStoreProvider>
-          </AuthProvider>
-        </AppStateProvider>
+        <ThemeProvider>
+          <AppStateProvider>
+            <AuthProvider>
+              <AppStoreProvider>
+                <OfflineBanner />
+                <AppNav />
+              </AppStoreProvider>
+            </AuthProvider>
+          </AppStateProvider>
+        </ThemeProvider>
       </ErrorBoundary>
     </SafeAreaProvider>
   );

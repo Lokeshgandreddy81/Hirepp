@@ -12,6 +12,7 @@ import RegisterScreen from './src/screens/RegisterScreen';
 import BasicProfileSetupScreen from './src/screens/BasicProfileSetupScreen';
 import AccountSetupDetailsScreen from './src/screens/AccountSetupDetailsScreen';
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
+import OTPVerificationScreen from './src/screens/OTPVerificationScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 import VideoRecordScreen from './src/screens/VideoRecordScreen';
 import SmartInterviewContainer from './src/containers/SmartInterviewContainer';
@@ -562,6 +563,7 @@ const AppNav = () => {
             <Stack.Screen name="BasicProfileSetup" component={BasicProfileSetupScreen} />
             <Stack.Screen name="AccountSetupDetails" component={AccountSetupDetailsScreen} />
             <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+            <Stack.Screen name="OTPVerification" component={OTPVerificationScreen} />
           </>
         ) : shouldShowProfileSetup ? (
           <>

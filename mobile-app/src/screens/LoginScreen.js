@@ -64,14 +64,22 @@ export default function LoginScreen({ navigation, route }) {
             login(data);
             await completeOnboarding?.();
         } catch (error) {
-            const msg = error?.response?.data?.message || 'Unable to continue right now. Please try again.';
-            if (error?.response?.status === 403 && error?.response?.data?.requiresOtpVerification) {
+            // client.js interceptor wraps 403s into a custom ApiClientError, stripping .response.
+            // We must read status and OTP flag from both the custom error shape and the raw Axios shape.
+            const status = error?.status || error?.response?.status;
+            const otpRequired =
+                error?.originalError?.response?.data?.requiresOtpVerification
+                || error?.response?.data?.requiresOtpVerification;
+
+            if (status === 403 && otpRequired) {
                 navigation.navigate('OTPVerification', {
                     intent: 'login',
                     identity: { kind: authMode, value: authMode === 'phone' ? phoneNumber : email }
                 });
                 return;
             }
+
+            const msg = error?.message || error?.response?.data?.message || 'Unable to continue right now. Please try again.';
             Alert.alert('Sign in unavailable', msg);
         } finally {
             setLoading(false);

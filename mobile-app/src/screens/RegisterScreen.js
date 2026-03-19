@@ -53,12 +53,25 @@ export default function RegisterScreen({ navigation, route }) {
     const handleCreateAccount = useCallback(async () => {
         if (loading || !canSubmit) return;
 
+        if (authMode === 'email') {
+            const safeEmail = String(email || '').trim();
+            if (!/^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(safeEmail)) {
+                Alert.alert('Invalid Email', 'Email must strictly end with @gmail.com.');
+                return;
+            }
+        }
+
         const safePassword = String(password || '').trim();
         const safeConfirmPassword = String(confirmPassword || '').trim();
-        if (safePassword.length < 6) {
-            Alert.alert('Invalid password', 'Password should be at least 6 characters.');
+        
+        if (!/^(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9\s]).{8,}$/.test(safePassword)) {
+            Alert.alert(
+                'Invalid Password Format',
+                'Password must be at least 8 characters long, and include at least one uppercase letter, one number, and one special character.'
+            );
             return;
         }
+
         if (safePassword !== safeConfirmPassword) {
             Alert.alert('Password mismatch', 'Password and confirm password should match.');
             return;

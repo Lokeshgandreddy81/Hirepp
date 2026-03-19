@@ -63,7 +63,7 @@ SplashScreenApi.preventAutoHideAsync().catch(() => { });
 const Stack = createStackNavigator();
 const APP_BACKGROUND = '#f8fafc';
 const APP_STATUS_PURPLE = '#7c3aed';
-const AUTH_BYPASS_FOR_QA = true;
+const AUTH_BYPASS_FOR_QA = false;
 const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
 const APP_NAV_THEME = {
   ...DefaultTheme,
@@ -464,7 +464,7 @@ const AppNav = () => {
     return () => {
       cancelled = true;
     };
-  }, [userInfo?.activeRole, userInfo?.hasCompletedProfile, userToken, updateUserInfo]);
+  }, [userInfo?.activeRole, userInfo?.hasCompletedProfile, userToken]);
 
   const handleProfileWizardCompleted = useCallback(async (completion) => {
     setProfileGateState({

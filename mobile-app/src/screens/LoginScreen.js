@@ -48,6 +48,24 @@ export default function LoginScreen({ navigation, route }) {
 
     const handleSubmit = useCallback(async () => {
         if (loading || !canSubmit) return;
+
+        if (authMode === 'email') {
+            const safeEmail = String(email || '').trim();
+            if (!/^[a-zA-Z0-9._%+-]+@gmail\.com$/i.test(safeEmail)) {
+                Alert.alert('Invalid Email', 'Email must strictly end with @gmail.com.');
+                return;
+            }
+        }
+
+        const safePassword = String(password || '').trim();
+        if (!/^(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9\s]).{8,}$/.test(safePassword)) {
+            Alert.alert(
+                'Invalid Password Format',
+                'Password must be at least 8 characters long, and include at least one uppercase letter, one number, and one special character.'
+            );
+            return;
+        }
+
         setLoading(true);
         try {
             const payload = authMode === 'phone' ? { phoneNumber, password } : { email, password };
@@ -79,8 +97,9 @@ export default function LoginScreen({ navigation, route }) {
                 return;
             }
 
+            const alertTitle = status === 401 ? 'Login Failed' : 'Sign in unavailable';
             const msg = error?.message || error?.response?.data?.message || 'Unable to continue right now. Please try again.';
-            Alert.alert('Sign in unavailable', msg);
+            Alert.alert(alertTitle, msg);
         } finally {
             setLoading(false);
         }

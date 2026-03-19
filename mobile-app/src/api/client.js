@@ -320,9 +320,19 @@ client.interceptors.response.use(
         const routeForChecks = normalizeRouteForChecks(config?.url || '');
         const isAdminRoute = routeForChecks.startsWith('/api/admin');
         const isAdminAuthRoute = routeForChecks.startsWith('/api/admin/auth');
+        const isAuthRoute = routeForChecks.includes('/api/users/login') || routeForChecks.includes('/api/users/register');
         const retryRequest = config
             ? async () => client({ ...config, retryCount: 0, __userRetried: true })
             : null;
+
+        if (isAuthError && isAuthRoute) {
+            const authRouteError = buildApiError(
+                error,
+                'auth',
+                error?.response?.data?.message || 'Invalid credentials'
+            );
+            return Promise.reject(authRouteError);
+        }
 
         if (isNetworkError && !config.__disableBaseFallback) {
             const fallbackBase = getNextFallbackBaseUrl(config);

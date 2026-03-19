@@ -167,7 +167,11 @@ export default function OTPVerificationScreen({ route, navigation }) {
                     await login(data);
                     if (route.params?.profileData) {
                         try {
-                            await updateUserInfo(route.params.profileData);
+                            await updateUserInfo({
+                                ...route.params.profileData,
+                                token: data.token,
+                                refreshToken: data.refreshToken,
+                            });
                         } catch (e) {}
                     }
                 });

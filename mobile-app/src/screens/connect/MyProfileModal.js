@@ -1,8 +1,9 @@
-import React, { memo, useMemo } from 'react';
-import { Modal, View, Text, StyleSheet, TouchableOpacity, Image, ScrollView } from 'react-native';
+import React, { memo, useMemo, useState, useEffect } from 'react';
+import { Modal, View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { IconSettings } from '../../components/Icons';
 import { theme, RADIUS, SHADOWS } from '../../theme/theme';
+import client from '../../api/client';
 
 const toDisplayNumber = (value) => {
     const numeric = Number(value);
@@ -38,30 +39,50 @@ function MyProfileModalComponent({
     onEditProfile,
     onOpenSettings,
 }) {
-    const safeUserInfo = useMemo(
-        () => ((userInfo && typeof userInfo === 'object') ? userInfo : {}),
-        [userInfo]
-    );
-    const resolvedSkills = useMemo(() => {
-        if (!Array.isArray(safeUserInfo?.roleProfiles)) return [];
-        const merged = safeUserInfo.roleProfiles.flatMap((roleProfile) => (
-            Array.isArray(roleProfile?.skills) ? roleProfile.skills : []
-        ));
-        return Array.from(new Set(merged.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 8);
-    }, [safeUserInfo?.roleProfiles]);
+    const [detailedProfile, setDetailedProfile] = useState(null);
 
+    useEffect(() => {
+        if (!visible) {
+            setDetailedProfile(null);
+            return;
+        }
+
+        let isMounted = true;
+        const fetchProfile = async () => {
+            try {
+                const { data } = await client.get('/api/users/profile', { __skipApiErrorHandler: true });
+                if (isMounted && data) {
+                    setDetailedProfile(data?.profile || data);
+                }
+            } catch (error) {
+                // Silently fallback to partial prop data if fetch fails
+            }
+        };
+
+        fetchProfile();
+        return () => {
+            isMounted = false;
+        };
+    }, [visible]);
+
+    const safeUserInfo = useMemo(
+        () => {
+            const base = (userInfo && typeof userInfo === 'object') ? userInfo : {};
+            return { ...base, ...(detailedProfile || {}) };
+        },
+        [userInfo, detailedProfile]
+    );
     const roleLabel = safeUserInfo?.primaryRole === 'employer' ? 'Hiring Actively' : 'Professional Member';
     const cityLabel = String(safeUserInfo?.city || safeUserInfo?.acquisitionCity || '').trim() || 'Location not set';
-    const availabilityLabel = String(safeUserInfo?.availabilityStatus || '').trim()
-        || (safeUserInfo?.isAvailable ? 'Available for opportunities' : 'Availability not set');
-    const tierLabel = String(safeUserInfo?.tier || '').trim();
     const aboutText = String(safeUserInfo?.bio || safeUserInfo?.summary || '').trim() || 'No profile summary available yet.';
     const ratingValue = Number.isFinite(Number(safeUserInfo?.rating)) ? Number(safeUserInfo.rating).toFixed(1) : 'N/A';
     const displayName = String(safeUserInfo?.name || 'User').trim() || 'User';
-    const profileHealth = useMemo(
-        () => calculateProfileHealth(safeUserInfo, resolvedSkills),
-        [safeUserInfo, resolvedSkills]
-    );
+    const dobLabel = String(safeUserInfo?.dob || '').trim() || 'Not set';
+    
+    let salaryLabel = 'Not set';
+    if (safeUserInfo?.expectedSalary || safeUserInfo?.salaryMinimum) {
+        salaryLabel = String(safeUserInfo.expectedSalary || safeUserInfo.salaryMinimum);
+    }
     const safeAvatar = String(avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=8b3dff&color=fff&rounded=true`);
 
     return (
@@ -101,61 +122,36 @@ function MyProfileModalComponent({
                             </View>
                         </View>
 
-                        <View style={styles.heroBadgeRow}>
-                            <View style={styles.coverBadgeGlass}>
-                                <Text style={styles.coverBadgeText}>{availabilityLabel}</Text>
-                            </View>
-                            {tierLabel ? (
-                                <View style={styles.coverBadgeAmber}>
-                                    <Text style={styles.coverBadgeAmberText}>{tierLabel}</Text>
-                                </View>
-                            ) : null}
-                        </View>
-
-                        <View style={styles.profileHealthWrap}>
-                            <View style={styles.profileHealthTrack}>
-                                <View style={[styles.profileHealthFill, { width: `${profileHealth}%` }]} />
-                            </View>
-                            <Text style={styles.profileHealthText}>Profile Health {profileHealth}%</Text>
-                        </View>
+                        {/* Badges and profile health removed per UI cleanup */}
                     </View>
                 </LinearGradient>
 
                 <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
                     <View style={styles.body}>
-                        <View style={styles.statsRow}>
-                            <View style={styles.statCard}>
-                                <Text style={styles.statValue}>{toDisplayNumber(safeUserInfo?.karmaScore)}</Text>
-                                <Text style={styles.statLabel}>KARMA</Text>
-                            </View>
-                            <View style={styles.statCard}>
-                                <Text style={styles.statValue}>{toDisplayNumber(safeUserInfo?.jobsCompleted)}</Text>
-                                <Text style={styles.statLabel}>JOBS</Text>
-                            </View>
-                            <View style={styles.statCard}>
-                                <Text style={styles.statValue}>{toDisplayPercent(safeUserInfo?.responseRate)}</Text>
-                                <Text style={styles.statLabel}>RESPONSE</Text>
-                            </View>
-                        </View>
-
                         <View style={styles.contentCard}>
-                            <Text style={styles.sectionTitle}>About</Text>
+                            <Text style={styles.sectionTitle}>Bio</Text>
                             <Text style={styles.sectionText}>{aboutText}</Text>
                         </View>
 
                         <View style={styles.contentCard}>
-                            <Text style={styles.sectionTitle}>Verified Skills</Text>
-                            {resolvedSkills.length > 0 ? (
-                                <View style={styles.skillsRow}>
-                                    {resolvedSkills.map((skill) => (
-                                        <View key={skill} style={styles.skillChip}>
-                                            <Text style={styles.skillText}>{skill}</Text>
-                                        </View>
-                                    ))}
-                                </View>
-                            ) : (
-                                <Text style={styles.sectionText}>No verified skills available yet.</Text>
-                            )}
+                            <Text style={styles.sectionTitle}>Details</Text>
+                            
+                            <View style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>Location</Text>
+                                <Text style={styles.detailValue}>
+                                    {[safeUserInfo?.city, safeUserInfo?.state, safeUserInfo?.country].filter(Boolean).join(', ') || 'Location not set'}
+                                </Text>
+                            </View>
+                            
+                            <View style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>Date of Birth</Text>
+                                <Text style={styles.detailValue}>{dobLabel}</Text>
+                            </View>
+                            
+                            <View style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>Expected Salary</Text>
+                                <Text style={styles.detailValue}>{salaryLabel}</Text>
+                            </View>
                         </View>
 
                         <View style={styles.actionsRow}>
@@ -411,6 +407,25 @@ const styles = StyleSheet.create({
         color: '#5b21b6',
         fontSize: 14,
         fontWeight: '800',
+    },
+    detailRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        paddingVertical: 10,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f1f5f9',
+    },
+    detailLabel: {
+        fontSize: 13,
+        color: '#64748b',
+        fontWeight: '600',
+    },
+    detailValue: {
+        fontSize: 13,
+        color: '#0f172a',
+        fontWeight: '600',
+        maxWidth: '65%',
+        textAlign: 'right',
     },
     editButton: {
         flex: 1.4,

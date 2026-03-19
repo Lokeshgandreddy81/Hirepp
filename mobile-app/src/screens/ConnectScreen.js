@@ -73,6 +73,13 @@ export default function ConnectScreen() {
         setShowMyProfile(true);
     }, [setShowMyProfile]);
 
+    useEffect(() => {
+        if (route.params?.showProfile) {
+            setShowMyProfile(true);
+            navigation.setParams({ showProfile: undefined });
+        }
+    }, [route.params?.showProfile, setShowMyProfile, navigation]);
+
     const closeProfile = useCallback(() => {
         setShowMyProfile(false);
     }, [setShowMyProfile]);

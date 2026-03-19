@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useContext } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, StyleSheet, Platform, Animated, Easing, Pressable } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
@@ -26,6 +26,7 @@ import TalentScreen from '../screens/TalentScreen';
 import { Ionicons } from '@expo/vector-icons';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { useAppStore } from '../store/AppStore';
+import { AuthContext } from '../context/AuthContext';
 import { trackEvent } from '../services/analytics';
 import { MOTION } from '../theme/motion';
 import { theme, SPACING } from '../theme/theme';
@@ -55,6 +56,7 @@ function TabSceneTransition({ children }) {
 
 export default function MainTabNavigator({ navigation }) {
     const { role } = useAppStore();
+    const { userToken } = useContext(AuthContext);
     const insets = useSafeAreaInsets();
     const normalizedRole = String(role || '').toLowerCase();
     const isDemandMode = normalizedRole === 'employer' || normalizedRole === 'recruiter';
@@ -207,7 +209,7 @@ export default function MainTabNavigator({ navigation }) {
                 style={[styles.statusBarTint, { height: insets.top + 3 }]}
             />
             <Tab.Navigator
-                key={`main-tabs-${resolvedRole}`}
+                key={`main-tabs-${resolvedRole}-${userToken || 'anon'}`}
                 initialRouteName={initialTabName}
                 sceneContainerStyle={styles.sceneContainer}
                 screenOptions={screenOptions}

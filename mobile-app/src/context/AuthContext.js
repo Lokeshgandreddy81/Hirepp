@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { wipeSensitiveCache } from '../utils/cacheManager';
@@ -58,7 +58,12 @@ export const AuthProvider = ({ children }) => {
     const [isLoading, setIsLoading] = useState(true);
     const [userToken, setUserToken] = useState(null);
     const [userInfo, setUserInfo] = useState(null);
+    const userInfoRef = useRef(null);
     const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(false);
+
+    useEffect(() => {
+        userInfoRef.current = userInfo;
+    }, [userInfo]);
 
     const getOrCreateDeviceId = async () => {
         const existing = await AsyncStorage.getItem('@device_id');
@@ -110,10 +115,10 @@ export const AuthProvider = ({ children }) => {
         setIsLoading(false);
     };
 
-    const updateUserInfo = async (updates = {}) => {
+    const updateUserInfo = useCallback(async (updates = {}) => {
         try {
             const merged = normalizeUserInfo({
-                ...(userInfo || {}),
+                ...(userInfoRef.current || {}),
                 ...updates,
             });
 
@@ -128,7 +133,7 @@ export const AuthProvider = ({ children }) => {
             logger.error('Auth updateUserInfo failed', e);
             throw e;
         }
-    };
+    }, []);
 
     const logout = async (options = {}) => {
         const { skipServerCall = false } = options;

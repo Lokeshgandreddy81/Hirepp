@@ -558,7 +558,11 @@ export default function SettingsScreen({ navigation }) {
     }, [clearSavedPosts, savedPostsCount]);
 
     const renderHeader = () => (
-        <View style={[styles.profileHeader, { paddingTop: insets.top + 16 }]}>
+        <TouchableOpacity 
+            activeOpacity={0.8}
+            onPress={() => navigation.navigate('MainTab', { screen: 'Connect', params: { showProfile: true } })}
+            style={[styles.profileHeader, { paddingTop: insets.top + 16 }]}
+        >
             <Image
                 source={{
                     uri: profileHeader.avatar ||
@@ -575,7 +579,7 @@ export default function SettingsScreen({ navigation }) {
                     </View>
                 ) : null}
             </View>
-        </View>
+        </TouchableOpacity>
     );
 
     const renderSectionTextHeader = (title) => (

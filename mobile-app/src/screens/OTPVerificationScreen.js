@@ -23,7 +23,7 @@ const RESEND_COOLDOWN_SECONDS = 30;
 
 export default function OTPVerificationScreen({ route, navigation }) {
     const insets = useSafeAreaInsets();
-    const { login } = useContext(AuthContext);
+    const { login, updateUserInfo } = useContext(AuthContext);
     const intent = useMemo(
         () => String(route.params?.intent || '').trim().toLowerCase(),
         [route.params?.intent],
@@ -163,8 +163,13 @@ export default function OTPVerificationScreen({ route, navigation }) {
             });
 
             if ((intent === 'signup' || intent === 'signin' || intent === 'login') && data?.token) {
-                runSuccessTransition(() => {
-                    login(data);
+                runSuccessTransition(async () => {
+                    await login(data);
+                    if (route.params?.profileData) {
+                        try {
+                            await updateUserInfo(route.params.profileData);
+                        } catch (e) {}
+                    }
                 });
                 return;
             }

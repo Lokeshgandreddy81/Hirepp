@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { AuthContext } from '../context/AuthContext';
+import client from '../api/client';
 
 const FUNCTIONAL_AREA_OPTIONS = [
     'Customer Support',
@@ -219,7 +220,15 @@ export default function AccountSetupDetailsScreen({ navigation, route }) {
             const mappedActiveRole = selectedRole === 'employer' ? 'employer' : 'worker';
             const rolesArr = isHybrid ? ['worker', 'employer'] : [mappedActiveRole];
 
-            await updateUserInfo({
+            // 1. Register User via API
+            const { data } = await client.post('/api/users/register', {
+                name,
+                email: authMode === 'email' ? safeEmail : undefined,
+                phoneNumber: authMode === 'phone' ? safePhone : undefined,
+                password: safePassword,
+            });
+
+            const profileDataToSaveLater = {
                 name,
                 firstName: nameParts.firstName,
                 lastName: nameParts.lastName,
@@ -248,10 +257,22 @@ export default function AccountSetupDetailsScreen({ navigation, route }) {
                 hasSelectedRole: true,
                 hasCompletedProfile: false,
                 hasCompletedOnboarding: true,
-            });
-            await completeOnboarding?.();
-        } catch (_error) {
-            Alert.alert('Setup unavailable', 'Unable to complete account setup right now. Please try again.');
+            };
+
+            if (data?.requiresOtpVerification) {
+                // Pass it to OTPVerificationScreen to save locally post-verification
+                navigation.navigate('OTPVerification', {
+                    intent: 'signup',
+                    identity: { kind: authMode, value: authMode === 'phone' ? safePhone : safeEmail },
+                    profileData: profileDataToSaveLater,
+                });
+            } else {
+                await updateUserInfo(profileDataToSaveLater);
+                await completeOnboarding?.();
+            }
+        } catch (error) {
+            const msg = error?.response?.data?.message || 'Unable to complete account setup right now. Please try again.';
+            Alert.alert('Setup unavailable', msg);
         } finally {
             setSubmitting(false);
         }

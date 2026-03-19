@@ -25,6 +25,22 @@ const {
   clearSocketSessionsForUser,
 } = require('../services/sessionService');
 const logger = require('../utils/logger');
+const crypto = require('crypto');
+
+const OTP_HMAC_SECRET = String(process.env.OTP_HMAC_SECRET || '').trim();
+const hashOtp = (otp) => {
+    if (!OTP_HMAC_SECRET) {
+        throw new Error('OTP secret is not configured in backend');
+    }
+    return crypto.createHmac('sha256', OTP_HMAC_SECRET).update(String(otp)).digest('hex');
+};
+
+const secureOtpEquals = (left, right) => {
+    const leftBuffer = Buffer.from(String(left || ''), 'utf8');
+    const rightBuffer = Buffer.from(String(right || ''), 'utf8');
+    if (leftBuffer.length !== rightBuffer.length) return false;
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+};
 
 const isProductionRuntime = () => String(process.env.NODE_ENV || '').toLowerCase() === 'production';
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
@@ -150,8 +166,8 @@ const registerUser = async (req, res) => {
     const normalizedCountry = normalizeCountryCode(country);
     const localeBundle = resolveLocaleBundle(normalizedCountry);
 
-    // Generate Verification Token
-    const verificationToken = crypto.randomBytes(20).toString('hex');
+    // Generate OTP Code
+    const otpCode = crypto.randomInt(100000, 1000000).toString();
     // Generate new unique referral code for this user
     const newReferralCode = crypto.randomBytes(3).toString('hex').toUpperCase() + Date.now().toString().slice(-4);
 
@@ -170,7 +186,12 @@ const registerUser = async (req, res) => {
       primaryRole: 'worker',
       hasSelectedRole: true,
       password,
-      verificationToken,
+      otpCodeHash: hashOtp(otpCode),
+      otpExpiry: new Date(Date.now() + 5 * 60 * 1000),
+      otpAttemptCount: 0,
+      otpRequestCount: 1,
+      otpRequestWindowStartedAt: new Date(),
+      otpLastSentAt: new Date(),
       referralCode: newReferralCode,
       referredBy: referredByUserId,
       acquisitionSource,
@@ -190,9 +211,7 @@ const registerUser = async (req, res) => {
 
     if (user) {
       // Send Verification Email
-      const apiPublicUrl = requireHttpsUrl('API_PUBLIC_URL', process.env.API_PUBLIC_URL);
-      const verifyUrl = `${apiPublicUrl}/api/users/verifyemail/${verificationToken}`;
-      const message = `Please confirm your email by clicking here: \n\n ${verifyUrl}`;
+      const message = `Your verification code is ${otpCode}. It will expire in 5 minutes.`;
 
       try {
         const sendEmail = require('../utils/sendEmail');
@@ -460,6 +479,70 @@ const resetPassword = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+};
+
+// @desc    Reset Password with OTP
+// @route   POST /api/users/resetpassword-with-otp
+// @access  Public
+const resetPasswordWithOtp = async (req, res) => {
+    const { email, phoneNumber, otp, newPassword } = req.body;
+    const normalizedEmail = normalizeEmail(email);
+    const normalizedPhone = normalizePhone(phoneNumber);
+    const query = normalizedEmail ? { email: normalizedEmail } : { phoneNumber: normalizedPhone };
+    
+    if ((!normalizedEmail && !normalizedPhone) || !otp || !newPassword) {
+        return res.status(400).json({ message: 'Email/phone, OTP, and new password are required' });
+    }
+
+    try {
+        const user = await User.findOne(query);
+        if (!user || user.isDeleted) {
+            return res.status(400).json({ message: 'Invalid request' });
+        }
+
+        const now = Date.now();
+        if (user.otpBlockedUntil && new Date(user.otpBlockedUntil).getTime() > now) {
+            return res.status(429).json({ message: 'Too many invalid attempts. Try again later.' });
+        }
+
+        const isExpired = !user.otpExpiry || new Date(user.otpExpiry).getTime() <= now;
+        if (isExpired) {
+            return res.status(400).json({ message: 'Invalid or expired code' });
+        }
+
+        const incomingOtpHash = hashOtp(otp);
+        const isValid = secureOtpEquals(incomingOtpHash, user.otpCodeHash);
+
+        if (!isValid) {
+            user.otpAttemptCount = Number(user.otpAttemptCount || 0) + 1;
+            if (user.otpAttemptCount >= 5) {
+                user.otpBlockedUntil = new Date(now + 15 * 60 * 1000); // block 15m
+            }
+            await user.save({ validateBeforeSave: false });
+            return res.status(400).json({ message: 'Invalid or expired code' });
+        }
+
+        if (!isStrongPassword(newPassword)) {
+            return res.status(400).json({
+                message: 'Password must be at least 10 characters and include uppercase, lowercase, number, and symbol',
+            });
+        }
+
+        // OTP Valid -> Reset password
+        user.password = newPassword;
+        user.otpCodeHash = null;
+        user.otpExpiry = null;
+        user.otpAttemptCount = 0;
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            data: 'Password Reset Success'
+        });
+    } catch (error) {
+        logger.error(`resetPasswordWithOtp error: ${error?.message || error}`);
+        res.status(500).json({ message: 'Failed to reset password' });
+    }
 };
 
 
@@ -796,6 +879,7 @@ module.exports = {
   logoutUser,
   forgotPassword,
   resetPassword,
+  resetPasswordWithOtp,
   verifyEmail,
   resendVerificationEmail,
   exportUserData,

@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import client from '../api/client';
 import { AuthContext } from '../context/AuthContext';
+import client from '../api/client';
 import { PALETTE, SHADOWS } from '../theme/theme';
 import { buildPreviewAuthSession, isInstantPreviewAuthEnabled } from '../utils/previewAuthSession';
 import {
@@ -397,10 +398,22 @@ export default function AccountSetupDetailsScreen({ navigation, route }) {
                 hasSelectedRole: true,
                 hasCompletedProfile: false,
                 hasCompletedOnboarding: true,
-            });
-            await completeOnboarding?.();
-        } catch (_error) {
-            Alert.alert('Setup unavailable', 'Unable to complete account setup right now. Please try again.');
+            };
+
+            if (data?.requiresOtpVerification) {
+                // Pass it to OTPVerificationScreen to save locally post-verification
+                navigation.navigate('OTPVerification', {
+                    intent: 'signup',
+                    identity: { kind: authMode, value: authMode === 'phone' ? safePhone : safeEmail },
+                    profileData: profileDataToSaveLater,
+                });
+            } else {
+                await updateUserInfo(profileDataToSaveLater);
+                await completeOnboarding?.();
+            }
+        } catch (error) {
+            const msg = error?.response?.data?.message || 'Unable to complete account setup right now. Please try again.';
+            Alert.alert('Setup unavailable', msg);
         } finally {
             setSubmitting(false);
         }

@@ -628,6 +628,7 @@ const {
     logoutUser,
     forgotPassword,
     resetPassword,
+    resetPasswordWithOtp,
     verifyEmail,
     resendVerificationEmail,
     exportUserData,
@@ -672,6 +673,13 @@ router.post('/register', validate({ body: signupSchema }), registerUser);
 router.post('/login', loginAttemptLimiter, validate({ body: loginSchema }), authUser);
 router.post('/refresh-token', validate({ body: refreshTokenSchema }), refreshAuthToken);
 router.post('/logout', protect, validate({ body: logoutSchema }), logoutUser);
+router.post('/forgotpassword', forgotPassword);
+router.put('/resetpassword/:resettoken', resetPassword);
+router.get('/resetpassword/:resettoken', resetPassword);
+router.post('/resetpassword-with-otp', resetPasswordWithOtp);
+router.put('/verifyemail/:verificationtoken', verifyEmail);
+router.get('/verifyemail/:verificationtoken', verifyEmail);
+router.post('/resendverification', resendVerificationEmail);
 router.post('/forgotpassword', passwordRecoveryLimiter, validate({ body: forgotPasswordSchema }), forgotPassword);
 router.put('/resetpassword/:resettoken', validate({ body: resetPasswordSchema }), resetPassword);
 router.put('/verifyemail/:verificationtoken', verifyEmail);

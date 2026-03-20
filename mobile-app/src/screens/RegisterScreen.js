@@ -88,7 +88,6 @@ export default function RegisterScreen({ navigation, route }) {
 
         setLoading(true);
         try {
-            await new Promise((resolve) => setTimeout(resolve, 450));
             navigation.navigate('BasicProfileSetup', {
                 selectedRole,
                 authMode,

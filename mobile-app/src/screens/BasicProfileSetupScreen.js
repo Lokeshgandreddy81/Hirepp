@@ -95,19 +95,17 @@ export default function BasicProfileSetupScreen({ navigation, route }) {
     const handleContinue = useCallback(() => {
         if (submitting || !canSubmit) return;
         setSubmitting(true);
-        setTimeout(() => {
-            setSubmitting(false);
-            navigation.navigate('AccountSetupDetails', {
-                selectedRole: normalizedRole,
-                authMode,
-                email,
-                phoneNumber,
-                password,
-                name: String(fullName || '').trim(),
-                bio: String(bio || '').trim(),
-                avatarUri,
-            });
-        }, 300);
+        setSubmitting(false);
+        navigation.navigate('AccountSetupDetails', {
+            selectedRole,
+            authMode,
+            email,
+            phoneNumber,
+            password,
+            name: String(fullName || '').trim(),
+            bio: String(bio || '').trim(),
+            avatarUri,
+        });
     }, [submitting, canSubmit, navigation, selectedRole, authMode, email, phoneNumber, password, fullName, bio, avatarUri]);
 
     return (

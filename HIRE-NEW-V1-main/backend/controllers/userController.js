@@ -527,6 +527,70 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// @desc    Reset Password with OTP
+// @route   POST /api/users/resetpassword-with-otp
+// @access  Public
+const resetPasswordWithOtp = async (req, res) => {
+    const { email, phoneNumber, otp, newPassword } = req.body;
+    const normalizedEmail = normalizeEmail(email);
+    const normalizedPhone = normalizePhone(phoneNumber);
+    const query = normalizedEmail ? { email: normalizedEmail } : { phoneNumber: normalizedPhone };
+    
+    if ((!normalizedEmail && !normalizedPhone) || !otp || !newPassword) {
+        return res.status(400).json({ message: 'Email/phone, OTP, and new password are required' });
+    }
+
+    try {
+        const user = await User.findOne(query);
+        if (!user || user.isDeleted) {
+            return res.status(400).json({ message: 'Invalid request' });
+        }
+
+        const now = Date.now();
+        if (user.otpBlockedUntil && new Date(user.otpBlockedUntil).getTime() > now) {
+            return res.status(429).json({ message: 'Too many invalid attempts. Try again later.' });
+        }
+
+        const isExpired = !user.otpExpiry || new Date(user.otpExpiry).getTime() <= now;
+        if (isExpired) {
+            return res.status(400).json({ message: 'Invalid or expired code' });
+        }
+
+        const incomingOtpHash = hashOtp(otp);
+        const isValid = secureOtpEquals(incomingOtpHash, user.otpCodeHash);
+
+        if (!isValid) {
+            user.otpAttemptCount = Number(user.otpAttemptCount || 0) + 1;
+            if (user.otpAttemptCount >= 5) {
+                user.otpBlockedUntil = new Date(now + 15 * 60 * 1000); // block 15m
+            }
+            await user.save({ validateBeforeSave: false });
+            return res.status(400).json({ message: 'Invalid or expired code' });
+        }
+
+        if (!isStrongPassword(newPassword)) {
+            return res.status(400).json({
+                message: 'Password must be at least 10 characters and include uppercase, lowercase, number, and symbol',
+            });
+        }
+
+        // OTP Valid -> Reset password
+        user.password = newPassword;
+        user.otpCodeHash = null;
+        user.otpExpiry = null;
+        user.otpAttemptCount = 0;
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            data: 'Password Reset Success'
+        });
+    } catch (error) {
+        logger.error(`resetPasswordWithOtp error: ${error?.message || error}`);
+        res.status(500).json({ message: 'Failed to reset password' });
+    }
+};
+
 
 
 // @desc    Auth user & get token (LOGIN)
@@ -934,6 +998,7 @@ module.exports = {
   logoutUser,
   forgotPassword,
   resetPassword,
+  resetPasswordWithOtp,
   verifyEmail,
   resendVerificationEmail,
   exportUserData,

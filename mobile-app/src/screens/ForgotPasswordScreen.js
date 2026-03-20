@@ -7,9 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { handleAuthBackNavigation } from '../utils/authNavigation';
-import { normalizeSelectedRole } from '../utils/authRoleSelection';
-import { PALETTE, RADIUS, SPACING, SHADOWS } from '../theme/theme';
+import client from '../api/client';
 
 export default function ForgotPasswordScreen({ navigation, route }) {
     const insets = useSafeAreaInsets();
@@ -48,28 +46,34 @@ export default function ForgotPasswordScreen({ navigation, route }) {
         if (loading || !canSendOtp) return;
         setLoading(true);
         try {
-            await new Promise((resolve) => setTimeout(resolve, 400));
+            const payload = identityMode === 'phone' ? { phone: phoneNumber } : { email };
+            await client.post('/api/auth/send-otp', payload);
             setStage('verify');
-        } finally { setLoading(false); }
-    }, [canSendOtp, loading]);
+        } catch (error) {
+            Alert.alert('Error', error?.response?.data?.message || 'Failed to send OTP.');
+        } finally {
+            setLoading(false);
+        }
+    }, [canSendOtp, email, identityMode, loading, phoneNumber]);
 
     const verifyOtp = useCallback(async () => {
         if (loading || !canVerifyOtp) return;
-        setLoading(true);
-        try {
-            await new Promise((resolve) => setTimeout(resolve, 350));
-            setStage('reset');
-        } finally { setLoading(false); }
+        setStage('reset');
     }, [canVerifyOtp, loading]);
 
     const resendOtp = useCallback(async () => {
         if (loading) return;
         setLoading(true);
         try {
-            await new Promise((resolve) => setTimeout(resolve, 300));
+            const payload = identityMode === 'phone' ? { phone: phoneNumber } : { email };
+            await client.post('/api/auth/send-otp', payload);
             Alert.alert('OTP Sent', 'A new OTP has been sent.');
-        } finally { setLoading(false); }
-    }, [loading]);
+        } catch (error) {
+            Alert.alert('Error', error?.response?.data?.message || 'Failed to resend OTP.');
+        } finally {
+            setLoading(false);
+        }
+    }, [email, identityMode, loading, phoneNumber]);
 
     const resetPassword = useCallback(async () => {
         if (loading || !canReset) return;
@@ -85,10 +89,17 @@ export default function ForgotPasswordScreen({ navigation, route }) {
         }
         setLoading(true);
         try {
-            await new Promise((resolve) => setTimeout(resolve, 450));
+            const payload = identityMode === 'phone' 
+                ? { phoneNumber, otp, newPassword: safeNew } 
+                : { email, otp, newPassword: safeNew };
+            await client.post('/api/users/resetpassword-with-otp', payload);
             setStage('success');
-        } finally { setLoading(false); }
-    }, [canReset, confirmPassword, loading, newPassword]);
+        } catch (error) {
+            Alert.alert('Reset Failed', error?.response?.data?.message || 'Unable to reset password. Please check your OTP.');
+        } finally {
+            setLoading(false);
+        }
+    }, [canReset, confirmPassword, email, identityMode, loading, newPassword, otp, phoneNumber]);
 
     const goToLogin = useCallback(() => {
         navigation.navigate('Login', { selectedRole });

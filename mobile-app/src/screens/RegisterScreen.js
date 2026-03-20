@@ -2,23 +2,28 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 
+import AuthScreenShell from '../components/auth/AuthScreenShell';
+import { handleAuthBackNavigation } from '../utils/authNavigation';
+import {
+    getAuthAccountLabel,
+    isEmployerFacingSelectedRole,
+    normalizeSelectedRole,
+} from '../utils/authRoleSelection';
+import { PALETTE, RADIUS, SHADOWS } from '../theme/theme';
+
 export default function RegisterScreen({ navigation, route }) {
-    const insets = useSafeAreaInsets();
-    const passedRole = String(route?.params?.selectedRole || 'worker').toLowerCase();
-    const selectedRole = ['employer', 'hybrid'].includes(passedRole) ? passedRole : 'worker';
+    const selectedRole = normalizeSelectedRole(route?.params?.selectedRole || 'worker');
+    const accountLabel = useMemo(() => getAuthAccountLabel(selectedRole), [selectedRole]);
+    const isEmployer = useMemo(() => isEmployerFacingSelectedRole(selectedRole), [selectedRole]);
 
     const [authMode, setAuthMode] = useState('phone');
     const [phoneNumber, setPhoneNumber] = useState('');
@@ -26,10 +31,26 @@ export default function RegisterScreen({ navigation, route }) {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [loading, setLoading] = useState(false);
+    const [showPassword, setShowPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-    const subtitleText = useMemo(
-        () => `Create your ${selectedRole === 'hybrid' ? 'Hybrid' : (selectedRole === 'employer' ? 'Employer' : 'Job Seeker')} account`,
-        [selectedRole]
+    const screenTitle = useMemo(
+        () => (isEmployer
+            ? 'Create your hiring workspace'
+            : 'Create your job seeker account'),
+        [isEmployer]
+    );
+    const screenSubtitle = useMemo(
+        () => (isEmployer
+            ? 'Start with your login details. Company basics and hiring setup come next.'
+            : 'Start with your login details. Profile basics and work preferences come next.'),
+        [isEmployer]
+    );
+    const panelSubtitle = useMemo(
+        () => (authMode === 'phone'
+            ? 'Use a mobile number you can access regularly for account recovery.'
+            : 'Use an email address you can access regularly for account recovery.'),
+        [authMode]
     );
 
     const canSubmit = useMemo(() => {
@@ -41,10 +62,11 @@ export default function RegisterScreen({ navigation, route }) {
     }, [authMode, confirmPassword, email, password, phoneNumber]);
 
     const handleBack = useCallback(() => {
-        if (navigation.canGoBack()) {
-            navigation.goBack();
-        }
-    }, [navigation]);
+        handleAuthBackNavigation(navigation, {
+            selectedRole,
+            target: 'Login',
+        });
+    }, [navigation, selectedRole]);
 
     const openSignIn = useCallback(() => {
         navigation.navigate('Login', { selectedRole });
@@ -84,309 +106,342 @@ export default function RegisterScreen({ navigation, route }) {
         confirmPassword,
         email,
         loading,
+        navigation,
         password,
         phoneNumber,
-        navigation,
         selectedRole,
     ]);
 
     return (
-        <KeyboardAvoidingView
-            style={styles.container}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        <AuthScreenShell
+            selectedRole={selectedRole}
+            modeLabel="Create account"
+            title={screenTitle}
+            subtitle={screenSubtitle}
+            onBack={handleBack}
+            footer={(
+                <View style={styles.footerWrap}>
+                    <Text style={styles.footerText}>Already have an account?</Text>
+                    <TouchableOpacity activeOpacity={0.75} onPress={openSignIn}>
+                        <Text style={styles.footerLink}>Sign In</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
         >
-            <ScrollView
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="always"
-                contentContainerStyle={[
-                    styles.scrollContent,
-                    { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 24 },
-                ]}
-            >
-                <TouchableOpacity style={styles.backBtn} onPress={handleBack} activeOpacity={0.8}>
-                    <Ionicons name="chevron-back" size={18} color="#94a3b8" />
-                    <Text style={styles.backBtnText}>Back</Text>
+            <Text style={styles.sectionEyebrow}>Step 1 of 3</Text>
+            <Text style={styles.sectionTitle}>Create your sign-in details</Text>
+            <Text style={styles.sectionSubtitle}>{panelSubtitle}</Text>
+
+            <View style={styles.segmentWrap}>
+                <TouchableOpacity
+                    style={[styles.segmentBtn, authMode === 'phone' && styles.segmentBtnActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setAuthMode('phone')}
+                >
+                    <Ionicons name="call-outline" size={15} color={authMode === 'phone' ? PALETTE.accentDeep : '#64748b'} />
+                    <Text style={[styles.segmentText, authMode === 'phone' && styles.segmentTextActive]}>Phone</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                    style={[styles.segmentBtn, authMode === 'email' && styles.segmentBtnActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setAuthMode('email')}
+                >
+                    <Ionicons name="mail-outline" size={15} color={authMode === 'email' ? PALETTE.accentDeep : '#64748b'} />
+                    <Text style={[styles.segmentText, authMode === 'email' && styles.segmentTextActive]}>Email</Text>
+                </TouchableOpacity>
+            </View>
 
-                <View style={styles.headerBlock}>
-                    <Text style={styles.title}>Create Account</Text>
-                    <Text style={styles.subtitle}>{subtitleText}</Text>
-                </View>
-
-                <View style={styles.segmentWrap}>
-                    <TouchableOpacity
-                        style={[styles.segmentButton, authMode === 'phone' && styles.segmentButtonActive]}
-                        activeOpacity={0.9}
-                        onPress={() => setAuthMode('phone')}
-                    >
-                        <Text style={[styles.segmentText, authMode === 'phone' && styles.segmentTextActive]}>PHONE</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.segmentButton, authMode === 'email' && styles.segmentButtonActive]}
-                        activeOpacity={0.9}
-                        onPress={() => setAuthMode('email')}
-                    >
-                        <Text style={[styles.segmentText, authMode === 'email' && styles.segmentTextActive]}>EMAIL</Text>
-                    </TouchableOpacity>
-                </View>
-
-                <View style={styles.formBlock}>
-                    {authMode === 'phone' ? (
-                        <View>
-                            <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
-                            <View style={styles.phoneRow}>
-                                <View style={styles.countryCodeWrap}>
-                                    <Text style={styles.countryCodeText}>+91</Text>
-                                </View>
-                                <TextInput
-                                    style={styles.phoneInput}
-                                    value={phoneNumber}
-                                    onChangeText={setPhoneNumber}
-                                    keyboardType="phone-pad"
-                                    placeholder="98765 43210"
-                                    placeholderTextColor="#94a3b8"
-                                    maxLength={15}
-                                />
+            <View style={styles.formBlock}>
+                {authMode === 'phone' ? (
+                    <View style={styles.fieldGroup}>
+                        <Text style={styles.fieldLabel}>Phone number</Text>
+                        <View style={styles.phoneShell}>
+                            <View style={styles.countryCode}>
+                                <Ionicons name="phone-portrait-outline" size={15} color="#64748b" />
+                                <Text style={styles.countryCodeText}>+91</Text>
                             </View>
-                        </View>
-                    ) : (
-                        <View>
-                            <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
                             <TextInput
-                                style={styles.input}
+                                style={styles.phoneInput}
+                                value={phoneNumber}
+                                onChangeText={setPhoneNumber}
+                                keyboardType="phone-pad"
+                                placeholder="98765 43210"
+                                placeholderTextColor={PALETTE.textTertiary}
+                                maxLength={15}
+                            />
+                        </View>
+                    </View>
+                ) : (
+                    <View style={styles.fieldGroup}>
+                        <Text style={styles.fieldLabel}>Email address</Text>
+                        <View style={styles.fieldShell}>
+                            <Ionicons name="mail-outline" size={17} color="#64748b" style={styles.fieldIcon} />
+                            <TextInput
+                                style={styles.fieldInput}
                                 value={email}
                                 onChangeText={setEmail}
                                 autoCapitalize="none"
                                 keyboardType="email-address"
-                                placeholder="user@example.com"
-                                placeholderTextColor="#94a3b8"
+                                placeholder="you@example.com"
+                                placeholderTextColor={PALETTE.textTertiary}
                             />
                         </View>
-                    )}
+                    </View>
+                )}
 
-                    <View>
-                        <Text style={styles.fieldLabel}>PASSWORD</Text>
+                <View style={styles.fieldGroup}>
+                    <Text style={styles.fieldLabel}>Password</Text>
+                    <View style={styles.fieldShell}>
+                        <Ionicons name="lock-closed-outline" size={17} color="#64748b" style={styles.fieldIcon} />
                         <TextInput
-                            style={styles.input}
+                            style={styles.fieldInput}
                             value={password}
                             onChangeText={setPassword}
-                            secureTextEntry
+                            secureTextEntry={!showPassword}
                             placeholder="At least 6 characters"
-                            placeholderTextColor="#94a3b8"
+                            placeholderTextColor={PALETTE.textTertiary}
                         />
+                        <TouchableOpacity
+                            style={styles.trailingBtn}
+                            onPress={() => setShowPassword((prev) => !prev)}
+                            activeOpacity={0.7}
+                        >
+                            <Ionicons
+                                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                                size={19}
+                                color={PALETTE.textSecondary}
+                            />
+                        </TouchableOpacity>
                     </View>
+                </View>
 
-                    <View>
-                        <Text style={styles.fieldLabel}>CONFIRM PASSWORD</Text>
+                <View style={styles.fieldGroup}>
+                    <Text style={styles.fieldLabel}>Confirm password</Text>
+                    <View style={styles.fieldShell}>
+                        <Ionicons name="checkmark-circle-outline" size={17} color="#64748b" style={styles.fieldIcon} />
                         <TextInput
-                            style={styles.input}
+                            style={styles.fieldInput}
                             value={confirmPassword}
                             onChangeText={setConfirmPassword}
-                            secureTextEntry
+                            secureTextEntry={!showConfirmPassword}
                             placeholder="Re-enter password"
-                            placeholderTextColor="#94a3b8"
+                            placeholderTextColor={PALETTE.textTertiary}
                         />
-                    </View>
-
-                    <TouchableOpacity
-                        style={[styles.submitWrap, (!canSubmit || loading) && styles.submitWrapDisabled]}
-                        activeOpacity={0.9}
-                        onPress={handleCreateAccount}
-                        disabled={!canSubmit || loading}
-                    >
-                        <LinearGradient
-                            colors={['#7c3aed', '#9333ea']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={styles.submitGradient}
+                        <TouchableOpacity
+                            style={styles.trailingBtn}
+                            onPress={() => setShowConfirmPassword((prev) => !prev)}
+                            activeOpacity={0.7}
                         >
-                            {loading ? (
-                                <ActivityIndicator size="small" color="#ffffff" />
-                            ) : (
-                                <Text style={styles.submitText}>Create Account</Text>
-                            )}
-                        </LinearGradient>
-                    </TouchableOpacity>
+                            <Ionicons
+                                name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
+                                size={19}
+                                color={PALETTE.textSecondary}
+                            />
+                        </TouchableOpacity>
+                    </View>
                 </View>
+            </View>
 
-                <View style={styles.footerRow}>
-                    <Text style={styles.footerText}>Already have an account? </Text>
-                    <TouchableOpacity activeOpacity={0.8} onPress={openSignIn}>
-                        <Text style={styles.footerLink}>Sign In</Text>
-                    </TouchableOpacity>
-                </View>
-            </ScrollView>
-        </KeyboardAvoidingView>
+            <TouchableOpacity
+                style={[styles.submitBtn, (!canSubmit || loading) && styles.submitBtnDisabled]}
+                activeOpacity={0.9}
+                onPress={handleCreateAccount}
+                disabled={!canSubmit || loading}
+            >
+                <LinearGradient
+                    colors={['#c084fc', PALETTE.accent, PALETTE.accentDeep]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.submitGradient}
+                >
+                    {loading ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                        <Text style={styles.submitText}>Continue</Text>
+                    )}
+                </LinearGradient>
+            </TouchableOpacity>
+
+            <View style={styles.inlineMetaRow}>
+                <Ionicons name="sparkles-outline" size={14} color="#7c3aed" />
+                <Text style={styles.inlineMetaText}>
+                    Next: {isEmployer ? 'company basics and role setup.' : 'profile basics and work preferences.'}
+                </Text>
+            </View>
+        </AuthScreenShell>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#f4f5f7',
-    },
-    scrollContent: {
-        flexGrow: 1,
-        paddingHorizontal: 24,
-    },
-    backBtn: {
-        minHeight: 44,
-        alignSelf: 'flex-start',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        marginBottom: 22,
-    },
-    backBtnText: {
-        fontSize: 13,
-        lineHeight: 18,
-        color: '#94a3b8',
-        fontWeight: '600',
-    },
-    headerBlock: {
-        marginBottom: 18,
-    },
-    title: {
-        fontSize: 27,
-        lineHeight: 32,
+    sectionEyebrow: {
+        fontSize: 11,
         fontWeight: '800',
-        color: '#0f172a',
-        letterSpacing: -0.2,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        color: '#7c3aed',
+        marginBottom: 8,
     },
-    subtitle: {
-        marginTop: 8,
-        fontSize: 13,
-        lineHeight: 18,
-        fontWeight: '600',
+    sectionTitle: {
+        fontSize: 21,
+        fontWeight: '800',
+        color: PALETTE.textPrimary,
+        letterSpacing: -0.4,
+    },
+    sectionSubtitle: {
+        marginTop: 6,
+        marginBottom: 18,
+        fontSize: 14,
+        lineHeight: 21,
         color: '#64748b',
     },
     segmentWrap: {
         flexDirection: 'row',
-        backgroundColor: '#e2e8f0',
-        borderRadius: 14,
-        padding: 4,
-        marginTop: 6,
+        gap: 10,
+        marginBottom: 18,
     },
-    segmentButton: {
+    segmentBtn: {
         flex: 1,
+        minHeight: 48,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: 46,
-        borderRadius: 10,
+        gap: 8,
     },
-    segmentButtonActive: {
-        backgroundColor: '#ffffff',
+    segmentBtnActive: {
+        backgroundColor: '#f3e8ff',
+        borderColor: '#d8b4fe',
+        ...SHADOWS.sm,
     },
     segmentText: {
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: 14,
         fontWeight: '700',
         color: '#64748b',
     },
     segmentTextActive: {
-        color: '#0f172a',
+        color: PALETTE.accentDeep,
     },
     formBlock: {
-        marginTop: 20,
-        gap: 14,
+        gap: 16,
+    },
+    fieldGroup: {
+        gap: 8,
     },
     fieldLabel: {
-        marginBottom: 8,
-        fontSize: 11,
-        lineHeight: 14,
+        fontSize: 13,
         fontWeight: '700',
-        color: '#94a3b8',
-        letterSpacing: 0.9,
+        color: '#475569',
     },
-    phoneRow: {
+    phoneShell: {
         flexDirection: 'row',
         alignItems: 'center',
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: '#d5dee8',
-        backgroundColor: '#f3f6f9',
         minHeight: 54,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
         overflow: 'hidden',
     },
-    countryCodeWrap: {
-        minWidth: 64,
+    countryCode: {
+        minHeight: 54,
+        paddingHorizontal: 14,
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 10,
-        paddingVertical: 14,
+        gap: 8,
         borderRightWidth: 1,
-        borderRightColor: '#d5dee8',
-        backgroundColor: '#f8fafc',
+        borderRightColor: '#e2e8f0',
+        backgroundColor: '#f1f5f9',
     },
     countryCodeText: {
         fontSize: 14,
-        lineHeight: 18,
         fontWeight: '700',
-        color: '#64748b',
+        color: '#475569',
     },
     phoneInput: {
         flex: 1,
         paddingHorizontal: 14,
-        paddingVertical: 12,
-        fontSize: 14,
-        lineHeight: 19,
-        fontWeight: '500',
-        color: '#0f172a',
+        fontSize: 15,
+        color: PALETTE.textPrimary,
     },
-    input: {
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: '#d5dee8',
-        backgroundColor: '#f3f6f9',
+    fieldShell: {
+        flexDirection: 'row',
+        alignItems: 'center',
         minHeight: 54,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-        fontSize: 14,
-        lineHeight: 19,
-        fontWeight: '500',
-        color: '#0f172a',
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
     },
-    submitWrap: {
-        marginTop: 10,
-        borderRadius: 14,
+    fieldIcon: {
+        marginLeft: 14,
+    },
+    fieldInput: {
+        flex: 1,
+        paddingLeft: 10,
+        paddingRight: 12,
+        fontSize: 15,
+        color: PALETTE.textPrimary,
+    },
+    trailingBtn: {
+        width: 42,
+        height: 42,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 4,
+    },
+    submitBtn: {
+        marginTop: 20,
+        borderRadius: RADIUS.full,
         overflow: 'hidden',
-        shadowColor: '#7c3aed',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.22,
-        shadowRadius: 10,
-        elevation: 4,
+        ...SHADOWS.accent,
     },
-    submitWrapDisabled: {
-        opacity: 0.55,
+    submitBtnDisabled: {
+        opacity: 0.5,
     },
     submitGradient: {
         minHeight: 54,
+        borderRadius: RADIUS.full,
         alignItems: 'center',
         justifyContent: 'center',
     },
     submitText: {
-        fontSize: 17,
-        lineHeight: 22,
+        fontSize: 16,
         fontWeight: '800',
         color: '#ffffff',
+        letterSpacing: 0.2,
     },
-    footerRow: {
-        marginTop: 24,
-        marginBottom: 8,
+    inlineMetaRow: {
+        marginTop: 14,
         flexDirection: 'row',
-        justifyContent: 'center',
         alignItems: 'center',
+        gap: 8,
     },
-    footerText: {
-        fontSize: 12,
-        lineHeight: 16,
-        color: '#94a3b8',
+    inlineMetaText: {
+        flex: 1,
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: '#64748b',
         fontWeight: '600',
     },
+    footerWrap: {
+        marginTop: 18,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        paddingBottom: 4,
+    },
+    footerText: {
+        fontSize: 14,
+        color: '#64748b',
+        fontWeight: '500',
+    },
     footerLink: {
-        fontSize: 12,
-        lineHeight: 16,
-        color: '#7c3aed',
-        fontWeight: '700',
+        fontSize: 14,
+        color: PALETTE.accentDeep,
+        fontWeight: '800',
     },
 });

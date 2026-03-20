@@ -446,6 +446,7 @@ const userSchema = mongoose.Schema(
     password: {
       type: String,
       required: true,
+      select: false, // CRITICAL: Never leak the hash in any query by default.
     },
     passwordChangedAt: {
       type: Date,
@@ -653,8 +654,13 @@ userSchema.pre('save', async function () {
     this.languageCode = localeBundle.languageCode;
   }
 
-  if (this.isModified('password') && !this.isNew) {
-    this.passwordChangedAt = new Date();
+  const sessionCriticalFields = ['password', 'role', 'roles', 'activeRole', 'isBanned', 'isDeleted', 'trustStatus'];
+  const requiresTokenInvalidation = sessionCriticalFields.some(field => this.isModified(field)) && !this.isNew;
+
+  if (requiresTokenInvalidation) {
+    if (this.isModified('password')) {
+      this.passwordChangedAt = new Date();
+    }
     const currentTokenVersion = Number.parseInt(this.tokenVersion, 10);
     this.tokenVersion = Number.isFinite(currentTokenVersion) && currentTokenVersion >= 0
       ? currentTokenVersion + 1
@@ -664,11 +670,14 @@ userSchema.pre('save', async function () {
   if (!this.isModified('password')) {
     return;
   }
-  const salt = await bcrypt.genSalt(10);
+  const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
+  // Guard against OAuth-only accounts (no password set) — return false without
+  // throwing so timing difference does not reveal account existence.
+  if (!this.password) return false;
   return await bcrypt.compare(enteredPassword, this.password);
 };
 

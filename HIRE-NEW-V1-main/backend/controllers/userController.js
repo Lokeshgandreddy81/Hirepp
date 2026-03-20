@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const User = require('../models/userModel');
 const { generateToken, generateRefreshToken } = require('../utils/generateToken');
 const BetaCode = require('../models/BetaCode');
@@ -25,22 +26,12 @@ const {
   clearSocketSessionsForUser,
 } = require('../services/sessionService');
 const logger = require('../utils/logger');
-const crypto = require('crypto');
-
-const OTP_HMAC_SECRET = String(process.env.OTP_HMAC_SECRET || '').trim();
-const hashOtp = (otp) => {
-    if (!OTP_HMAC_SECRET) {
-        throw new Error('OTP secret is not configured in backend');
-    }
-    return crypto.createHmac('sha256', OTP_HMAC_SECRET).update(String(otp)).digest('hex');
-};
-
-const secureOtpEquals = (left, right) => {
-    const leftBuffer = Buffer.from(String(left || ''), 'utf8');
-    const rightBuffer = Buffer.from(String(right || ''), 'utf8');
-    if (leftBuffer.length !== rightBuffer.length) return false;
-    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-};
+const {
+  isBrowserSessionRequest,
+  readRefreshTokenFromRequest,
+  setRefreshTokenCookie,
+  clearRefreshTokenCookie,
+} = require('../utils/webAuthCookies');
 
 const isProductionRuntime = () => String(process.env.NODE_ENV || '').toLowerCase() === 'production';
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
@@ -86,6 +77,64 @@ const requireHttpsUrl = (name, value) => {
   }
   return resolved.replace(/\/$/, '');
 };
+const hashVerificationToken = (token) => crypto
+  .createHash('sha256')
+  .update(String(token || '').trim())
+  .digest('hex');
+const issueVerificationToken = () => {
+  const rawToken = crypto.randomBytes(20).toString('hex');
+  return {
+    rawToken,
+    hashedToken: hashVerificationToken(rawToken),
+  };
+};
+const buildVerificationUrl = (verificationToken) => {
+  const apiPublicUrl = requireHttpsUrl('API_PUBLIC_URL', process.env.API_PUBLIC_URL);
+  return `${apiPublicUrl}/api/users/verifyemail/${verificationToken}`;
+};
+const sendVerificationEmail = async ({ email, verificationToken }) => {
+  const sendEmail = require('../utils/sendEmail');
+  const verifyUrl = buildVerificationUrl(verificationToken);
+  const message = `Please confirm your email by clicking here: \n\n ${verifyUrl}`;
+
+  await sendEmail({
+    email,
+    subject: 'Email Verification',
+    message,
+  });
+};
+const PASSWORD_RECOVERY_RESPONSE = Object.freeze({
+  success: true,
+  data: 'If an account exists, a password reset link has been sent.',
+});
+const VERIFICATION_RESEND_RESPONSE = Object.freeze({
+  success: true,
+  data: 'If an unverified account exists, a verification email has been sent.',
+});
+const buildAuthPayload = (user, { accessToken, refreshToken, includeRefreshToken = true } = {}) => {
+  const roleContract = resolveUserRoleContract(user);
+  const payload = {
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    role: roleContract.role,
+    roles: roleContract.roles,
+    activeRole: roleContract.activeRole,
+    primaryRole: roleContract.primaryRole,
+    capabilities: roleContract.capabilities,
+    hasSelectedRole: true,
+    hasCompletedProfile: Boolean(user.hasCompletedProfile),
+    isVerified: user.isVerified,
+    isAdmin: Boolean(user.isAdmin),
+    token: accessToken,
+  };
+
+  if (includeRefreshToken) {
+    payload.refreshToken = refreshToken;
+  }
+
+  return payload;
+};
 
 // @desc    Register a new user
 // @route   POST /api/users/register
@@ -106,7 +155,6 @@ const registerUser = async (req, res) => {
     timezone = 'UTC',
     languagePreference = 'en',
   } = req.body;
-  const crypto = require('crypto');
   const normalizedName = String(name || '').trim();
   const normalizedEmail = normalizeEmail(email);
   const normalizedPhone = normalizePhone(phoneNumber);
@@ -166,8 +214,8 @@ const registerUser = async (req, res) => {
     const normalizedCountry = normalizeCountryCode(country);
     const localeBundle = resolveLocaleBundle(normalizedCountry);
 
-    // Generate OTP Code
-    const otpCode = crypto.randomInt(100000, 1000000).toString();
+    // Generate Verification Token
+    const { rawToken: verificationToken, hashedToken: verificationTokenHash } = issueVerificationToken();
     // Generate new unique referral code for this user
     const newReferralCode = crypto.randomBytes(3).toString('hex').toUpperCase() + Date.now().toString().slice(-4);
 
@@ -186,12 +234,7 @@ const registerUser = async (req, res) => {
       primaryRole: 'worker',
       hasSelectedRole: true,
       password,
-      otpCodeHash: hashOtp(otpCode),
-      otpExpiry: new Date(Date.now() + 5 * 60 * 1000),
-      otpAttemptCount: 0,
-      otpRequestCount: 1,
-      otpRequestWindowStartedAt: new Date(),
-      otpLastSentAt: new Date(),
+      verificationToken: verificationTokenHash,
       referralCode: newReferralCode,
       referredBy: referredByUserId,
       acquisitionSource,
@@ -211,14 +254,10 @@ const registerUser = async (req, res) => {
 
     if (user) {
       // Send Verification Email
-      const message = `Your verification code is ${otpCode}. It will expire in 5 minutes.`;
-
       try {
-        const sendEmail = require('../utils/sendEmail');
-        await sendEmail({
+        await sendVerificationEmail({
           email: user.email,
-          subject: 'Email Verification',
-          message,
+          verificationToken,
         });
       } catch (err) {
         logger.warn({ event: 'verification_email_failed', message: err?.message || err });
@@ -371,16 +410,24 @@ const registerUser = async (req, res) => {
 // @route   PUT /api/users/verifyemail/:verificationtoken
 // @access  Public
 const verifyEmail = async (req, res) => {
-  const verificationToken = req.params.verificationtoken;
+  const verificationToken = String(req.params.verificationtoken || '').trim();
+  const hashedVerificationToken = hashVerificationToken(verificationToken);
 
   try {
-    const user = await User.findOne({ verificationToken });
+    const user = await User.findOne({
+      $or: [
+        { verificationToken: hashedVerificationToken },
+        { verificationToken },
+      ],
+    });
 
     if (!user) {
       return res.status(400).json({ message: 'Invalid or Expired Token' });
     }
 
     user.isVerified = true;
+    user.isEmailVerified = true;
+    user.otpVerified = true;
     user.verificationToken = undefined;
     await user.save();
 
@@ -394,13 +441,13 @@ const verifyEmail = async (req, res) => {
 // @route   POST /api/users/forgotpassword
 // @access  Public
 const forgotPassword = async (req, res) => {
-  const { email } = req.body;
+  const email = normalizeEmail(req.body?.email);
 
   try {
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(200).json(PASSWORD_RECOVERY_RESPONSE);
     }
 
     // Get Reset Token
@@ -422,7 +469,7 @@ const forgotPassword = async (req, res) => {
         message,
       });
 
-      res.status(200).json({ success: true, data: 'Email sent' });
+      return res.status(200).json(PASSWORD_RECOVERY_RESPONSE);
     } catch (err) {
       logger.warn({ event: 'forgot_password_email_failed', message: err?.message || err });
       user.resetPasswordToken = undefined;
@@ -430,7 +477,7 @@ const forgotPassword = async (req, res) => {
 
       await user.save({ validateBeforeSave: false });
 
-      return res.status(500).json({ message: 'Email could not be sent' });
+      return res.status(200).json(PASSWORD_RECOVERY_RESPONSE);
     }
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -441,7 +488,6 @@ const forgotPassword = async (req, res) => {
 // @route   PUT /api/users/resetpassword/:resettoken
 // @access  Public
 const resetPassword = async (req, res) => {
-  const crypto = require('crypto');
   // Get hashed token
   const resetPasswordToken = crypto
     .createHash('sha256')
@@ -561,13 +607,34 @@ const authUser = async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ email: normalizedEmail });
+    // SECURITY: +password required here because the schema has select:false to prevent
+    // accidental hash leakage in all other queries. This is the ONLY place that should ever select it.
+    const user = await User.findOne({ email: normalizedEmail }).select('+password');
 
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
+    const isMatch = await user.matchPassword(password);
+    
+    if (!isMatch) {
+      user.loginAttempts = (user.loginAttempts || 0) + 1;
+      if (user.loginAttempts >= 5) {
+        user.lockUntil = Date.now() + 15 * 60 * 1000; // 15 mins lock
+      }
+      await user.save({ validateBeforeSave: false });
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Password is correct. Now we can safely check account state.
     if (user.isDeleted) {
+      if (user.deletionLifecycle?.status === 'scheduled') {
+        const purgeAfter = user.deletionLifecycle.purgeAfter ? new Date(user.deletionLifecycle.purgeAfter).toLocaleDateString() : 'soon';
+        return res.status(403).json({ 
+          message: `This account is scheduled for deletion on ${purgeAfter}. You can restore it using the 'Restore Account' feature.`,
+          code: 'ACCOUNT_DELETION_SCHEDULED'
+        });
+      }
       return res.status(403).json({ message: 'Account is deleted. Contact support if this is unexpected.' });
     }
 
@@ -587,45 +654,33 @@ const authUser = async (req, res) => {
       });
     }
 
-    if (await user.matchPassword(password)) {
-      applyRoleContractToUser(user);
-      // Success: Reset attempts
-      user.loginAttempts = 0;
-      user.lockUntil = undefined;
-      upsertDeviceSession({
-        user,
-        deviceId,
-        platform: devicePlatform,
-      });
-      await user.save();
+    // Success: Reset attempts
+    applyRoleContractToUser(user);
+    user.loginAttempts = 0;
+    user.lockUntil = undefined;
+    upsertDeviceSession({
+      user,
+      deviceId,
+      platform: devicePlatform,
+    });
+    await user.save({ validateBeforeSave: false });
 
-      const roleContract = resolveUserRoleContract(user);
-      res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: roleContract.role,
-        roles: roleContract.roles,
-        activeRole: roleContract.activeRole,
-        primaryRole: roleContract.primaryRole,
-        capabilities: roleContract.capabilities,
-        hasSelectedRole: true,
-        hasCompletedProfile: Boolean(user.hasCompletedProfile),
-        isVerified: user.isVerified,
-        isAdmin: Boolean(user.isAdmin),
-        token: generateToken(user._id, { tokenVersion: resolveTokenVersion(user.tokenVersion) }),
-        refreshToken: generateRefreshToken(user._id, { tokenVersion: resolveTokenVersion(user.tokenVersion) })
-      });
-    } else {
-      // Failure: Increment attempts
-      user.loginAttempts += 1;
-      if (user.loginAttempts >= 5) {
-        user.lockUntil = Date.now() + 15 * 60 * 1000; // 15 mins lock
-      }
-      await user.save();
+    const accessToken = generateToken(user._id, {
+      tokenVersion: resolveTokenVersion(user.tokenVersion),
+    });
+    const refreshToken = generateRefreshToken(user._id, {
+      tokenVersion: resolveTokenVersion(user.tokenVersion),
+    });
 
-      res.status(401).json({ message: 'Invalid email or password' });
+    if (isBrowserSessionRequest(req)) {
+      setRefreshTokenCookie(req, res, refreshToken);
     }
+
+    res.json(buildAuthPayload(user, {
+      accessToken,
+      refreshToken,
+      includeRefreshToken: !isBrowserSessionRequest(req),
+    }));
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -635,7 +690,7 @@ const authUser = async (req, res) => {
 // @route   POST /api/users/refresh-token
 // @access  Public
 const refreshAuthToken = async (req, res) => {
-  const refreshToken = String(req.body?.refreshToken || '').trim();
+  const refreshToken = readRefreshTokenFromRequest(req);
   const deviceId = resolveDeviceId(req);
   const devicePlatform = resolveDevicePlatform(req);
   if (!refreshToken) {
@@ -670,25 +725,27 @@ const refreshAuthToken = async (req, res) => {
     });
     await user.save({ validateBeforeSave: false });
 
-    const roleContract = resolveUserRoleContract(user);
-    return res.status(200).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      role: roleContract.role,
-      roles: roleContract.roles,
-      activeRole: roleContract.activeRole,
-      primaryRole: roleContract.primaryRole,
-      capabilities: roleContract.capabilities,
-      hasSelectedRole: true,
-      hasCompletedProfile: Boolean(user.hasCompletedProfile),
-      isVerified: user.isVerified,
-      isAdmin: Boolean(user.isAdmin),
-      token: generateToken(user._id, { tokenVersion: resolveTokenVersion(user.tokenVersion) }),
-      refreshToken: generateRefreshToken(user._id, { tokenVersion: resolveTokenVersion(user.tokenVersion) }),
+    const accessToken = generateToken(user._id, {
+      tokenVersion: resolveTokenVersion(user.tokenVersion),
     });
+    const nextRefreshToken = generateRefreshToken(user._id, {
+      tokenVersion: resolveTokenVersion(user.tokenVersion),
+    });
+
+    if (isBrowserSessionRequest(req)) {
+      setRefreshTokenCookie(req, res, nextRefreshToken);
+    }
+
+    return res.status(200).json(buildAuthPayload(user, {
+      accessToken,
+      refreshToken: nextRefreshToken,
+      includeRefreshToken: !isBrowserSessionRequest(req),
+    }));
   } catch (error) {
     logger.security({ event: 'refresh_token_failed', message: error?.message || error });
+    if (isBrowserSessionRequest(req)) {
+      clearRefreshTokenCookie(req, res);
+    }
     return res.status(401).json({ message: 'Invalid refresh token' });
   }
 };
@@ -702,7 +759,8 @@ const logoutUser = async (req, res) => {
     ? header.slice(7).trim()
     : '';
   const accessToken = accessTokenFromHeader || req.authToken || null;
-  const refreshToken = String(req.body?.refreshToken || '').trim() || null;
+  const refreshToken = readRefreshTokenFromRequest(req) || null;
+  const deviceId = resolveDeviceId(req) || null;
 
   const { revoked } = await revokeSession({
     accessToken,
@@ -716,7 +774,7 @@ const logoutUser = async (req, res) => {
     if (user) {
       revokedDeviceSessions = revokeDeviceSession({
         user,
-        deviceId: null,
+        deviceId,
       });
       user.tokenVersion = resolveTokenVersion(user.tokenVersion) + 1;
       await user.save({ validateBeforeSave: false });
@@ -729,6 +787,10 @@ const logoutUser = async (req, res) => {
     disconnectedSockets = Number(socketResult?.disconnected || 0);
   } catch (sessionError) {
     logger.warn({ event: 'logout_session_cleanup_failed', message: sessionError?.message || sessionError });
+  }
+
+  if (isBrowserSessionRequest(req)) {
+    clearRefreshTokenCookie(req, res);
   }
 
   return res.status(200).json({
@@ -746,41 +808,34 @@ const logoutUser = async (req, res) => {
 // @route   POST /api/users/resendverification
 // @access  Public
 const resendVerificationEmail = async (req, res) => {
-  const { email } = req.body;
-  const crypto = require('crypto');
+  const email = normalizeEmail(req.body?.email);
 
   try {
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(200).json(VERIFICATION_RESEND_RESPONSE);
     }
 
     if (user.isVerified) {
-      return res.status(400).json({ message: 'User already verified' });
+      return res.status(200).json(VERIFICATION_RESEND_RESPONSE);
     }
 
     // Generate new token
-    const verificationToken = crypto.randomBytes(20).toString('hex');
-    user.verificationToken = verificationToken;
+    const { rawToken: verificationToken, hashedToken: verificationTokenHash } = issueVerificationToken();
+    user.verificationToken = verificationTokenHash;
     await user.save();
 
     // Send Verification Email
-    const apiPublicUrl = requireHttpsUrl('API_PUBLIC_URL', process.env.API_PUBLIC_URL);
-    const verifyUrl = `${apiPublicUrl}/api/users/verifyemail/${verificationToken}`;
-    const message = `Please confirm your email by clicking here: \n\n ${verifyUrl}`;
-
     try {
-      const sendEmail = require('../utils/sendEmail');
-      await sendEmail({
+      await sendVerificationEmail({
         email: user.email,
-        subject: 'Email Verification',
-        message,
+        verificationToken,
       });
-      res.status(200).json({ success: true, data: 'Verification email sent' });
+      return res.status(200).json(VERIFICATION_RESEND_RESPONSE);
     } catch (err) {
       logger.warn({ event: 'resend_verification_email_failed', message: err?.message || err });
-      return res.status(500).json({ message: 'Email could not be sent' });
+      return res.status(200).json(VERIFICATION_RESEND_RESPONSE);
     }
 
   } catch (error) {
@@ -815,35 +870,99 @@ const exportUserData = async (req, res) => {
   }
 };
 
-// @desc    Delete User Account and all associated data
-// @route   DELETE /api/users/delete
-// @access  Private
 const deleteUserAccount = async (req, res) => {
+  const { reason = 'User requested' } = req.body || {};
   try {
     const userId = req.user._id;
+    const user = await User.findById(userId);
 
-    // Remove Profiles
-    if (isRecruiter(req.user)) {
-      const EmployerProfile = require('../models/EmployerProfile');
-      await EmployerProfile.findOneAndDelete({ user: userId });
-      // Remove Jobs
-      const Job = require('../models/Job');
-      await Job.deleteMany({ employerId: userId });
-    } else {
-      const WorkerProfile = require('../models/WorkerProfile');
-      await WorkerProfile.findOneAndDelete({ user: userId });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    // Remove Applications
-    const Application = require('../models/Application');
-    await Application.deleteMany({ $or: [{ worker: userId }, { employer: userId }] });
+    const DELETION_GRACE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+    const purgeAfter = new Date(Date.now() + DELETION_GRACE_PERIOD_MS);
 
-    // Remove User
-    await User.findByIdAndDelete(userId);
+    // Update Deletion Lifecycle
+    user.deletionLifecycle = {
+      status: 'scheduled',
+      requestedAt: new Date(),
+      purgeAfter,
+      reason,
+    };
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    
+    // Revoke all current tokens by incrementing version
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
 
-    res.json({ message: 'Account and all associated data deleted successfully' });
+    await user.save();
+
+    // Log the event for security auditing
+    logger.security({
+      event: 'account_deletion_scheduled',
+      userId: String(userId),
+      purgeAfter: purgeAfter.toISOString(),
+      reason,
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Account scheduled for deletion. You have 30 days to restore your data before permanent purging.',
+      purgeAfter,
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Error deleting account' });
+    logger.error({ event: 'account_deletion_failed', message: error?.message || error });
+    res.status(500).json({ message: 'Error scheduling account deletion' });
+  }
+};
+
+// @desc    Restore a user account scheduled for deletion
+// @route   POST /api/users/restore
+// @access  Public (Requires email/password verification)
+const restoreUserAccount = async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required to restore account' });
+  }
+
+  try {
+    const user = await User.findOne({ email: normalizeEmail(email) }).select('+password');
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const isMatch = await user.matchPassword(password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (user.deletionLifecycle?.status !== 'scheduled') {
+      return res.status(400).json({ message: 'Account is not scheduled for deletion' });
+    }
+
+    // Restore the account
+    user.isDeleted = false;
+    user.deletedAt = null;
+    user.deletionLifecycle = {
+      status: 'cancelled',
+      cancelledAt: new Date(),
+    };
+    
+    await user.save();
+
+    logger.security({
+      event: 'account_restored',
+      userId: String(user._id),
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Account successfully restored. You can now sign in normally.',
+    });
+  } catch (error) {
+    logger.error({ event: 'account_restoration_failed', message: error?.message || error });
+    res.status(500).json({ message: 'Error restoring account' });
   }
 };
 
@@ -884,5 +1003,6 @@ module.exports = {
   resendVerificationEmail,
   exportUserData,
   deleteUserAccount,
+  restoreUserAccount,
   getWorkerLockInSummaryController,
 };

@@ -24,6 +24,7 @@ const { protect } = require('./middleware/authMiddleware');
 const { requestContextMiddleware } = require('./middleware/requestContext');
 const { edgeCdnPolicyMiddleware } = require('./middleware/edgeCdnPolicyMiddleware');
 const { requestSanitizer } = require('./middleware/requestSanitizer');
+const { requireOperationalAccess } = require('./middleware/operationalAccessMiddleware');
 const { notFoundHandler, errorHandler } = require('./middleware/errorMiddleware');
 const Application = require('./models/Application');
 const Chat = require('./models/Chat');
@@ -89,7 +90,7 @@ const {
 
 dotenv.config();
 getGeminiApiKey({ required: false });
-console.log('Gemini key loaded:', !!process.env.GOOGLE_API_KEY);
+logger.info('Gemini key loaded:', !!process.env.GOOGLE_API_KEY);
 installConsoleBridge();
 installDatabaseSafetyGuards();
 
@@ -119,8 +120,18 @@ if (isTestRuntime && String(process.env.TEST_WITH_DB || '').toLowerCase() !== 't
     mongoose.set('bufferCommands', false);
     logger.info('Skipping DB bootstrap in test runtime');
 } else {
+    const shouldRunSystemIntegrityHardening = Boolean(
+        isProduction
+        || ['1', 'true', 'yes', 'on'].includes(String(process.env.RUN_SYSTEM_INTEGRITY_HARDENING_ON_BOOT || '').trim().toLowerCase())
+    );
+
     connectDB()
         .then(async () => {
+            if (!shouldRunSystemIntegrityHardening) {
+                logger.info('Skipping system integrity hardening on boot');
+                return;
+            }
+
             try {
                 await runSystemIntegrityHardening();
             } catch (error) {
@@ -187,11 +198,12 @@ app.use(helmet({
     } : false,
     referrerPolicy: { policy: 'no-referrer' },
     crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: false,
 }));
 
 const readBearerToken = (req = {}) => {
     const header = String(req?.headers?.authorization || '');
-    if (!header.toLowerCase().startsWith('bearer ')) return '';
+    if (!header.startsWith('Bearer ')) return '';
     return header.slice(7).trim();
 };
 
@@ -293,7 +305,7 @@ app.get('/exports/:filename', protect, (req, res) => {
     return res.sendFile(filePath);
 });
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+app.use('/api-docs', requireOperationalAccess, swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
     customCss: '.swagger-ui .topbar { background-color: #9333ea; }',
     customSiteTitle: 'HireCircle API Docs',
 }));
@@ -321,7 +333,7 @@ const getRedisHealth = () => {
     };
 };
 
-app.get('/metrics', async (_req, res) => {
+app.get('/metrics', requireOperationalAccess, async (_req, res) => {
     try {
         const [runtimeMetrics, jobsCount, applicationsCount, interviewQueueDepth, distributedQueueDepth] = await Promise.all([
             getRuntimeSystemMetrics(),
@@ -355,7 +367,7 @@ app.get('/metrics', async (_req, res) => {
     }
 });
 
-app.get('/health/memory', (_req, res) => {
+app.get('/health/memory', requireOperationalAccess, (_req, res) => {
     res.status(200).json({
         status: 'ok',
         memory: process.memoryUsage(),
@@ -366,7 +378,7 @@ app.get('/health/memory', (_req, res) => {
     });
 });
 
-app.get('/health/db', (_req, res) => {
+app.get('/health/db', requireOperationalAccess, (_req, res) => {
     const dbHealth = getDbHealth();
     res.status(dbHealth.status === 'ok' ? 200 : 503).json({
         service: 'db',
@@ -375,7 +387,7 @@ app.get('/health/db', (_req, res) => {
     });
 });
 
-app.get('/health/redis', (_req, res) => {
+app.get('/health/redis', requireOperationalAccess, (_req, res) => {
     const redisHealth = getRedisHealth();
     res.status(redisHealth.status === 'ok' ? 200 : 503).json({
         service: 'redis',
@@ -384,7 +396,7 @@ app.get('/health/redis', (_req, res) => {
     });
 });
 
-app.get('/health/socket', (_req, res) => {
+app.get('/health/socket', requireOperationalAccess, (_req, res) => {
     res.status(200).json({
         service: 'socket',
         status: isShuttingDown() ? 'draining' : 'ok',

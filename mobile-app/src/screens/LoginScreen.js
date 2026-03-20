@@ -2,89 +2,176 @@ import React, { useCallback, useContext, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { AuthContext } from '../context/AuthContext';
+
 import client from '../api/client';
+import AuthScreenShell from '../components/auth/AuthScreenShell';
+import { AuthContext } from '../context/AuthContext';
+import {
+    buildRoleAwareSessionPayload,
+    getAuthAccountLabel,
+    isEmployerFacingSelectedRole,
+    isQaRoleBootstrapEnabled,
+    resolveSelectedRoleSession,
+} from '../utils/authRoleSelection';
+import { buildPreviewAuthSession, isInstantPreviewAuthEnabled } from '../utils/previewAuthSession';
+import { PALETTE, RADIUS, SHADOWS } from '../theme/theme';
+import { handleAuthBackNavigation } from '../utils/authNavigation';
+
+const QA_ROLE_BOOTSTRAP_ENABLED = isQaRoleBootstrapEnabled();
+const INSTANT_PREVIEW_AUTH_ENABLED = isInstantPreviewAuthEnabled();
 
 export default function LoginScreen({ navigation, route }) {
-    const insets = useSafeAreaInsets();
-    const { login, completeOnboarding } = useContext(AuthContext);
-    const rawSelectedRole = String(route?.params?.selectedRole || 'worker').toLowerCase();
-    const selectedRole = ['worker', 'employer', 'hybrid'].includes(rawSelectedRole) ? rawSelectedRole : 'worker';
-    const resolvedActiveRole = selectedRole === 'employer' ? 'employer' : 'worker';
-    const resolvedRoles = selectedRole === 'hybrid' ? ['worker', 'employer'] : [resolvedActiveRole];
+    const { login } = useContext(AuthContext);
+    const selectedSession = useMemo(
+        () => resolveSelectedRoleSession(route?.params?.selectedRole || 'worker'),
+        [route?.params?.selectedRole]
+    );
+    const selectedRole = selectedSession.selectedRole;
+    const accountLabel = useMemo(() => getAuthAccountLabel(selectedRole), [selectedRole]);
+    const isEmployer = useMemo(() => isEmployerFacingSelectedRole(selectedRole), [selectedRole]);
 
     const [authMode, setAuthMode] = useState('phone');
     const [phoneNumber, setPhoneNumber] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
+    const [showPassword, setShowPassword] = useState(false);
 
-    const subtitleText = useMemo(
-        () => `Sign in to your ${selectedRole === 'employer' ? 'Employer' : (selectedRole === 'hybrid' ? 'Hybrid' : 'Job Seeker')} account`,
-        [selectedRole]
+    const isPhonePreviewOnly = authMode === 'phone' && !QA_ROLE_BOOTSTRAP_ENABLED;
+    const screenTitle = useMemo(
+        () => (isEmployer
+            ? 'Sign in to your hiring workspace'
+            : 'Sign in to keep your work search moving'),
+        [isEmployer]
     );
+    const screenSubtitle = useMemo(
+        () => (isEmployer
+            ? 'Open your jobs, review talent, and move applicants forward from one place.'
+            : 'Check live matches, follow every application, and get back to opportunities faster.'),
+        [isEmployer]
+    );
+    const panelSubtitle = useMemo(() => {
+        if (authMode === 'phone') {
+            return QA_ROLE_BOOTSTRAP_ENABLED
+                ? 'Use the mobile number linked to your account.'
+                : 'Phone access is preview-only in this build. Switch to email for server sign in.';
+        }
+        return 'Use the email and password already linked to your account.';
+    }, [authMode]);
 
     const canSubmit = authMode === 'phone'
-        ? Boolean(String(phoneNumber || '').trim() && String(password || '').trim())
+        ? Boolean(QA_ROLE_BOOTSTRAP_ENABLED && String(phoneNumber || '').trim() && String(password || '').trim())
         : Boolean(String(email || '').trim() && String(password || '').trim());
 
     const handleBack = useCallback(() => {
-        if (navigation.canGoBack()) {
-            navigation.goBack();
-        }
+        handleAuthBackNavigation(navigation, { target: 'RoleSelection' });
     }, [navigation]);
 
     const handleSubmit = useCallback(async () => {
         if (loading || !canSubmit) return;
+        const safePassword = String(password || '').trim();
+        const safeEmail = String(email || '').trim().toLowerCase();
+        const safePhone = String(phoneNumber || '').trim();
         setLoading(true);
         try {
-            const payload = authMode === 'phone' ? { phoneNumber, password } : { email, password };
-            const { data } = await client.post('/api/users/login', payload);
+            let authPayload = null;
 
-            if (data?.requiresOtpVerification) {
-                navigation.navigate('OTPVerification', {
-                    intent: 'login',
-                    identity: { kind: authMode, value: authMode === 'phone' ? phoneNumber : email }
+            if (QA_ROLE_BOOTSTRAP_ENABLED) {
+                if (INSTANT_PREVIEW_AUTH_ENABLED) {
+                    authPayload = buildPreviewAuthSession({
+                        selectedRole,
+                        email: authMode === 'email' ? safeEmail : '',
+                        phoneNumber: authMode === 'phone' ? safePhone : '',
+                        hasCompletedProfile: true,
+                        profileComplete: true,
+                    });
+                } else {
+                    try {
+                        const { data } = await client.post('/api/auth/dev-bootstrap', {
+                            role: selectedSession.requestedActiveRole,
+                        }, {
+                            __skipUnauthorizedHandler: true,
+                            __skipApiErrorHandler: true,
+                            __allowWhenCircuitOpen: true,
+                            __maxRetries: 1,
+                            timeout: 2500,
+                        });
+                        authPayload = data;
+                    } catch (_bootstrapError) {
+                        authPayload = buildPreviewAuthSession({
+                            selectedRole,
+                            email: authMode === 'email' ? safeEmail : '',
+                            phoneNumber: authMode === 'phone' ? safePhone : '',
+                            hasCompletedProfile: true,
+                            profileComplete: true,
+                        });
+                    }
+                }
+            } else {
+                if (authMode !== 'email') {
+                    Alert.alert('Use email sign in', 'Phone sign in is not available in this build yet. Please switch to email.');
+                    return;
+                }
+
+                const { data } = await client.post('/api/users/login', {
+                    email: safeEmail,
+                    password: safePassword,
+                }, {
+                    __skipUnauthorizedHandler: true,
+                    __skipApiErrorHandler: true,
+                    __allowWhenCircuitOpen: true,
                 });
-                return;
+                authPayload = data;
             }
 
-            login(data);
-            await completeOnboarding?.();
+            if (!authPayload?.token) {
+                throw new Error('Missing session token');
+            }
+
+            const sessionPayload = QA_ROLE_BOOTSTRAP_ENABLED
+                ? buildRoleAwareSessionPayload(authPayload, selectedRole, {
+                    enforceRequestedRole: true,
+                    email: authMode === 'email' ? safeEmail : authPayload?.email,
+                    phoneNumber: authMode === 'phone' ? safePhone : authPayload?.phoneNumber,
+                    hasCompletedProfile: Boolean(authPayload?.hasCompletedProfile ?? true),
+                    profileComplete: Boolean(authPayload?.profileComplete ?? authPayload?.hasCompletedProfile ?? true),
+                })
+                : buildRoleAwareSessionPayload(authPayload, selectedRole, {
+                    enforceRequestedRole: false,
+                    email: authMode === 'email' ? safeEmail : authPayload?.email,
+                    phoneNumber: authMode === 'phone' ? safePhone : authPayload?.phoneNumber,
+                    hasCompletedProfile: Boolean(authPayload?.hasCompletedProfile),
+                });
+
+            await login(sessionPayload, { authEntryRole: selectedRole });
         } catch (error) {
-            // client.js interceptor wraps 403s into a custom ApiClientError, stripping .response.
-            // We must read status and OTP flag from both the custom error shape and the raw Axios shape.
-            const status = error?.status || error?.response?.status;
-            const otpRequired =
-                error?.originalError?.response?.data?.requiresOtpVerification
-                || error?.response?.data?.requiresOtpVerification;
-
-            if (status === 403 && otpRequired) {
-                navigation.navigate('OTPVerification', {
-                    intent: 'login',
-                    identity: { kind: authMode, value: authMode === 'phone' ? phoneNumber : email }
-                });
-                return;
-            }
-
-            const msg = error?.message || error?.response?.data?.message || 'Unable to continue right now. Please try again.';
-            Alert.alert('Sign in unavailable', msg);
+            const backendMessage = String(error?.response?.data?.message || error?.message || '').trim();
+            Alert.alert(
+                'Sign in unavailable',
+                backendMessage || 'Unable to continue right now. Please try again.'
+            );
         } finally {
             setLoading(false);
         }
-    }, [authMode, canSubmit, completeOnboarding, email, login, navigation, password, phoneNumber]);
+    }, [
+        authMode,
+        canSubmit,
+        email,
+        loading,
+        login,
+        password,
+        phoneNumber,
+        selectedRole,
+        selectedSession.requestedActiveRole,
+    ]);
 
     const openForgotPassword = useCallback(() => {
         navigation.navigate('ForgotPassword', { selectedRole });
@@ -95,305 +182,348 @@ export default function LoginScreen({ navigation, route }) {
     }, [navigation, selectedRole]);
 
     return (
-        <KeyboardAvoidingView
-            style={styles.container}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        <AuthScreenShell
+            selectedRole={selectedRole}
+            modeLabel="Sign in"
+            title={screenTitle}
+            subtitle={screenSubtitle}
+            onBack={handleBack}
+            footer={(
+                <View style={styles.footerWrap}>
+                    <Text style={styles.footerText}>New to HireCircle?</Text>
+                    <TouchableOpacity activeOpacity={0.75} onPress={openSignUp}>
+                        <Text style={styles.footerLink}>Create {accountLabel} account</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
         >
-            <ScrollView
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="always"
-                contentContainerStyle={[
-                    styles.scrollContent,
-                    { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 24 },
-                ]}
-            >
-                <TouchableOpacity style={styles.backBtn} onPress={handleBack} activeOpacity={0.8}>
-                    <Ionicons name="chevron-back" size={18} color="#94a3b8" />
-                    <Text style={styles.backBtnText}>Back</Text>
+            <Text style={styles.sectionEyebrow}>Access details</Text>
+            <Text style={styles.sectionTitle}>{authMode === 'phone' ? 'Continue with phone' : 'Continue with email'}</Text>
+            <Text style={styles.sectionSubtitle}>{panelSubtitle}</Text>
+
+            <View style={styles.segmentWrap}>
+                <TouchableOpacity
+                    style={[styles.segmentBtn, authMode === 'phone' && styles.segmentBtnActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setAuthMode('phone')}
+                >
+                    <Ionicons name="call-outline" size={15} color={authMode === 'phone' ? PALETTE.accentDeep : '#64748b'} />
+                    <Text style={[styles.segmentText, authMode === 'phone' && styles.segmentTextActive]}>Phone</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                    style={[styles.segmentBtn, authMode === 'email' && styles.segmentBtnActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setAuthMode('email')}
+                >
+                    <Ionicons name="mail-outline" size={15} color={authMode === 'email' ? PALETTE.accentDeep : '#64748b'} />
+                    <Text style={[styles.segmentText, authMode === 'email' && styles.segmentTextActive]}>Email</Text>
+                </TouchableOpacity>
+            </View>
 
-                <View style={styles.headerBlock}>
-                    <Text style={styles.title}>Welcome!</Text>
-                    <Text style={styles.subtitle}>{subtitleText}</Text>
+            {isPhonePreviewOnly ? (
+                <View style={styles.noticeCard}>
+                    <Ionicons name="information-circle-outline" size={16} color="#7c3aed" />
+                    <Text style={styles.noticeText}>Phone sign in is preview-only here. Use email for live authentication.</Text>
                 </View>
+            ) : null}
 
-                <View style={styles.segmentWrap}>
-                    <TouchableOpacity
-                        style={[styles.segmentButton, authMode === 'phone' && styles.segmentButtonActive]}
-                        activeOpacity={0.9}
-                        onPress={() => setAuthMode('phone')}
-                    >
-                        <Text style={[styles.segmentText, authMode === 'phone' && styles.segmentTextActive]}>PHONE</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.segmentButton, authMode === 'email' && styles.segmentButtonActive]}
-                        activeOpacity={0.9}
-                        onPress={() => setAuthMode('email')}
-                    >
-                        <Text style={[styles.segmentText, authMode === 'email' && styles.segmentTextActive]}>EMAIL</Text>
-                    </TouchableOpacity>
-                </View>
-
-                <View style={styles.formBlock}>
-                    {authMode === 'phone' ? (
-                        <View>
-                            <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
-                            <View style={styles.phoneRow}>
-                                <View style={styles.countryCodeWrap}>
-                                    <Text style={styles.countryCodeText}>+91</Text>
-                                </View>
-                                <TextInput
-                                    style={styles.phoneInput}
-                                    value={phoneNumber}
-                                    onChangeText={setPhoneNumber}
-                                    keyboardType="phone-pad"
-                                    placeholder="98765 43210"
-                                    placeholderTextColor="#94a3b8"
-                                    maxLength={15}
-                                />
+            <View style={styles.formBlock}>
+                {authMode === 'phone' ? (
+                    <View style={styles.fieldGroup}>
+                        <Text style={styles.fieldLabel}>Phone number</Text>
+                        <View style={styles.phoneShell}>
+                            <View style={styles.countryCode}>
+                                <Ionicons name="phone-portrait-outline" size={15} color="#64748b" />
+                                <Text style={styles.countryCodeText}>+91</Text>
                             </View>
-                        </View>
-                    ) : (
-                        <View>
-                            <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
                             <TextInput
-                                style={styles.input}
+                                style={styles.phoneInput}
+                                value={phoneNumber}
+                                onChangeText={setPhoneNumber}
+                                keyboardType="phone-pad"
+                                placeholder="98765 43210"
+                                placeholderTextColor={PALETTE.textTertiary}
+                                maxLength={15}
+                            />
+                        </View>
+                    </View>
+                ) : (
+                    <View style={styles.fieldGroup}>
+                        <Text style={styles.fieldLabel}>Email address</Text>
+                        <View style={styles.fieldShell}>
+                            <Ionicons name="mail-outline" size={17} color="#64748b" style={styles.fieldIcon} />
+                            <TextInput
+                                style={styles.fieldInput}
                                 value={email}
                                 onChangeText={setEmail}
                                 autoCapitalize="none"
                                 keyboardType="email-address"
-                                placeholder="user@example.com"
-                                placeholderTextColor="#94a3b8"
+                                placeholder="you@example.com"
+                                placeholderTextColor={PALETTE.textTertiary}
                             />
                         </View>
-                    )}
+                    </View>
+                )}
 
-                    <View>
-                        <Text style={styles.fieldLabel}>PASSWORD</Text>
+                <View style={styles.fieldGroup}>
+                    <Text style={styles.fieldLabel}>Password</Text>
+                    <View style={styles.fieldShell}>
+                        <Ionicons name="lock-closed-outline" size={17} color="#64748b" style={styles.fieldIcon} />
                         <TextInput
-                            style={styles.input}
+                            style={styles.fieldInput}
                             value={password}
                             onChangeText={setPassword}
-                            secureTextEntry
-                            placeholder="••••••••"
-                            placeholderTextColor="#94a3b8"
+                            secureTextEntry={!showPassword}
+                            placeholder="Enter password"
+                            placeholderTextColor={PALETTE.textTertiary}
                         />
-                    </View>
-
-                    <TouchableOpacity style={styles.forgotTap} activeOpacity={0.8} onPress={openForgotPassword}>
-                        <Text style={styles.forgotText}>Forgot password?</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={[styles.submitWrap, (!canSubmit || loading) && styles.submitWrapDisabled]}
-                        activeOpacity={0.9}
-                        onPress={handleSubmit}
-                        disabled={!canSubmit || loading}
-                    >
-                        <LinearGradient
-                            colors={['#7c3aed', '#9333ea']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}
-                            style={styles.submitGradient}
+                        <TouchableOpacity
+                            style={styles.trailingBtn}
+                            onPress={() => setShowPassword((prev) => !prev)}
+                            activeOpacity={0.7}
                         >
-                            {loading ? (
-                                <ActivityIndicator size="small" color="#ffffff" />
-                            ) : (
-                                <Text style={styles.submitText}>Sign In</Text>
-                            )}
-                        </LinearGradient>
-                    </TouchableOpacity>
+                            <Ionicons
+                                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                                size={19}
+                                color={PALETTE.textSecondary}
+                            />
+                        </TouchableOpacity>
+                    </View>
                 </View>
+            </View>
 
-                <View style={styles.footerRow}>
-                    <Text style={styles.footerText}>Don't have an account? </Text>
-                    <TouchableOpacity activeOpacity={0.8} onPress={openSignUp}>
-                        <Text style={styles.footerLink}>Sign Up</Text>
-                    </TouchableOpacity>
-                </View>
-            </ScrollView>
-        </KeyboardAvoidingView>
+            <View style={styles.utilityRow}>
+                <TouchableOpacity activeOpacity={0.75} onPress={openForgotPassword}>
+                    <Text style={styles.utilityLink}>Forgot password?</Text>
+                </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+                style={[styles.submitBtn, (!canSubmit || loading) && styles.submitBtnDisabled]}
+                activeOpacity={0.9}
+                onPress={handleSubmit}
+                disabled={!canSubmit || loading}
+            >
+                <LinearGradient
+                    colors={['#c084fc', PALETTE.accent, PALETTE.accentDeep]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.submitGradient}
+                >
+                    {loading ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                    ) : (
+                        <Text style={styles.submitText}>Sign In</Text>
+                    )}
+                </LinearGradient>
+            </TouchableOpacity>
+
+            <View style={styles.inlineMetaRow}>
+                <Ionicons name="shield-checkmark-outline" size={14} color="#7c3aed" />
+                <Text style={styles.inlineMetaText}>Secure access for your {accountLabel.toLowerCase()} workspace.</Text>
+            </View>
+        </AuthScreenShell>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: '#f4f5f7',
-    },
-    scrollContent: {
-        flexGrow: 1,
-        paddingHorizontal: 24,
-    },
-    backBtn: {
-        minHeight: 44,
-        alignSelf: 'flex-start',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        marginBottom: 22,
-    },
-    backBtnText: {
-        fontSize: 13,
-        lineHeight: 18,
-        color: '#94a3b8',
-        fontWeight: '600',
-    },
-    headerBlock: {
-        marginBottom: 18,
-    },
-    title: {
-        fontSize: 27,
-        lineHeight: 32,
+    sectionEyebrow: {
+        fontSize: 11,
         fontWeight: '800',
-        color: '#0f172a',
-        letterSpacing: -0.2,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        color: '#7c3aed',
+        marginBottom: 8,
     },
-    subtitle: {
-        marginTop: 8,
-        fontSize: 13,
-        lineHeight: 18,
-        fontWeight: '600',
+    sectionTitle: {
+        fontSize: 21,
+        fontWeight: '800',
+        color: PALETTE.textPrimary,
+        letterSpacing: -0.4,
+    },
+    sectionSubtitle: {
+        marginTop: 6,
+        marginBottom: 18,
+        fontSize: 14,
+        lineHeight: 21,
         color: '#64748b',
     },
     segmentWrap: {
         flexDirection: 'row',
-        backgroundColor: '#e2e8f0',
-        borderRadius: 14,
-        padding: 4,
-        marginTop: 6,
+        gap: 10,
+        marginBottom: 16,
     },
-    segmentButton: {
+    segmentBtn: {
         flex: 1,
+        minHeight: 48,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: 48,
-        borderRadius: 10,
+        gap: 8,
     },
-    segmentButtonActive: {
-        backgroundColor: '#ffffff',
+    segmentBtnActive: {
+        backgroundColor: '#f3e8ff',
+        borderColor: '#d8b4fe',
+        ...SHADOWS.sm,
     },
     segmentText: {
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: 14,
         fontWeight: '700',
         color: '#64748b',
     },
     segmentTextActive: {
-        color: '#0f172a',
+        color: PALETTE.accentDeep,
     },
-    formBlock: {
-        marginTop: 22,
-        gap: 16,
-    },
-    fieldLabel: {
-        marginBottom: 8,
-        fontSize: 11,
-        lineHeight: 14,
-        fontWeight: '700',
-        color: '#94a3b8',
-        letterSpacing: 0.9,
-    },
-    phoneRow: {
+    noticeCard: {
         flexDirection: 'row',
         alignItems: 'center',
-        borderRadius: 14,
+        gap: 8,
+        borderRadius: 16,
         borderWidth: 1,
-        borderColor: '#d5dee8',
-        backgroundColor: '#f3f6f9',
+        borderColor: '#ddd6fe',
+        backgroundColor: '#faf5ff',
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginBottom: 16,
+    },
+    noticeText: {
+        flex: 1,
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: '#6d28d9',
+        fontWeight: '600',
+    },
+    formBlock: {
+        gap: 16,
+    },
+    fieldGroup: {
+        gap: 8,
+    },
+    fieldLabel: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#475569',
+    },
+    phoneShell: {
+        flexDirection: 'row',
+        alignItems: 'center',
         minHeight: 54,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
         overflow: 'hidden',
     },
-    countryCodeWrap: {
-        minWidth: 66,
+    countryCode: {
+        minHeight: 54,
+        paddingHorizontal: 14,
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 10,
-        paddingVertical: 16,
+        gap: 8,
         borderRightWidth: 1,
-        borderRightColor: '#d5dee8',
-        backgroundColor: '#f8fafc',
+        borderRightColor: '#e2e8f0',
+        backgroundColor: '#f1f5f9',
     },
     countryCodeText: {
         fontSize: 14,
-        lineHeight: 18,
         fontWeight: '700',
-        color: '#64748b',
+        color: '#475569',
     },
     phoneInput: {
         flex: 1,
         paddingHorizontal: 14,
-        paddingVertical: 12,
-        fontSize: 14,
-        lineHeight: 19,
-        fontWeight: '500',
-        color: '#0f172a',
+        fontSize: 15,
+        color: PALETTE.textPrimary,
     },
-    input: {
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: '#d5dee8',
-        backgroundColor: '#f3f6f9',
+    fieldShell: {
+        flexDirection: 'row',
+        alignItems: 'center',
         minHeight: 54,
-        paddingHorizontal: 14,
-        paddingVertical: 12,
-        fontSize: 14,
-        lineHeight: 19,
-        fontWeight: '500',
-        color: '#0f172a',
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
+        backgroundColor: '#f8fafc',
     },
-    forgotTap: {
-        alignSelf: 'flex-end',
-        minHeight: 30,
+    fieldIcon: {
+        marginLeft: 14,
+    },
+    fieldInput: {
+        flex: 1,
+        paddingLeft: 10,
+        paddingRight: 12,
+        fontSize: 15,
+        color: PALETTE.textPrimary,
+    },
+    trailingBtn: {
+        width: 42,
+        height: 42,
+        alignItems: 'center',
         justifyContent: 'center',
+        marginRight: 4,
     },
-    forgotText: {
-        fontSize: 13,
-        lineHeight: 18,
-        color: '#7c3aed',
+    utilityRow: {
+        marginTop: 14,
+        marginBottom: 18,
+        alignItems: 'flex-end',
+    },
+    utilityLink: {
+        fontSize: 14,
         fontWeight: '700',
+        color: PALETTE.accentDeep,
     },
-    submitWrap: {
-        marginTop: 8,
-        borderRadius: 14,
+    submitBtn: {
+        borderRadius: RADIUS.full,
         overflow: 'hidden',
-        shadowColor: '#7c3aed',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.22,
-        shadowRadius: 10,
-        elevation: 4,
+        ...SHADOWS.accent,
     },
-    submitWrapDisabled: {
-        opacity: 0.55,
+    submitBtnDisabled: {
+        opacity: 0.5,
     },
     submitGradient: {
         minHeight: 54,
+        borderRadius: RADIUS.full,
         alignItems: 'center',
         justifyContent: 'center',
     },
     submitText: {
-        fontSize: 17,
-        lineHeight: 22,
+        fontSize: 16,
         fontWeight: '800',
         color: '#ffffff',
+        letterSpacing: 0.2,
     },
-    footerRow: {
-        marginTop: 'auto',
-        paddingTop: 20,
+    inlineMetaRow: {
+        marginTop: 14,
         flexDirection: 'row',
-        justifyContent: 'center',
         alignItems: 'center',
+        gap: 8,
     },
-    footerText: {
-        fontSize: 12,
-        lineHeight: 16,
-        color: '#94a3b8',
+    inlineMetaText: {
+        flex: 1,
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: '#64748b',
         fontWeight: '600',
     },
+    footerWrap: {
+        marginTop: 18,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        paddingBottom: 4,
+    },
+    footerText: {
+        fontSize: 14,
+        color: '#64748b',
+        fontWeight: '500',
+    },
     footerLink: {
-        fontSize: 12,
-        lineHeight: 16,
-        color: '#7c3aed',
-        fontWeight: '700',
+        fontSize: 14,
+        color: PALETTE.accentDeep,
+        fontWeight: '800',
     },
 });

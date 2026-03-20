@@ -13,6 +13,7 @@ const workerProfileSchema = mongoose.Schema(
     lastName: { type: String },
     city: { type: String, required: true },
     avatar: { type: String, default: null },
+    dateOfBirth: { type: String, default: null },
     country: { type: String, default: 'IN', uppercase: true, index: true },
     language: { type: String, default: null },
     totalExperience: { type: Number, default: 0 },

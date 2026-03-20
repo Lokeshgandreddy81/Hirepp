@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, ScrollView, TouchableOpacity, Switch, Alert, Modal, TextInput, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LinearGradient } from 'expo-linear-gradient';
 import { AuthContext } from '../context/AuthContext';
 import client from '../api/client';
 import { logger } from '../utils/logger';
-import { getPrimaryRoleFromUser } from '../utils/roleMode';
+import { getPrimaryRoleFromUser, allowedCapabilitiesForRole, hasUserSelectedRole } from '../utils/roleMode';
+import { resolveImageUrl } from '../utils/imageHelper';
 import { useAppStore } from '../store/AppStore';
 import FeedbackModal from '../components/FeedbackModal';
 import SkeletonLoader from '../components/SkeletonLoader';
@@ -93,10 +97,10 @@ export default function SettingsScreen({ navigation }) {
     const [deletePassword, setDeletePassword] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
     const [profileHeader, setProfileHeader] = useState({
-        name: 'User',
-        role: 'candidate',
-        email: '',
-        avatar: null,
+        name: userInfo?.name || 'User',
+        role: userInfo?.activeRole === 'employer' ? 'Recruiter' : 'Candidate',
+        email: userInfo?.email || '',
+        avatar: userInfo?.avatar || null,
     });
     const [primaryRole, setPrimaryRole] = useState(appRole || getPrimaryRoleFromUser(userInfo));
     const [isFeedbackModalVisible, setFeedbackModalVisible] = useState(false);
@@ -110,6 +114,7 @@ export default function SettingsScreen({ navigation }) {
     const [accountPhoneNumber, setAccountPhoneNumber] = useState('Not set');
     const [savedPostsCount, setSavedPostsCount] = useState(0);
     const [clearingSavedPosts, setClearingSavedPosts] = useState(false);
+    const [avatarLoadError, setAvatarLoadError] = useState(false);
     const savedPostsStorageKey = React.useMemo(
         () => getSavedPostsStorageKey(String(userInfo?._id || 'guest')),
         [userInfo?._id]
@@ -149,7 +154,7 @@ export default function SettingsScreen({ navigation }) {
                     name: fullName || user.name || 'User',
                     role: resolvedPrimaryRole === 'employer' ? 'Recruiter' : 'Candidate',
                     email: user.email || '',
-                    avatar: profile.avatar || profile.logoUrl || null,
+                    avatar: resolveImageUrl(profile.avatar || profile.logoUrl || null),
                 });
 
                 const growthRes = await client.get('/api/growth/monetization-intelligence').catch(() => null);
@@ -160,7 +165,7 @@ export default function SettingsScreen({ navigation }) {
                     name: user.name || 'User',
                     role: resolvedPrimaryRole === 'employer' ? 'Recruiter' : 'Candidate',
                     email: user.email || '',
-                    avatar: null,
+                    avatar: resolveImageUrl(user?.avatar || null),
                 });
             }
         };
@@ -204,7 +209,11 @@ export default function SettingsScreen({ navigation }) {
             }
         };
         loadNotificationPermission();
-    }, [userInfo, appRole, isExpoGo]);
+    }, [userInfo, appRole, isExpoGo, avatarLoadError]);
+
+    const headerAvatarSrc = avatarLoadError
+        ? `https://ui-avatars.com/api/?name=${encodeURIComponent(profileHeader.name || 'User')}&background=7c3aed&color=fff`
+        : profileHeader.avatar;
 
     const handleToggle = async (key, setter, value) => {
         setter(value);
@@ -558,18 +567,26 @@ export default function SettingsScreen({ navigation }) {
     }, [clearSavedPosts, savedPostsCount]);
 
     const renderHeader = () => (
-        <TouchableOpacity 
+        <TouchableOpacity
             activeOpacity={0.8}
             onPress={() => navigation.navigate('MainTab', { screen: 'Connect', params: { showProfile: true } })}
             style={[styles.profileHeader, { paddingTop: insets.top + 16 }]}
         >
-            <Image
-                source={{
-                    uri: profileHeader.avatar ||
-                        `https://ui-avatars.com/api/?name=${encodeURIComponent(profileHeader.name || 'User')}&background=7c3aed&color=fff`
-                }}
-                style={styles.avatar}
-            />
+            <TouchableOpacity
+                activeOpacity={0.8}
+                style={styles.headerAvatarContainer}
+                onPress={() => navigation.navigate('ProfileSetupWizard', { intent: 'edit' })}
+            >
+                <Image
+                    source={{ uri: headerAvatarSrc }}
+                    style={styles.headerAvatar}
+                    onLoad={() => setAvatarLoadError(false)}
+                    onError={() => setAvatarLoadError(true)}
+                />
+                <View style={styles.headerAvatarEditBadge}>
+                    <Ionicons name="camera" size={12} color="#fff" />
+                </View>
+            </TouchableOpacity>
             <View>
                 <Text style={styles.userName}>{profileHeader.name}</Text>
                 <Text style={styles.userRole}>{profileHeader.role}{profileHeader.email ? ` • ${profileHeader.email}` : ''}</Text>

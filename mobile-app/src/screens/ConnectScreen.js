@@ -18,6 +18,7 @@ import { theme, RADIUS, SHADOWS, SPACING } from '../theme/theme';
 import { connectPalette } from './connect/connectPalette';
 import { trackEvent } from '../services/analytics';
 import { MOTION } from '../theme/motion';
+import { resolveImageUrl } from '../utils/imageHelper';
 import { useAppStore } from '../store/AppStore';
 
 export default function ConnectScreen() {
@@ -58,11 +59,9 @@ export default function ConnectScreen() {
     );
     const currentUserAvatar = useMemo(() => {
         const displayName = String(userInfo?.name || 'You').trim() || 'You';
-        return String(
-            userInfo?.avatar
-            || userInfo?.profilePicture
-            || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=d1d5db&color=111111&rounded=true`
-        );
+        const rawUrl = userInfo?.avatar || userInfo?.profilePicture || null;
+        return resolveImageUrl(rawUrl)
+            || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=d1d5db&color=111111&rounded=true`;
     }, [userInfo?.avatar, userInfo?.name, userInfo?.profilePicture]);
 
     const openNotifications = useCallback(() => {

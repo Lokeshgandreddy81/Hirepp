@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { IconSettings } from '../../components/Icons';
 import { theme, RADIUS, SHADOWS } from '../../theme/theme';
 import client from '../../api/client';
+import { resolveImageUrl } from '../../utils/imageHelper';
 
 const toDisplayNumber = (value) => {
     const numeric = Number(value);
@@ -77,13 +78,17 @@ function MyProfileModalComponent({
     const aboutText = String(safeUserInfo?.bio || safeUserInfo?.summary || '').trim() || 'No profile summary available yet.';
     const ratingValue = Number.isFinite(Number(safeUserInfo?.rating)) ? Number(safeUserInfo.rating).toFixed(1) : 'N/A';
     const displayName = String(safeUserInfo?.name || 'User').trim() || 'User';
-    const dobLabel = String(safeUserInfo?.dob || '').trim() || 'Not set';
+    const dobLabel = String(safeUserInfo?.dateOfBirth || safeUserInfo?.dob || '').trim() || 'Not set';
     
     let salaryLabel = 'Not set';
-    if (safeUserInfo?.expectedSalary || safeUserInfo?.salaryMinimum) {
-        salaryLabel = String(safeUserInfo.expectedSalary || safeUserInfo.salaryMinimum);
+    const primaryRoleProfile = Array.isArray(safeUserInfo?.roleProfiles) ? safeUserInfo.roleProfiles[0] : null;
+    const resolvedSalary = safeUserInfo?.expectedSalary || safeUserInfo?.salaryMinimum || primaryRoleProfile?.expectedSalary;
+    if (resolvedSalary) {
+        salaryLabel = String(resolvedSalary);
     }
-    const safeAvatar = String(avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=8b3dff&color=fff&rounded=true`);
+    const resolvedAvatarUri = resolveImageUrl(safeUserInfo?.avatar || avatar)
+        || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=8b3dff&color=fff&rounded=true`;
+    const safeAvatar = resolvedAvatarUri;
 
     return (
         <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>

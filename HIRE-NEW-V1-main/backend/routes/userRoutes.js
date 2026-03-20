@@ -12,6 +12,7 @@ const {
     finalizeInterviewSignalIfEligible,
 } = require('../services/interviewProcessingService');
 const { publishMetric } = require('../services/metricsService');
+const { resolveAvatarToPublicUrl } = require('../services/localStorageService');
 const {
     fireAndForget,
     recordLifecycleEvent,
@@ -108,6 +109,8 @@ const ALLOWED_WORKER_PROFILE_FIELDS = new Set([
     'isAvailable',
     'videoIntroduction',
     'processingId',
+    'bio',
+    'dateOfBirth',
 ]);
 
 const ALLOWED_EMPLOYER_PROFILE_FIELDS = new Set([
@@ -300,6 +303,8 @@ const sanitizeWorkerPayload = (payload = {}) => {
         sanitized.country = country ? country.toUpperCase() : '';
     }
     if (payload.language !== undefined) sanitized.language = normalizeTextField(payload.language, 16);
+    if (payload.bio !== undefined) sanitized.bio = normalizeTextField(payload.bio, 500);
+    if (payload.dateOfBirth !== undefined) sanitized.dateOfBirth = normalizeTextField(payload.dateOfBirth, 40);
 
     const totalExperience = toSafeNumber(payload.totalExperience, { min: 0, max: 80 });
     if (totalExperience !== undefined) sanitized.totalExperience = totalExperience;
@@ -692,6 +697,11 @@ router.get('/profile', protect, async (req, res) => {
         if (!isEmployer && Array.isArray(profilePayload?.roleProfiles)) {
             profilePayload.roleProfiles = normalizeStoredRoleProfiles(profilePayload.roleProfiles);
         }
+        if (isEmployer && profilePayload?.logoUrl) {
+            profilePayload.logoUrl = resolveAvatarToPublicUrl(profilePayload.logoUrl);
+        } else if (!isEmployer && profilePayload?.avatar) {
+            profilePayload.avatar = resolveAvatarToPublicUrl(profilePayload.avatar);
+        }
         const completion = evaluateProfileCompletion({
             user: userDoc,
             workerProfile: isEmployer ? null : profilePayload,
@@ -701,6 +711,7 @@ router.get('/profile', protect, async (req, res) => {
         res.json({
             profile: {
                 ...profilePayload,
+                bio: userDoc?.bio || null,
                 trustAuthority,
             },
             referralDashboard,

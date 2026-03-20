@@ -14,7 +14,7 @@ const Job = require('../models/Job');
 const User = require('../models/userModel');
 const InterviewProcessingJob = require('../models/InterviewProcessingJob');
 const { protect } = require('../middleware/authMiddleware');
-const { resolveStoredObjectFromSignedToken } = require('../services/localStorageService');
+const { resolveStoredObjectFromSignedToken, resolveObjectKeyFromUrl } = require('../services/localStorageService');
 const { publishMetric } = require('../services/metricsService');
 const { isRecruiter } = require('../utils/roleGuards');
 const logger = require('../utils/logger');
@@ -138,6 +138,12 @@ router.get('/private/:token', async (req, res) => {
         }
         return res.send(Buffer.concat(chunks));
     } catch (error) {
+        if (error?.message === 'Token expired') {
+            const objectKey = resolveObjectKeyFromUrl(`/api/upload/private/${req.params.token}`);
+            if (objectKey) {
+                return res.redirect(301, `/uploads/storage/${objectKey}`);
+            }
+        }
         logger.security({
             event: 'private_upload_access_denied',
             message: error?.message || error,

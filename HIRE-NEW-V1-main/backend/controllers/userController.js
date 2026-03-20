@@ -14,6 +14,7 @@ const { trackFunnelStage } = require('../services/growthFunnelService');
 const { normalizeCountryCode, resolveLocaleBundle } = require('../services/geoExpansionService');
 const { recordFeatureUsage } = require('../services/monetizationIntelligenceService');
 const { safeLogPlatformEvent } = require('../services/eventLoggingService');
+const { resolveAvatarToPublicUrl } = require('../services/localStorageService');
 const { upsertSubscription } = require('../services/subscriptionService');
 const { enqueueBackgroundJob } = require('../services/backgroundQueueService');
 const { isRecruiter } = require('../utils/roleGuards');
@@ -600,10 +601,28 @@ const authUser = async (req, res) => {
       await user.save();
 
       const roleContract = resolveUserRoleContract(user);
+      const isEmployer = roleContract.activeRole === 'employer';
+      let avatar = null;
+      
+      try {
+          if (isEmployer) {
+              const EmployerProfile = require('../models/EmployerProfile');
+              const profile = await EmployerProfile.findOne({ user: user._id }).select('logoUrl').lean();
+              avatar = resolveAvatarToPublicUrl(profile?.logoUrl) || null;
+          } else {
+              const WorkerProfile = require('../models/WorkerProfile');
+              const profile = await WorkerProfile.findOne({ user: user._id }).select('avatar').lean();
+              avatar = resolveAvatarToPublicUrl(profile?.avatar) || null;
+          }
+      } catch (err) {}
+
       res.json({
         _id: user._id,
         name: user.name,
         email: user.email,
+        city: user.city || null,
+        bio: user.bio || null,
+        avatar: avatar || null,
         role: roleContract.role,
         roles: roleContract.roles,
         activeRole: roleContract.activeRole,

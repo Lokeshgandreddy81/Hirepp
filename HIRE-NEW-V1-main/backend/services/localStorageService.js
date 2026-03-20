@@ -187,6 +187,31 @@ const uploadToLocalStorage = async (filePath, mimeType, options = {}) => {
     return buildPublicUrl(objectKey);
 };
 
+/**
+ * Converts any stored avatar URL — including expired HMAC-signed tokens — to a
+ * permanent plain public path (/uploads/storage/...).
+ * Safe to call on URLs that are already plain paths or full http:// URLs.
+ * Returns null if the URL cannot be resolved.
+ */
+const resolveAvatarToPublicUrl = (storedUrl) => {
+    if (!storedUrl) return null;
+    const raw = String(storedUrl).trim();
+    if (!raw) return null;
+
+    // Already a plain URL or external absolute URL – return as-is.
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/uploads/storage/')) {
+        return raw;
+    }
+
+    // Attempt to extract the objectKey from a signed token (even if expired).
+    const objectKey = resolveObjectKeyFromUrl(raw);
+    if (objectKey) {
+        return buildPublicUrl(objectKey);
+    }
+
+    return null;
+};
+
 const resolveStoredObjectFromSignedToken = async (token) => {
     const payload = verifyToken(token);
     const objectKey = String(payload.objectKey || '').replace(/^\/+/, '');
@@ -289,4 +314,5 @@ module.exports = {
     resolveStoredObjectFromSignedToken,
     resolveObjectKeyFromUrl,
     deleteStoredObjectByUrl,
+    resolveAvatarToPublicUrl,
 };

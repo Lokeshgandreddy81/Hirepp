@@ -798,6 +798,8 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
                 lastName: names.lastName,
                 city: String(form.city || '').trim(),
                 language: String(form.language || 'English').trim(),
+                bio: String(userInfo?.bio || userInfo?.summary || '').trim() || undefined,
+                dateOfBirth: String(userInfo?.dateOfBirth || userInfo?.dob || '').trim() || undefined,
             });
         }
 
@@ -841,6 +843,8 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
         await updateUserInfo?.({
             hasCompletedProfile: Boolean(nextCompletion?.meetsProfileCompleteThreshold),
             profileCompletion: nextCompletion,
+            city: String(form.city || '').trim() || undefined,
+            avatar: String(form.avatarUrl || '').trim() || undefined,
         });
         onCompleted?.(nextCompletion);
         return true;

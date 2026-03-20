@@ -39,6 +39,9 @@ const PERSISTED_USER_FIELDS = [
     'interviewVerified',
     'isVerified',
     'isAdmin',
+    'avatar',
+    'bio',
+    'city',
     'token',
     'refreshToken',
 ];

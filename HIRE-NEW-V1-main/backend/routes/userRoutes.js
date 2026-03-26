@@ -1334,6 +1334,7 @@ router.put('/profile', protect, async (req, res) => {
             signalFinalized,
         });
     } catch (error) {
+        console.error("ACCOUNT SETUP CRASH:", error);
         if (error?.name === 'ValidationError' || error?.name === 'CastError') {
             return res.status(400).json({ message: error?.message || 'Invalid profile payload' });
         }

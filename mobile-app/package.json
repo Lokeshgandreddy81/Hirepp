@@ -46,5 +46,8 @@
     "socket.io-client": "^4.8.3",
     "victory-native": "^41.20.2"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "babel-preset-expo": "^55.0.12"
+  }
 }

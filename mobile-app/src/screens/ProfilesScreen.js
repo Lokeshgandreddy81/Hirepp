@@ -18,13 +18,19 @@ import { validateProfileResponse, logValidationError } from '../utils/apiValidat
 import { useAppStore } from '../store/AppStore';
 import { trackEvent } from '../services/analytics';
 import { AuthContext } from '../context/AuthContext';
-import {
+/* import {
     getCommonCityHints,
     getCommonLanguageHints,
     getRoleDefaults,
     inferRoleCategory,
     searchRoleTitles,
-} from '../config/workerRoleCatalog';
+} from '../config/workerRoleCatalog'; */
+
+const getCommonCityHints = () => [];
+const getCommonLanguageHints = () => [];
+const getRoleDefaults = () => ({});
+const inferRoleCategory = () => '';
+const searchRoleTitles = () => [];
 
 const REQUEST_TIMEOUT_MS = 12000;
 const WORKER_PROFILE_CACHE_KEY = '@cached_worker_profiles';
@@ -457,11 +463,12 @@ export default function ProfilesScreen({ navigation }) {
     );
 
     const roleTitleTypeaheadOptions = useMemo(() => {
-        const catalogSuggestions = searchRoleTitles(String(editingProfile?.roleTitle || '').trim(), 10).map((entry) => ({
+        /* const catalogSuggestions = searchRoleTitles(String(editingProfile?.roleTitle || '').trim(), 10).map((entry) => ({
             label: entry.title,
             value: entry.title,
             meta: entry.category ? `${entry.category} role` : '',
-        }));
+        })); */
+        const catalogSuggestions = [];
         const catalogTitles = new Set(catalogSuggestions.map((entry) => normalizeToken(entry.value)));
         const profileTitles = buildUniqueOptions([
             ...profiles.map((item) => item?.roleTitle),
@@ -502,7 +509,7 @@ export default function ProfilesScreen({ navigation }) {
     ]), [editingProfile?.licenses, licenseInput, roleSuggestedLicenses]);
 
     const inferredRoleCategory = useMemo(
-        () => inferRoleCategory(String(editingProfile?.roleTitle || '').trim()),
+        () => '', // inferRoleCategory(String(editingProfile?.roleTitle || '').trim()),
         [editingProfile?.roleTitle]
     );
 
@@ -1037,7 +1044,7 @@ export default function ProfilesScreen({ navigation }) {
         if (!auto) setFormAssistMessage('');
 
         try {
-            const roleCategory = inferRoleCategory(normalizedRoleTitle);
+            const roleCategory = ''; // inferRoleCategory(normalizedRoleTitle);
             const { data } = await client.post('/api/features/ai/profile-suggestions', {
                 roleName: normalizedRoleTitle,
                 roleCategory: roleCategory || undefined,

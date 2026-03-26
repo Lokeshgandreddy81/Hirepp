@@ -356,7 +356,7 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
     const [saving, setSaving] = useState(false);
     const [uploadingAvatar, setUploadingAvatar] = useState(false);
     const [aiAssistLoading, setAiAssistLoading] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
+
     const [errorText, setErrorText] = useState('');
     const [completion, setCompletion] = useState(null);
     const [currentStepIndex, setCurrentStepIndex] = useState(0);
@@ -628,15 +628,9 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
         });
 
         setUploadingAvatar(true);
-        setUploadProgress(0);
         try {
             const { data } = await client.post('/api/settings/avatar', payload, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-                onUploadProgress: (event) => {
-                    if (!event?.total) return;
-                    const pct = Math.round((event.loaded / event.total) * 100);
-                    setUploadProgress(Math.max(0, Math.min(100, pct)));
-                },
+                __allowWhenCircuitOpen: true,
             });
             const avatarUrl = String(data?.avatarUrl || uri).trim();
             const nextCompletion = data?.profileCompletion || completion;
@@ -648,7 +642,6 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
             return avatarUrl;
         } finally {
             setUploadingAvatar(false);
-            setUploadProgress(0);
         }
     }, [completion, updateUserInfo]);
 
@@ -947,7 +940,7 @@ export default function ProfileSetupWizardScreen({ onCompleted }) {
                     {uploadingAvatar ? (
                         <View style={styles.uploadState}>
                             <ActivityIndicator color="#4f46e5" />
-                            <Text style={styles.uploadStateText}>Uploading {uploadProgress}%</Text>
+                            <Text style={styles.uploadStateText}>Uploading...</Text>
                         </View>
                     ) : null}
                 </View>
